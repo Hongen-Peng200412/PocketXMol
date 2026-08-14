@@ -1,39 +1,44 @@
 
+# 候选生成预算；每个 repeat 为同一复合物产生一个随机 docking pose。
 sample:
-  seed: 10831
-  batch_size: 400
-  num_repeats: 50
-  save_traj_prob: 0.001
+  seed: 10831  # int；控制 noiser、测试加载与轨迹抽样的统一随机种子。
+  batch_size: 400  # int；每次统一网络处理的复合物图数，可被 CLI 覆盖。
+  num_repeats: 50  # int；完整测试集重复次数，即每个 data_id 的默认候选 pose 数。
+  save_traj_prob: 0.001  # float，[0,1]；逐候选保存完整轨迹的概率。
+  # list[str]；逐候选额外保存到同名 .pt 的模型输出叶；顺序不影响内容。
   save_output: ['confidence_pos', 'confidence_node', 'confidence_halfedge',] # 'pred_node', 'pred_halfedge']
 
+# 小分子 docking noiser；构造口袋条件下的逐步坐标恢复。
 noise:
-  name: dock
-  num_steps: 100
-  prior: from_train
+  name: dock  # str；选择 DockSamplNoiser。
+  num_steps: 100  # int；sample_loop3 的去噪步数 T。
+  prior: from_train  # str 特殊值；从训练配置中定位 name=dock 的完整 prior。
   level:
-    name: advance
-    min: 0.
-    max: 1.
+    name: advance  # str；选择非线性 AdvanceScaler。
+    min: 0.  # float；低信息端完全采用 docking 坐标 prior。
+    max: 1.  # float；高信息端完全保留当前 pose。
     step2level:
-      scale_start: 0.99999
-      scale_end: 0.00001
-      width: 3
+      scale_start: 0.99999  # float；高保留端 sigmoid 参考值，严格位于 (0,1)。
+      scale_end: 0.00001  # float；低保留端 sigmoid 参考值。
+      width: 3  # float；调度中段宽度。
 
+# PoseBusters-off 测试数据定位。
 data:
   dataset:
-    root: ./data
-    assembly_path: test/assemblies/lmdb/dock_poseboff.lmdb
+    root: ./data  # str；assembly 与数据库相对路径共同根目录。
+    assembly_path: test/assemblies/lmdb/dock_poseboff.lmdb  # str；测试复合物索引 LMDB。
     dbs:
-    - name: poseboff
-      lmdb_root: poseboff/lmdb
+    - name: poseboff  # str；数据库注册名，必须与 task.db 相同。
+      lmdb_root: poseboff/lmdb  # str；相对 root 的 docking 数据目录。
       lmdb_path:
-        pocmol10: pocmol10.lmdb
+        pocmol10: pocmol10.lmdb  # str；10 Å 口袋—配体联合图记录。
 
+# docking 任务 prompt 与运动模式。
 task:
-  name: dock
-  db: poseboff
+  name: dock  # str；图级任务标签，并选择 DockSamplNoiser 对应语义。
+  db: poseboff  # str；选择上方同名数据库。
   transform:
-    name: dock
+    name: dock  # str；创建小分子 docking fixed prompt/运动注释。
     settings:
-      free: 1
-      flexible: 0
+      free: 1  # int 权重；固定选择逐原子自由坐标采样，网络可直接改变所有原子位置。
+      flexible: 0  # int 权重；禁用“扭转 + 整体刚体位姿”几何投影分支。

@@ -1,53 +1,59 @@
 
+# 示例候选预算；由 scripts/sample_use.py 读取。
 sample:
-  seed: 2024
-  batch_size: 50
-  num_mols: 100
-  save_traj_prob: 0.05
+  seed: 2024  # int；noiser、批处理和轨迹抽样的统一随机种子。
+  batch_size: 50  # int；每批复制/处理的候选图数。
+  num_mols: 100  # int；该单复合物示例最多保存的候选 pose 数。
+  save_traj_prob: 0.05  # float，[0,1]；逐候选保存完整轨迹的概率。
 
 
+# use 模式直接从结构文件构建一条 pocket—ligand 数据记录，而非 TestTaskDataset LMDB。
 data:
-  protein_path: data/examples/dock/8C7Y_TXV_protein.pdb
+  protein_path: data/examples/dock/8C7Y_TXV_protein.pdb  # str；受体蛋白 PDB，提供口袋原子坐标。
+  # str；起始小分子 SDF。也可改为下方 SMILES；两种输入都必须保持 is_pep=False。
   input_ligand: data/examples/dock/8C7Y_TXV_ligand_start_conf.sdf  # mol sdf file
   # input_ligand: CC(C)(C#N)c1cccc(C(=O)Nc2ccc(F)c(C(=O)c3c[nH]c4ncc(Cl)cc34)c2F)c1  # can also be SMILES
-  is_pep: False
+  is_pep: False  # bool；走小分子 SDF/RDKit 输入与重建路径。
+  # 口袋裁剪配置；示例采用给定中心 + 半径，而不是参考配体。
   pocket_args:
-    pocket_coord: [-8.2570, 85.1810, 19.0500]  # for extracting pocket
-    radius: 15
+    pocket_coord: [-8.2570, 85.1810, 19.0500]  # list[float] 长度 3，Å；原始蛋白坐标系中的裁剪中心。
+    radius: 15  # float，Å；保留距 pocket_coord 不超过该半径的蛋白原子。
     # You can also use a reference ligand (smaller radius since mol is larger than a point)
     # ref_ligand_path: data/examples/dock/8C7Y_TXV_ligand.sdf  # for extracting pocket
     # radius: 10
+  # 构造的联合记录元数据；写入输出索引并供路径/日志识别。
   pocmol_args:
-    data_id: dock_8C7Y_TXV
-    pdbid: 8C7Y
+    data_id: dock_8C7Y_TXV  # str；该示例复合物的唯一数据标识。
+    pdbid: 8C7Y  # str；PDB 结构标识，仅作为元数据保存。
 
 
+# 覆盖训练 featurizer 的口袋中心；生成局部坐标时减去该 [1,3] Å 向量。
 transforms:
   featurizer_pocket:
-    center: [-8.2570, 85.1810, 19.0500]  # space center for denosing
+    center: [-8.2570, 85.1810, 19.0500]  # list[float] 长度 3，Å；应与 pocket_coord 使用同一原始坐标系。
 
 
-#  The following defines docking task (Gaussian noise)
+# free docking 任务：所有配体原子坐标可独立恢复。
 
 
 task:
-  name: dock
+  name: dock  # str；图级任务标签。
   transform:
-    name: dock
+    name: dock  # str；选择小分子 docking prompt transform。
     settings:
-      free: 1
-      flexible: 0
+      free: 1  # int 权重；固定选择逐原子自由坐标模式。
+      flexible: 0  # int 权重；禁用扭转 + 刚体位姿投影。
 
 
 noise:
-  name: dock
-  num_steps: 100
-  prior: from_train
+  name: dock  # str；选择 DockSamplNoiser。
+  num_steps: 100  # int；去噪迭代步数。
+  prior: from_train  # str 特殊值；从模型训练配置定位 dock prior。
   level:
-    name: advance
-    min: 0.
-    max: 1.
+    name: advance  # str；非线性信息等级调度器。
+    min: 0.  # float；完全采用逐原子坐标 prior 的低信息端。
+    max: 1.  # float；完全保留当前 pose 的高信息端。
     step2level:
-      scale_start: 0.99999
-      scale_end: 0.00001
-      width: 3
+      scale_start: 0.99999  # float；高保留端 sigmoid 参考值。
+      scale_end: 0.00001  # float；低保留端 sigmoid 参考值。
+      width: 3  # float；调度过渡宽度。

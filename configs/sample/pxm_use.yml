@@ -1,3 +1,4 @@
-
+# 示例/use 模式的模型定位层；与具体构象/docking 任务 YAML 合并后传给采样入口。
 model:
+  # str；面向 use 脚本的 PocketXMol checkpoint；路径中的 checkpoints 目录名也是 scripts/sample_use*.py 定位相邻 train_config 的约定，不应只替换文件名而破坏层级。
   checkpoint: data/trained_models/pxm_use/checkpoints/pocketxmol.ckpt

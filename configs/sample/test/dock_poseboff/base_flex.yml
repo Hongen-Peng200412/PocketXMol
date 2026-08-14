@@ -1,45 +1,52 @@
 
+# 候选预算与落盘策略；消费者为 scripts/sample_drug3d.py。
 sample:
-  seed: 10831
-  batch_size: 400
-  num_repeats: 50
-  save_traj_prob: 0.001
+  seed: 10831  # int；noiser、加载与轨迹抽样的统一随机种子。
+  batch_size: 400  # int；每批复合物图数，可由 CLI --batch_size 覆盖。
+  num_repeats: 50  # int；每个 data_id 默认生成 50 个候选 pose。
+  save_traj_prob: 0.001  # float，[0,1]；逐候选保存全轨迹的概率。
+  # list[str]；额外保存到候选 .pt 的三个置信度输出叶。
   save_output: ['confidence_pos', 'confidence_node', 'confidence_halfedge',] # 'pred_node', 'pred_halfedge']
 
+# flexible docking 的去噪循环仍使用 DockSamplNoiser，差异由 task.settings 与起始位姿覆盖决定。
 noise:
-  name: dock
-  num_steps: 100
-  prior: from_train
+  name: dock  # str；选择 DockSamplNoiser。
+  num_steps: 100  # int；重新加噪—去噪—几何投影步数。
+  prior: from_train  # str 特殊值；复用训练配置 name=dock 的 pos/trans/rot/tor prior。
   level:
-    name: advance
-    min: 0.
-    max: 1.
+    name: advance  # str；选择 AdvanceScaler 非线性调度。
+    min: 0.  # float；完全采用相应运动 prior 的低信息端。
+    max: 1.  # float；完全保留当前 pose 的高信息端。
     step2level:
-      scale_start: 0.99999
-      scale_end: 0.00001
-      width: 3
+      scale_start: 0.99999  # float；高保留端 sigmoid 参考值。
+      scale_end: 0.00001  # float；低保留端 sigmoid 参考值。
+      width: 3  # float；调度过渡宽度。
 
+# 数据源与起始构象覆盖链。
 data:
   dataset:
-    root: ./data
-    assembly_path: test/assemblies/lmdb/dock_poseboff.lmdb
+    root: ./data  # str；所有相对数据路径的共同根目录。
+    assembly_path: test/assemblies/lmdb/dock_poseboff.lmdb  # str；测试复合物索引 LMDB。
     dbs:
-    - name: poseboff
-      lmdb_root: poseboff/lmdb
+    - name: poseboff  # str；数据库注册名，与 task.db 对齐。
+      lmdb_root: poseboff/lmdb  # str；口袋—分子 LMDB 目录。
       lmdb_path:
-        pocmol10: pocmol10.lmdb
+        pocmol10: pocmol10.lmdb  # str；10 Å 口袋联合图记录。
+  # 额外 transform 按列表顺序追加在 task transform 之后。
   transforms:
-    - name: overwrite_start_pos
-      start_mol_path: data/poseboff/files/mols
-      appendix: _mol_start.sdf
+    - name: overwrite_start_pos  # str；按 data_id 从外部 SDF 覆盖 docking 起始坐标。
+      start_mol_path: data/poseboff/files/mols  # str；起始配体 SDF 目录。
+      appendix: _mol_start.sdf  # str；拼在 data_id 后的起始文件名后缀。
+      # str；unknown 表示减去外部起始配体自身质心，known 表示减去当前样本 pocket_center；二者决定覆盖坐标进入的局部系。
       center_policy: unknown
 
 
+# flexible 模式只允许内部扭转与整体刚体 pose，而非逐原子任意移动。
 task:
-  name: dock
-  db: poseboff
+  name: dock  # str；图级 docking 标签。
+  db: poseboff  # str；选择上方同名数据库。
   transform:
-    name: dock
+    name: dock  # str；创建 docking prompt、旋转键和刚体域注释。
     settings:
-      free: 0
-      flexible: 1
+      free: 0  # int 权重；禁用逐原子自由坐标更新。
+      flexible: 1  # int 权重；固定选择 trans+rot+tor，并在 outputs2batch 中执行几何投影。

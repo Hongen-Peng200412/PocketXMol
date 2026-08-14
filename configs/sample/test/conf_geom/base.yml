@@ -1,40 +1,50 @@
 
+# 采样预算；scripts/sample_drug3d.py 直接读取本层叶字段。
 sample:
-  seed: 2024
-  batch_size: 4000
-  num_repeats: 2
-  save_traj_prob: 0.0
+  seed: 2024  # int；统一随机种子，控制 noiser 与 DataLoader 等随机源。
+  batch_size: 4000  # int；每次送入统一去噪网络的分子图数，可被 CLI --batch_size 覆盖。
+  num_repeats: 2  # int；完整遍历测试集次数；协议要求每个二维图生成数为参考构象数的 2 倍。
+  save_traj_prob: 0.0  # float，[0,1]；逐候选保存完整 100 步轨迹的概率，0 表示不落盘。
 
+# 构象采样 noiser；utils.sample_noise.get_sample_noiser 按 name 实例化。
 noise:
-  name: conf
-  num_steps: 100
-  prior: from_train
+  name: conf  # str；选择 ConfSampleNoiser，不传入口袋几何运动投影。
+  num_steps: 100  # int；sample_loop3 的重新加噪—去噪—投影迭代次数 T。
+  prior: from_train  # str 特殊值；从 checkpoint 配套训练配置中取 name=conf 的 prior 子树。
+  # 信息等级调度；每一步生成 level，1 表示保留当前状态，0 表示完全采用 prior。
   level:
-    name: advance
-    min: 0.
-    max: 1.
+    name: advance  # str；选择 AdvanceScaler，把离散 step 非线性映射为信息等级。
+    min: 0.  # float；调度输出下界；最终低信息端允许完全从 prior 起步。
+    max: 1.  # float；调度输出上界；高信息端允许完全保留当前状态。
+    # utils.info_level.AdvanceScaler 的 sigmoid 形状参数；三个叶均为 float。
     step2level:
-      scale_start: 0.99999
-      scale_end: 0.00001
-      width: 3
+      scale_start: 0.99999  # float；归一化 step 的高保留端参考值，需严格位于 (0,1)。
+      scale_end: 0.00001  # float；低保留端参考值，决定 sigmoid 截断范围。
+      width: 3  # float；sigmoid 中段宽度；更大值使信息等级转换更平缓。
 
+# TestTaskDataset 数据源；字段由 utils.dataset.TestTaskDataset/LMDBDatabase 消费。
 data:
   dataset:
-    root: ./data
+    root: ./data  # str；所有 assembly 与 LMDB 相对路径的共同根目录。
     # assembly_path: test/assemblies/lmdb/conf_geom.lmdb
-    assembly_path: test/assemblies/conf_geom.csv
+    assembly_path: test/assemblies/conf_geom.csv  # str；测试图索引 CSV，行决定读取与采样顺序。
+    # 数据库列表按 name 建立映射；task.db=geom 必须命中本列表。
     dbs:
-    - name: geom
-      lmdb_root: geom/lmdb
+    - name: geom  # str；数据库注册名，与下方 task.db 严格一致。
+      lmdb_root: geom/lmdb  # str；相对 root 的 GEOM LMDB 目录。
+      # 逻辑数据表到 LMDB 文件名的映射；Dataset 按样本 key 分别读取。
       lmdb_path:
-        mols: mols.lmdb
-        torsion: torsion.lmdb
-        decom: decom.lmdb
+        mols: mols.lmdb  # str；二维图、元素和参考三维坐标记录。
+        torsion: torsion.lmdb  # str；旋转键、随动原子和二面角注释记录。
+        decom: decom.lmdb  # str；刚体域/分解注释记录，供结构化噪声兼容路径使用。
 
+# 单任务测试选择；TestTaskDataset 把 name/db 写为图级字段。
 task:
-  name: conf
-  db: geom
+  name: conf  # str；图级 task 标签，也选择构象采样语义。
+  db: geom  # str；在 data.dataset.dbs 中选择 GEOM 数据库。
+  # utils.transforms.get_transforms 按 name 创建任务 prompt。
   transform:
-    name: conf
+    name: conf  # str；选择构象任务 transform，并使 sample_loop3 不进入 AR 分支。
+    # 运动模式按插入顺序检查；本配置只有 free 一个叶。
     settings:
-      free: 1.
+      free: 1.  # float 权重；固定选择逐原子自由坐标恢复，原子/半边类别保持为条件变量。
