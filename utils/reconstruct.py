@@ -37,7 +37,7 @@ from scipy.spatial.distance import pdist, squareform
 from process.process_torsional_info import get_mol_from_data
 from utils.misc import TimeoutException, time_limit
 
-# Module-level constants
+# ``ptable``：Module-level constants
 ptable = Chem.GetPeriodicTable()
 
 def reconstruct_pdb_from_generated_fold(mol_info, check_atom=True, gt_path=''):
@@ -291,7 +291,7 @@ def connect_the_dots(mol, atoms, maxbond=4):
     #         if a1.GetExplicitValence() > atom_maxb[a1.GetIdx()] or \
     #             a2.GetExplicitValence() > atom_maxb[a2.GetIdx()]:
     #             #don't fragment the molecule
-    #             if not reachable(a1,a2):
+    #             if not reachable(a1, a2):
     #                 continue
     #             mol.DeleteBond(bond)
     #             if a.GetExplicitValence() <= atom_maxb[a.GetIdx()]:
@@ -301,7 +301,7 @@ def connect_the_dots(mol, atoms, maxbond=4):
     binfo = get_bond_info(ob.OBMolBondIter(mol))
     #now eliminate geometrically poor bonds
     for stretch,bdist,bond in binfo:
-        #can we remove this bond without disconnecting the molecule?
+        # ``a1``：can we remove this bond without disconnecting the molecule?
         a1 = bond.GetBeginAtom()
         a2 = bond.GetEndAtom()
 
@@ -326,46 +326,110 @@ def add_context(data):
 
 periodic_table = Chem.GetPeriodicTable()
 def create_sdf_string(mol_info):
+    """把解码后的原子、坐标和键叶字段直接序列化为 V2000 mol block 字符串。
+
+    输入参数:
+        - mol_info: Mapping，解码后的单分子字段映射。
+        - mol_info.atom_pos: ndarray，形状为 (N, 3)，N 个生成原子的坐标，单位 Å，顺序与 ``element`` 对齐。
+        - mol_info.element: ndarray，形状为 (N,)，N 个生成原子的原子序数。
+        - mol_info.bond_index: ndarray，形状为 (2, E)，0-based 原子索引；允许同时含 ``i->j`` 与 ``j->i``。
+        - mol_info.bond_type: ndarray，形状为 (E,)，与 ``bond_index`` 列对齐的 V2000 键型整数。
+        - mol_info.atom_pos_masked: ndarray|None，可选，形状为 (M, 3)，用于轨迹占位的额外坐标；每个占位原子写成 He 且不添加键。
+
+    返回值:
+        - sdf_string: str，一个不含 ``$$$$`` 记录分隔符的 V2000 mol block；坐标保留四位小数，键端点转换为 1-based 索引。
+
+    注意:
+        - 该函数不执行 RDKit sanitize；采样重建失败和轨迹导出仍可用它保留模型的原始离散预测。
+    """
+    # ``xyz``：ndarray，形状为 (N, 3)，待写入 atom block 的生成坐标，单位 Å。
     xyz = mol_info['atom_pos']
+    # ``atomic_nums``：ndarray，形状为 (N,)，逐生成原子的原子序数。
     atomic_nums = mol_info['element']
+    # ``elements``：list[str]，长度为 N，把每个原子序数映射为 V2000 使用的元素符号。
     elements = [periodic_table.GetElementSymbol(int(z)) for z in atomic_nums]
-    bond_index = mol_info['bond_index']  # might be symmetric
+    # ``bond_index``：ndarray，形状为 (2, E)，可能含双向重复的 0-based 生成原子索引。
+    bond_index = mol_info['bond_index']
+    # ``bond_type``：ndarray，形状为 (E,)，与 ``bond_index`` 每列对齐的键型整数。
     bond_type = mol_info['bond_type']
+    # ``n_atoms``：int，当前 atom block 的原子行数，初始为生成原子数 N。
     n_atoms = len(atomic_nums)
     
     if 'atom_pos_masked' in mol_info:
+        # ``pos_masked``：ndarray，形状为 (M, 3)，仅为可视化保留的被遮蔽原子位置，单位 Å。
         pos_masked = mol_info['atom_pos_masked']
+        # ``xyz``：[N, 3] -> [N + M, 3]，在生成原子后追加遮蔽占位坐标。
         xyz = np.concatenate([xyz, pos_masked], axis=0)
+        # ``elements``：list[str]，长度从 N 扩为 N+M，追加 M 个 He 占位符。
         elements = elements + ['He']*len(pos_masked)
+        # ``n_atoms``：int，从 N 更新为 N+M，与扩展后的 atom block 对齐。
         n_atoms = n_atoms + len(pos_masked)
     
+    # ``non_symmetric``：ndarray，dtype 为 bool，形状为 (E,)，只保留端点满足 ``i<j`` 的一个方向以去除双向重复键。
     non_symmetric = bond_index[0] < bond_index[1]
+    # ``bond_index``：[2, E] -> [2, U]，U 条去重无向键的 0-based 端点索引。
     bond_index = bond_index[:, non_symmetric]
+    # ``bond_type``：[E] -> [U]，按相同掩码保留的无向键类型。
     bond_type = bond_type[non_symmetric]
+    # ``n_bonds``：int，V2000 bond block 中的去重无向键行数 U。
     n_bonds = len(bond_type)
     
+    # ``header``：str，V2000 mol block 的三行头部；第二行记录生成函数名。
     header = '\n Created by Python create_sdf_string function\n\n'
+    # ``counts_line``：str，固定 V2000 格式的原子数、键数与其余零值计数字段。
     counts_line = f'{n_atoms:3}{n_bonds:3}  0  0  0  0  0  0  0  0999 V2000\n'
+    # ``atoms_block``：str，逐原子累积的 V2000 atom block，初始为空。
     atoms_block = ""
+    # ``i``：int，当前 atom block 的 0-based 行号，同时索引 ``elements``。
+    # ``x``：float，当前原子 X 坐标，单位 Å。
+    # ``y``：float，当前原子 Y 坐标，单位 Å。
+    # ``z``：float，当前原子 Z 坐标，单位 Å。
     for i, (x, y, z) in enumerate(xyz):
         atoms_block += f'{x:10.4f}{y:10.4f}{z:10.4f} {elements[i]:2}  ' + '  '.join(['0']*12) + '\n'
+    # ``bonds_block``：str，逐键累积的 V2000 bond block，初始为空。
     bonds_block = ""
+    # ``i``：int，当前键第一个端点的 0-based 原子索引；写出时加 1 转为 V2000 编号。
+    # ``j``：int，当前键第二个端点的 0-based 原子索引；写出时加 1 转为 V2000 编号。
+    # ``b``：int，当前键的 V2000 键型整数。
     for (i, j), b in zip(bond_index.T, bond_type):
         bonds_block += f'{i+1:3d}{j+1:3d}  {b}  0\n'
+    # ``sdf_string``：str，拼接头部、计数、原子、键与 ``M  END`` 终止行后的完整 mol block。
     sdf_string = header + counts_line + atoms_block + bonds_block + 'M  END\n'
     return sdf_string
 
 
 def reconstruct_pos(mol_info, in_mol=None):
+    """在固定二维拓扑的 RDKit 分子副本上仅覆盖生成坐标。
+
+    输入参数:
+        - mol_info: Mapping，解码后的单分子字段映射。
+        - mol_info.atom_pos: ndarray，形状为 (N, 3)，生成坐标，单位 Å；``FeaturizeMol.decode_output`` 已加回 ``pocket_center``，可直接写入 SDF 原始坐标系。
+        - mol_info.db: str，可选定位叶；``in_mol is None`` 时供 ``get_mol_from_data`` 选择数据目录。
+        - mol_info.data_id: str，可选定位叶；``in_mol is None`` 时供 ``get_mol_from_data`` 选择文件名或事务记录。
+        - in_mol: RDKit Mol|None；提供时直接深拷贝，原对象及其 conformer 不被修改；为空时依据定位叶从 ``data`` 根目录加载。
+
+    返回值:
+        - mol: RDKit Mol，原子顺序、键、形式电荷和立体化学沿用输入二维图，第 0 个 conformer 的 N 个坐标被逐原子替换。
+
+    异常:
+        - AssertionError: 原分子原子数与 ``atom_pos`` 第一维不相等。
+    """
+
     # data_id = mol_info['data_id']
     # db = mol_info['db']
     if in_mol is None:
+        # ``mol``：RDKit Mol，由数据定位字段恢复，含固定拓扑和至少一个 conformer。
         mol = get_mol_from_data(mol_info, root_dir='data')
     else:
+        # ``mol``：调用方输入分子的独立副本，后续坐标写入不会污染原对象。
         mol = deepcopy(in_mol)
+    # ``pos``：list[list[float]]，形状为 (N, 3)，单位 Å，与 RDKit 原子索引顺序对齐。
     pos = mol_info['atom_pos'].tolist()
     assert mol.GetNumAtoms() == len(pos), 'num atoms do not match gen pos'
+    # ``conf``：RDKit Conformer 0；原地持有当前 mol 的三维坐标。
     conf = mol.GetConformer(0)
+    # ``i``：int，当前 0-based RDKit 原子索引。
+    # ``xyz``：list[float]，长度为 3，当前原子的生成坐标，单位 Å。
     for i, xyz in enumerate(pos):
         conf.SetAtomPosition(i, Geometry.Point3D(*xyz))
     
@@ -373,7 +437,29 @@ def reconstruct_pos(mol_info, in_mol=None):
 
 
 def reconstruct_from_generated_with_edges(mol_info, check_validity=True, add_edge=None, in_mol=None, is_pep=False):
-    # for conf or dock
+    """把解码字段恢复为 RDKit 分子，优先复用构象/docking 的固定二维图。
+
+    输入参数:
+        - mol_info: Mapping，解码后的单分子字段映射。
+        - mol_info.task: str；``conf`` 或 ``dock`` 首先走只替换坐标的固定拓扑短路分支。
+        - mol_info.atom_pos: ndarray，形状为 (N, 3)，已回到原始输出坐标系的生成坐标，单位 Å。
+        - mol_info.element: ndarray，形状为 (N,)，通用预测拓扑分支使用的原子序数。
+        - mol_info.bond_index: ndarray|None，形状为 (2, E)，通用分支的 0-based 预测键端点；可含双向边，只有 ``i<j`` 一侧写入 RDKit。
+        - mol_info.bond_type: ndarray|None，形状为 (E,)，与 ``bond_index`` 列对齐；1、2、3、4 分别表示单、双、三、芳香键。
+        - mol_info.db: str，可选定位叶；固定拓扑且 ``in_mol is None`` 时用于恢复原始 RDKit 分子。
+        - mol_info.data_id: str，可选定位叶；固定拓扑且 ``in_mol is None`` 时用于恢复原始 RDKit 分子。
+        - check_validity: bool，通用预测拓扑分支是否运行 RDKit sanitize 与修复流程。
+        - add_edge: str|None，缺少预测键时的补键后端；当前只有 ``openbabel`` 分支被实现。
+        - in_mol: RDKit Mol|None，构象/docking 推理入口传入的固定拓扑分子。
+        - is_pep: bool，只影响通用分支是否跳过小分子价态/芳香性修复；本轮小分子路径为假。
+
+    返回值:
+        - mol: RDKit Mol；本轮两任务的正常路径等价于 ``reconstruct_pos``，二维图完全来自输入分子，模型只决定三维坐标。
+
+    注意:
+        - ``conf/dock`` 固定拓扑短路被宽泛 ``except Exception`` 包围；加载或原子数校验失败时会打印错误并退回通用预测拓扑重建，这里只记录既有行为。
+    """
+
     if mol_info['task'] in ['conf', 'dock']:
         try:
             return reconstruct_pos(mol_info, in_mol)
@@ -381,7 +467,9 @@ def reconstruct_from_generated_with_edges(mol_info, check_validity=True, add_edg
             print('Failed to use reconstruct_pos:', e)
             pass
     
+    # ``xyz``：list[list[float]]，形状为 (N, 3)，通用建图分支的原子坐标，单位 Å。
     xyz = mol_info['atom_pos'].tolist()
+    # ``atomic_nums``：list[int] 长度 N，逐原子的元素原子序数。
     atomic_nums = mol_info['element'].tolist()
     if 'bond_index' not in mol_info:
         if add_edge == 'openbabel':
@@ -394,23 +482,34 @@ def reconstruct_from_generated_with_edges(mol_info, check_validity=True, add_edg
         else:
             raise ValueError('add_edge must be openbabel or edm')
     else:
+        # ``bond_index``：list[list[int]]，形状为 (2, E)，可能同时含两个方向。
         bond_index = mol_info['bond_index'].tolist()
+        # ``bond_type``：list[int] 长度 E，与 bond_index 的列顺序对齐。
         bond_type = mol_info['bond_type'].tolist()
+    # ``n_atoms``：int N，用于初始化 RDKit conformer 的固定原子容量。
     n_atoms = len(atomic_nums)
 
+    # ``rd_mol``：可编辑 RWMol，逐原子/逐键构建预测拓扑。
     rd_mol = Chem.RWMol()
+    # ``rd_conf``：包含 N 个位置槽的 RDKit Conformer。
     rd_conf = Chem.Conformer(n_atoms)
     
-    # add atoms and coordinates
+    # ``i``：int，当前新建原子的 0-based RDKit 索引，同时索引 ``xyz`` 第一维。
+    # ``atom``：int，当前新建原子的原子序数。
     for i, atom in enumerate(atomic_nums):
+        # ``rd_atom``：以原子序数构造的 RDKit Atom；未在此恢复额外原子属性。
         rd_atom = Chem.Atom(atom)
         rd_mol.AddAtom(rd_atom)
+        # ``rd_coords``：第 i 个原子的 Geometry.Point3D，单位 Å。
         rd_coords = Geometry.Point3D(*xyz[i])
         rd_conf.SetAtomPosition(i, rd_coords)
     rd_mol.AddConformer(rd_conf)
     
-    # add bonds
+    # ``i``：int，当前预测键在 ``bond_type`` 和 ``bond_index`` 中的对齐索引。
+    # ``type_this``：int，当前预测键类别；1/2/3/4 对应单/双/三/芳香键。
     for i, type_this in enumerate(bond_type):
+        # ``node_i``：int，当前预测键第一个端点的 0-based RDKit 原子索引。
+        # ``node_j``：int，当前预测键第二个端点的 0-based RDKit 原子索引。
         node_i, node_j = bond_index[0][i], bond_index[1][i]
         if node_i < node_j:
             if type_this == 1:
@@ -425,23 +524,29 @@ def reconstruct_from_generated_with_edges(mol_info, check_validity=True, add_edg
                 raise Exception('unknown bond order {}'.format(type_this))
     
     
+    # ``mol``：从 RWMol 固化出的 RDKit Mol，尚未保证 sanitize 成功。
     mol = rd_mol.GetMol()
     if check_validity:
         try:
             Chem.SanitizeMol(deepcopy(mol))
+            # ``fixed``：bool；深拷贝 sanitize 成功表示当前预测拓扑已可接受。
             fixed = True
             Chem.SanitizeMol(mol)
         except Exception as e:
+            # ``fixed``：``fixed=False`` 触发后续 kekulize、价态和芳香性修复。
             fixed = False
         # TODO: ok but not good solution. https://github.com/rdkit/rdkit/wiki/FrequentlyAskedQuestions
         if not fixed:
             try:
                 Chem.Kekulize(deepcopy(mol))
             except Chem.rdchem.KekulizeException as e:
+                # ``err``：RDKit KekulizeException，仅检查消息是否为未 kekulize 原子。
                 err = e
                 if 'Unkekulized' in err.args[0]:
                     try:
                         with time_limit(300):
+                            # ``mol``：RDKit Mol，宽松芳香性修复后的分子对象。
+                            # ``fixed``：bool，宽松芳香性修复是否成功。
                             mol, fixed = fix_aromatic(mol)
                     except TimeoutException as e:
                         print('Timeout for reconstructing mol')
@@ -452,6 +557,8 @@ def reconstruct_from_generated_with_edges(mol_info, check_validity=True, add_edg
             if not fixed:
                 try:
                     with time_limit(300):
+                        # ``mol``：RDKit Mol，小分子价态修复后的分子对象。
+                        # ``fixed``：bool，小分子价态修复是否成功。
                         mol, fixed = fix_valence(mol)
                 except TimeoutException as e:
                     print('Timeout for reconstructing mol')
@@ -461,6 +568,8 @@ def reconstruct_from_generated_with_edges(mol_info, check_validity=True, add_edg
             if not fixed:
                 try:
                     with time_limit(300):
+                        # ``mol``：RDKit Mol，严格芳香性修复后的分子对象。
+                        # ``fixed``：bool，严格芳香性修复是否成功。
                         mol, fixed = fix_aromatic(mol, True)
                 except TimeoutException as e:
                     print('Timeout for reconstructing mol')

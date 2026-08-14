@@ -1,3 +1,5 @@
-
+# 模型定位层；scripts/sample_drug3d.py 与 sample_use*.py 将本文件和任务 YAML 合并。
 model:
+  # str；PocketXMol checkpoint。采样脚本还会把同级 checkpoints 替换为 train_config，
+  # 读取配套训练 YAML，以恢复模型结构、词表、featurizer 与 from_train prior。
   checkpoint: data/trained_models/pxm/checkpoints/pocketxmol.ckpt

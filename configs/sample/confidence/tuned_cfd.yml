@@ -1,50 +1,58 @@
 
+# 重评分批处理；scripts/believe.py 复用原生成 repeat 数，仅在此读取 seed/batch_size。
 sample:
-  seed: 2024
-  batch_size: 50
+  seed: 2024  # int；单步评分前向的统一随机种子；当前固定 level=1 时 prior 不采有效扰动。
+  batch_size: 50  # int；每批既有 docking pose 数，可由 CLI --batch_size 覆盖。
+# 独立 tuned ranker；若删除 model 层，believe.py 会回退原生成 checkpoint。
 model:
-  checkpoint: data/trained_models/tuned_ranker/checkpoints/tuned_ranker.ckpt
+  checkpoint: data/trained_models/tuned_ranker/checkpoints/tuned_ranker.ckpt  # str；独立置信度模型权重。
 
 
-# the following should not be changed for getting confidence
+# 以下 noiser/task 定义“把既有 pose 原样送入一次去噪器前向”的 tuned confidence 协议。
 
+# 一步 docking noiser；这里显式展开 prior，不从训练配置继承。
 noise:
-  name: dock
-  num_steps: 1
-  init_step: 0.01
+  name: dock  # str；选择 DockSamplNoiser。
+  num_steps: 1  # int；只执行一次模型前向与 M-Projector。
+  init_step: 0.01  # float；steps_loop 产生的唯一 step；但 min=max=1 会把最终 level 固定为 1。
+  # 坐标 prior；utils.prior.MolPrior 读取 pos 子树，free 模式只实际使用 pos.pos。
   prior:
-    pos: 
-      name: allpos
+    pos:
+      name: allpos  # str；AllPosPrior，根据 level_dict 键选择 free 或结构化运动组合。
+      # free 逐原子坐标 prior；单位字段均为 Å。
       pos:
-        name: gaussian_simple
-        sigma_func: 'sqrt'
-        sigma_max: 1.0
+        name: gaussian_simple  # str；GaussianPrior 各向同性逐原子高斯扰动。
+        sigma_func: 'sqrt'  # str；prior 标准差按 max(sigma_max*sqrt(mol_size),1) Å 缩放。
+        sigma_max: 1.0  # float，Å；与 sqrt(mol_size) 相乘的 prior 标准差基准。
+      # 以下三层为同一 prior 的结构化 docking 兼容叶；本文件 free=1 时不会被选中。
       translation:
-        name: translation
-        ve: False
-        mean: 0
-        std: 1
+        name: translation  # str；逐域整体平移 prior。
+        ve: False  # bool；False 使用 VP 混合，而非直接叠加 VE 噪声。
+        mean: 0  # float，Å；level=0 时三个平移分量的高斯均值。
+        std: 1  # float，Å；level=0 时三个平移分量的高斯标准差。
       rotation:
-        name: rotation
-        sigma_max: 0.0002
+        name: rotation  # str；逐刚体域轴角旋转 prior。
+        sigma_max: 0.0002  # float，以 π 为倍率；最大角尺度为 0.0002π rad。
       torsional:
-        name: torsional
-        sigma_max: 0.2
-        decouple: False
+        name: torsional  # str；逐可旋转键扭转 prior。
+        sigma_max: 0.2  # float，以 π 为倍率；最大扭转尺度为 0.2π rad。
+        decouple: False  # bool；扭转后不额外 Kabsch 对齐回输入域位姿。
+  # 单步信息等级固定为 1；step2level 仍由 AdvanceScaler 构造但不形成调度区间。
   level:
-    name: advance
-    min: 1.
-    max: 1.
+    name: advance  # str；选择 AdvanceScaler。
+    min: 1.  # float；固定下界为完全保留当前 pose。
+    max: 1.  # float；与 min 相同，使信息等级不随 step 变化。
     step2level:
-      scale_start: 0.99999
-      scale_end: 0.00001
-      width: 3
+      scale_start: 0.99999  # float；AdvanceScaler 的高端参考值。
+      scale_end: 0.00001  # float；AdvanceScaler 的低端参考值。
+      width: 3  # float；sigmoid 过渡宽度；min=max 时只影响内部归一化中间量。
 
 
+# belief 数据 transform 仍按 docking 任务构造 prompt；OverwritePos 随后写入已生成 pose。
 task:
-  name: dock
+  name: dock  # str；图级任务标签；db 由 believe.py 从原采样配置覆盖。
   transform:
-    name: dock
+    name: dock  # str；选择 docking transform。
     settings:
-      free: 1
-      flexible: 0
+      free: 1  # int 权重；选择逐原子自由输出投影；固定 level=1 时输入坐标本身不加噪。
+      flexible: 0  # int 权重；禁用扭转/刚体几何投影。
