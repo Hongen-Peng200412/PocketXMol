@@ -1,3 +1,12 @@
+"""
+提供 PocketXMol 多种图网络复用的基础张量工具、读出层、MLP 与距离基函数。
+
+构象生成和小分子 docking 的默认 ``PMAsymDenoiser`` 路径直接使用 :class:`MLP` 与
+:class:`GaussianSmearing`：前者生成节点/边更新和输出头，后者把以 Å 为单位的标量距离展开为
+固定宽度的径向基特征。本模块不落盘；返回的核心数据是保持任意前导维度的连续特征张量。
+
+"""
+
 import math
 import torch
 import torch.nn as nn
@@ -179,10 +188,34 @@ NONLINEARITIES = {
 
 
 class MLP(nn.Module):
-    """MLP with the same hidden dim across all layers."""
+    """
+    在任意前导维度上逐元素应用共享的全连接多层感知机。
+
+    形状符号:
+        - ``...``: 任意数量的前导实体维，例如原子数 N、边数 E 或二者之前的批次维。
+        - D_in: 输入特征宽度 ``in_dim``。
+        - D_hidden: 中间特征宽度 ``hidden_dim``。
+        - D_out: 输出特征宽度 ``out_dim``。
+
+    构造参数:
+        - in_dim: int, 第一层输入特征宽度 D_in。
+        - out_dim: int, 最后一层输出特征宽度 D_out；当前实现要求 ``num_layer >= 2`` 才会实际建立该输出层。
+        - hidden_dim: int, 所有中间线性层的共同宽度 D_hidden。
+        - num_layer: int, 线性层数量；默认 2，即 ``D_in -> D_hidden -> D_out``。
+        - norm: bool, True 时在每个非末端线性层后加入 ``LayerNorm(D_hidden)``；``act_last=True`` 时末层仍错误地按 D_hidden 构造归一化，故该组合还要求 D_out=D_hidden。
+        - act_fn: str, ``NONLINEARITIES`` 的键；当前可选 ``tanh``、``relu``、``softplus``、``elu``、``silu``。
+        - act_last: bool, True 时末端线性层后也追加归一化和激活；若同时 ``norm=True`` 且 D_out!=D_hidden，现实现会在前向产生末维不匹配。
+
+    前向输入:
+        - x: (..., D_in), 最后一维为输入特征，其余维度作为独立实体维保留。
+
+    前向输出:
+        - y: (..., D_out), 最后一维被 MLP 替换为输出宽度，所有前导维度及实体顺序保持不变。
+    """
 
     def __init__(self, in_dim, out_dim, hidden_dim, num_layer=2, norm=True, act_fn='relu', act_last=False):
         super().__init__()
+        # list[nn.Module]，按执行顺序交替保存 Linear、可选 LayerNorm 与激活层。
         layers = []
         for layer_idx in range(num_layer):
             if layer_idx == 0:
@@ -195,9 +228,11 @@ class MLP(nn.Module):
                 if norm:
                     layers.append(nn.LayerNorm(hidden_dim))
                 layers.append(NONLINEARITIES[act_fn])
+        # nn.Sequential，按 layers 的精确插入顺序执行线性、归一化和激活模块。
         self.net = nn.Sequential(*layers)
 
     def forward(self, x):
+        """保持所有前导实体维，只把 ``x(..., D_in)`` 的末维映射为 ``(..., D_out)``。"""
         return self.net(x)
 
 
@@ -214,26 +249,64 @@ class EdgeExpansion(nn.Module):
 
 
 class GaussianSmearing(nn.Module):
+    """
+    把标量距离展开为一组中心和宽度可不均匀的高斯径向基响应。
+
+    形状符号:
+        - ``...``: 任意距离实体维，例如 E 条分子内边或 C 条分子—口袋边。
+        - R: 高斯基数量 ``num_gaussians``。
+
+    构造参数:
+        - start: float, 有效距离下界；前向时小于该值的输入被截断到该值，单位继承输入距离。
+        - stop: float, 有效距离上界；前向时大于该值的输入被截断到该值，单位继承输入距离。
+        - num_gaussians: int, 基函数数量 R，也是输出最后一维宽度。
+        - type_: str, ``linear`` 在 ``[start, stop]`` 等距放置中心，``exp`` 在 ``log(distance+1)`` 空间等距后映回原距离。
+
+    缓冲区:
+        - offset: (R,), 每个高斯基中心；随模块迁移设备和保存 state_dict，不参与梯度更新。
+        - coeff: (R,), 每个中心对应的负半逆方差 ``-0.5 / width^2``；首中心复用第一段中心间距。
+
+    前向输入:
+        - dist: (...,), 标量距离；默认 GNN 调用中单位为 Å。
+
+    前向输出:
+        - basis: (Q, R), Q 是输入 ``dist`` 全部维度元素数；第 r 个通道为 ``exp(coeff[r] * (clamp(dist)-offset[r])^2)``，现实现会展平前导维而不恢复原形状。
+
+    数值边界:
+        - 截断发生在展开前，因此超出区间的全部距离分别共享首端或末端的基响应。
+    """
     def __init__(self, start=0.0, stop=10.0, num_gaussians=50, type_='exp'):
         super().__init__()
+        # float，有效距离下界；默认 GNN 坐标中单位为 Å。
         self.start = start
+        # float，有效距离上界；默认 GNN 坐标中单位为 Å。
         self.stop = stop
         if type_ == 'exp':
+            # (R,), 在 log(distance+1) 空间等距、映回原距离后的非均匀中心。
             offset = torch.exp(torch.linspace(start=np.log(start+1), end=np.log(stop+1), steps=num_gaussians)) - 1
         elif type_ == 'linear':
+            # (R,), 在闭区间 [start, stop] 上等距排列的中心。
             offset = torch.linspace(start=start, end=stop, steps=num_gaussians)
         else:
             raise NotImplementedError('type_ must be either exp or linear')
+        # (R-1,), 相邻中心间距；exp 模式下随距离增大而变宽。
         diff = torch.diff(offset)
+        # [R-1] -> [R]；首中心复用第一段间距，使每个中心都有一个尺度。
         diff = torch.cat([diff[:1], diff])
+        # (R,), 高斯指数的负系数，对应每个基函数自身的中心间距尺度。
         coeff = -0.5 / (diff**2)
         self.register_buffer('coeff', coeff)
         self.register_buffer('offset', offset)
 
     def forward(self, dist):
+        """将 ``dist(...)`` 截断到配置区间，展平为 Q 个标量后返回 ``(Q, R)`` 高斯基响应。"""
+        # 与输入同形，先把所有低于下界的距离截到 start。
         dist = dist.clamp_min(self.start)
+        # 与输入同形，再把所有高于上界的距离截到 stop。
         dist = dist.clamp_max(self.stop)
+        # [...] -> [Q, 1] -> [Q, R]；展平全部前导实体维后与 R 个中心广播相减。
         dist = dist.view(-1, 1) - self.offset.view(1, -1)
+        # (Q, R)，每个距离对每个中心的径向基响应；当前实现返回展平后的 Q 维而不恢复原多维前导形状。
         return torch.exp(self.coeff * torch.pow(dist, 2))
 
 class GaussianSmearingVN(nn.Module):
@@ -521,6 +594,4 @@ if __name__ == '__main__':
 
     assert torch.allclose(pos_ctx[torch.logical_not(mask_protein)], pos_ligand)
     assert torch.allclose(pos_ctx[mask_protein], pos_protein)
-    
-
     
