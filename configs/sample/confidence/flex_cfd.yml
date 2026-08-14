@@ -1,51 +1,54 @@
-
+# flexible docking 候选重评分配置；scripts/believe.py::main 读取并与原生成目录中的采样配置配合使用。
+# scripts/believe.py::main 读取 seed 初始化随机源；当前不读取 batch_size，实际批大小来自原生成配置或 CLI。
 sample:
-  seed: 2024
-  batch_size: 50
+  seed: 2024  # int；scripts/believe.py::main 传给 seed_all，统一 Python、NumPy 与 PyTorch 随机源。
+  batch_size: 50  # int；当前 scripts/believe.py 未读取；实际批大小取原采样配置，CLI 非零时再覆盖。
 
+# scripts/believe.py::main 优先读取 model.checkpoint；缺少 model 组时才回退原生成配置的 checkpoint。
 model:
-  checkpoint: data/trained_models/pxm/checkpoints/pocketxmol.ckpt
+  checkpoint: data/trained_models/pxm/checkpoints/pocketxmol.ckpt  # str；模型权重及配套 train_config 定位基准。
 
 
-# the following should not be changed for getting belief
+# scripts/believe.py::main 把本组交给 utils.sample_noise.get_sample_noiser；name=dock 实例化 DockSamplNoiser。
+# 以下字段定义 flexible belief：在既有 pose 上保留结构化内部几何，只做一次评分恢复。
 
 
 noise:
-  name: dock
-  num_steps: 1
-  init_step: 0.01
+  name: dock  # str；选择 DockSamplNoiser。
+  num_steps: 1  # int；只执行一个去噪/投影步骤。
+  init_step: 0.01  # float；唯一规范 step；min=max=1 使最终信息等级仍恒为 1。
   prior:
-    pos: 
-      name: allpos
+    pos:
+      name: allpos  # str；按 flexible level 键组合 translation、rotation、torsional prior。
       pos:
-        name: gaussian_simple
-        sigma_func: 'sqrt'
-        sigma_max: 1.0
+        name: gaussian_simple  # str；free 兼容逐原子高斯 prior，本文件 flexible 路径不选。
+        sigma_func: 'sqrt'  # str；free 兼容 prior 按 max(sigma_max*sqrt(mol_size),1) Å 缩放。
+        sigma_max: 1.0  # float，Å；free 兼容 prior 的分子大小缩放基准。
       translation:
-        name: translation
-        ve: False
-        mean: 0
-        std: 1
+        name: translation  # str；逐刚体域整体平移 prior。
+        ve: False  # bool；使用 VP 混合当前域中心与高斯平移目标。
+        mean: 0  # float，Å；平移高斯各分量均值。
+        std: 1  # float，Å；平移高斯各分量标准差。
       rotation:
-        name: rotation
-        sigma_max: 0.0002
+        name: rotation  # str；逐域轴角旋转 prior。
+        sigma_max: 0.0002  # float，以 π 为倍率；最大角尺度 0.0002π rad。
       torsional:
-        name: torsional
-        sigma_max: 0.2
-        decouple: False
+        name: torsional  # str；逐可旋转键扭转 prior。
+        sigma_max: 0.2  # float，以 π 为倍率；最大扭转尺度 0.2π rad。
+        decouple: False  # bool；不在扭转后额外刚体对齐回原域。
   level:
-    name: advance
-    min: 1.
-    max: 1.
+    name: advance  # str；选择 AdvanceScaler。
+    min: 1.  # float；固定完全保留端。
+    max: 1.  # float；与 min 相等，信息等级无步间变化。
     step2level:
-      scale_start: 0.99999
-      scale_end: 0.00001
-      width: 3
+      scale_start: 0.99999  # float；高端 sigmoid 参考值。
+      scale_end: 0.00001  # float；低端 sigmoid 参考值。
+      width: 3  # float；过渡宽度。
 
-
+# scripts/believe.py::main 把 transform 子树交给 utils.transforms.get_transforms(mode='believe')，实例化 ConfTransform。
 task:
-  name: dock
+  name: dock  # str；图级 docking 标签；db 由原采样配置补入。
   transform:
-    name: dock
+    name: dock  # str；believe 模式 docking transform。
     settings:
-      flexible: 1
+      flexible: 1  # int 权重；固定选择 trans+rot+tor，并用 correct_pos 执行几何投影。
