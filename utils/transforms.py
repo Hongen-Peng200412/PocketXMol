@@ -79,7 +79,7 @@ def register_transforms(name: str):
         return cls
     return decorator
 
-
+# XXX
 def get_transforms(config, *args, **kwargs):
     """
     按 ``config.name`` 实例化一个已注册变换。
@@ -714,7 +714,7 @@ class VariableMolSize(object):  # for sampling
         return data
 
 
-
+# XXX
 class FeaturizePocket(object):
     """
     把原始口袋原子属性编码为节点特征、kNN 图和以口袋中心为原点的坐标。
@@ -884,7 +884,7 @@ class FeaturizePocket(object):
         data['pdbid'] = pdbid if (pdbid == pdbid) else ''
         return data
 
-
+# XXX
 class FeaturizeMol(object):
     """
     把原始配体元素、构象与双向化学键编码为离散节点、中心化坐标和完全图半边。
@@ -916,6 +916,13 @@ class FeaturizeMol(object):
         - halfedge_index: int64, (2, H), 完全图上三角端点，H=N(N-1)/2；每列满足 ``i<j``。
         - halfedge_type: int64, (H,), 0 表示非键，1..4 表示单/双/三/芳香键；与 ``halfedge_index`` 第二维对齐。
         - is_peptide: int64, (N,), 小分子构象与 docking 为全 0。
+
+    符号 & 含义
+        - C	当前分子通过筛选后保留的构象数
+        - N	配体原子数
+        - M	配体无向化学键数
+        - P	当前裁剪口袋中的原子数
+        - H	完全图无序原子对数，即 N(N-1)/2
 
     批处理声明:
         - follow_batch: ``['node_type', 'halfedge_type']``，使 PyG 生成逐原子与逐半边图编号。
@@ -958,13 +965,13 @@ class FeaturizeMol(object):
         # ``i``：int，当前 0-based 节点类别编号。
         # ``ele``：int，当前节点类别对应的原子序数。
         self.nodetype_to_ele = {i: ele for i, ele in enumerate(atomic_numbers)}
-        
-        
+
         # ``self.follow_batch``：list[str]；要求 PyG 额外生成 ``node_type_batch(N,)`` 与 ``halfedge_type_batch(H,)``。
         self.follow_batch = [
             'node_type',      # (N,)，逐配体原子类别；生成逐原子图编号。
             'halfedge_type',  # (H,)，逐完全图半边类别；生成逐半边图编号。
         ]
+
         # ``self.exclude_keys``：list[str]；以下单样本原始叶或辅助叶不由 PyG 默认拼接。
         self.exclude_keys = [
             'orig_keys',                 # list[str]，原始样本键名快照。
@@ -1008,26 +1015,33 @@ class FeaturizeMol(object):
             - data.element: LongTensor，形状为 (N,)，逐配体原子的原子序数。
             - data.pos_all_confs: FloatTensor，形状为 (C, N, 3)，候选 conformer 世界坐标，单位 Å。
             - data.i_conf_list: Sequence[int]，长度为 C，逐候选 conformer 的原数据编号。
+                这里C是所有读取的合法构象。在分子对接任务中只读取一个沉积构象, 在构象生成任务中C有多个, 但 [FeaturizeMol (line 1048)](/C:/Users/15919/Desktop/PocketXMol/utils/transforms.py:1042) 每次只随机选择其中一个构象，得到 (N, 3) 的 node_pos。
             - data.num_atoms: int 标量 N，配体原子数。
             - data.num_bonds: int 标量 M，无向化学键数。
             - data.bond_index: LongTensor，形状为 (2, 2M)，双向化学键端点，数值索引 ``element`` 第一维。
             - data.bond_type: LongTensor，形状为 (2M,)，与 ``bond_index`` 列对齐的键类别。
-            - data.pocket_center: FloatTensor|缺省，形状为 (1, 3)，docking 局部坐标原点的世界坐标，单位 Å。
-            - data.pocket_pos: FloatTensor|缺省，形状为 (P, 3)，已中心化口袋坐标；只在 ``mol_as_pocket_center=True`` 时再次平移。
+            - data.pocket_center: FloatTensor|缺省，形状为 (1, 3)，docking 局部坐标原点的世界坐标，单位 Å, 最开始是口袋原子的中心; 但会在 ``mol_as_pocket_center=True`` 时变成配体的中心————————真正的docking任务用口袋中心 , 配体构象生成任务用配体中心 , 
+            - data.pocket_pos: FloatTensor|缺省，形状为 (P, 3)，已中心化口袋坐标, 最开始以 data.pocket_center 为中心来中心化; 但会在 ``mol_as_pocket_center=True`` 时以配体原子中心为中心再次平移。P=当前裁剪口袋中的原子数
 
         输出字段:
             - data.num_nodes: int 标量 N，PyG 配体节点数。
             - data.node_type: LongTensor，形状为 (N,)，逐原子元素类别编号。
             - data.node_pos: FloatTensor，形状为 (N, 3)，选中 conformer 的模型局部坐标，单位 Å。
             - data.i_conf: int 标量，选中 conformer 在原数据中的编号。
-            - data.halfedge_index: LongTensor，形状为 (2, H)，完全图上三角端点，H=N(N-1)/2。
+            - data.halfedge_index: LongTensor，形状为 (2, H)，完全图上三角端点(无自环完全图中满足 i < j 的全部无序原子对端点索引, 如(0,1), (0,2), (0,3), (1,2), (1,3), (2,3))，H=N(N-1)/2。
             - data.halfedge_type: LongTensor，形状为 (H,)，0 为非键，1/2/3/4 为单/双/三/芳香键。
             - data.is_peptide: LongTensor，形状为 (N,)，小分子构象与 docking 路径为全 0。
 
         返回值:
             - data: Mol3DData，原地写入以上输出叶后的同一容器。
+
+        符号 & 含义
+            - C	当前分子通过筛选后保留的构象数
+            - N	配体原子数
+            - M	配体无向化学键数
+            - P	当前裁剪口袋中的原子数
+            - H	完全图无序原子对数，即 N(N-1)/2
         """
-        
         # ``data.num_nodes``：int，配体原子数 N；把原始 ``num_atoms`` 显式登记为 PyG 节点数。
         data.num_nodes = data.num_atoms
         
@@ -1035,7 +1049,7 @@ class FeaturizeMol(object):
         # ``ele``：标量 Tensor，当前配体原子的原子序数；逐项检查是否属于配置元素词表。
         assert np.all([ele in self.atomic_numbers for ele in data.element]), 'unknown element'
         # ``ele``：标量 Tensor，当前配体原子的原子序数；用于查询 ``ele_to_nodetype``。
-        # ``data.node_type``：LongTensor，形状为 (N,)；第 i 个值是 ``element[i]`` 在有序 ``atomic_numbers`` 中的索引。
+        # ``data.node_type``：LongTensor，形状为 (N,)；第 i 个值是 ``element[i]`` 在有序 ``atomic_numbers`` 中的索引(0-started)。
         data.node_type = torch.LongTensor([self.ele_to_nodetype[ele.item()] for ele in data.element])
         
         # atom pos: sample a conformer from data.pos_all_confs; then move to origin
@@ -1148,6 +1162,7 @@ class FeaturizeMol(object):
         # atom_prob = np.ones(len(atom_type))
         # ``isnot_masked_atom``：np.ndarray[bool]，形状为 (N,)；True 表示类别可映射为真实元素，同时遮盖 ``node`` 与 ``pos`` 第一维。
         isnot_masked_atom = (atom_type < self.num_element) & (atom_type >= 0)
+        # see me: 配体构象生成 conf、真正的 docking dock：最终结果中一般不会出现。
         if not isnot_masked_atom.all():
             # ``edge_index_changer``：np.ndarray[int64]，形状为 (N,)；原节点槽位到压缩后原子编号的映射，被删除槽位为 -1。
             edge_index_changer = - np.ones(len(isnot_masked_atom), dtype=np.int64)
@@ -1261,7 +1276,7 @@ def make_data_placeholder(n_graphs, device=None, max_size=None):
         'batch_halfedge': batch_halfedge,
     }
 
-#
+# XXX
 @register_transforms('mixed')
 class MixedTransform:
     """
@@ -1295,6 +1310,7 @@ class MixedTransform:
         # ``task``：str，当前单样本任务名；必须精确匹配 transform_dict 的一个键。
         task = data['task']
         return self.transform_dict[task](data)
+
 
 @register_transforms('sbdd')
 @register_transforms('denovo')
@@ -1358,6 +1374,7 @@ class DenovoTransform:
         return data
 
 
+# XXX
 @register_transforms('conf')
 @register_transforms('dock')
 class ConfTransform:
@@ -1449,6 +1466,8 @@ class ConfTransform:
             - data.node_pos: FloatTensor，形状为 (N, 3)，干净配体局部坐标，单位 Å。
             - data.halfedge_index: LongTensor，形状为 (2, H)，完全图半边端点。
             - data.halfedge_type: LongTensor，形状为 (H,)，干净半边类别。
+
+            # see me: 下面的无用 
             - data.fixed_dist_torsion: Tensor，形状为 (N, N)，扭转下保持距离的 0/1 矩阵。
             - data.path_mat: Tensor，形状为 (N, N)，化学图最短路径，单位为键数。
             - data.nbh_dict: dict[int, list[int]]，逐原子一跳邻居编号。

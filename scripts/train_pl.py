@@ -79,6 +79,7 @@ def copy_py_files(src_dir, dst_dir, base=False):
             shutil.copy(item_path, dst_dir)
 
 
+# XXX
 class DataModule(pl.LightningDataModule):
     """
     把训练配置解析为逐样本变换链、无限任务数据集和 PyG 批次加载器。
@@ -225,6 +226,8 @@ class DataModule(pl.LightningDataModule):
         featurizers = self.get_featurizers()
         # ``in_dims``：dict[str, int]，键集合是模型构造所需的类别数及可选口袋输入宽度。
         in_dims = self.get_in_dims(featurizers)
+
+# [ ] --------------------------------------
         # ``task_trans``：callable，训练时在单个样本上按 ``data['task']`` 构造 fixed prompt 与刚体/扭转注释。
         task_trans = get_transforms(self.config.transforms.task, mode='train',
                                     num_node_types=in_dims['num_node_types'],)
@@ -257,7 +260,9 @@ class DataModule(pl.LightningDataModule):
             'global_rank': self.trainer.global_rank,
             # ``num_samplers_args.world_size``：int，参与训练的 DDP 进程总数。
             'world_size': self.trainer.world_size,
-        }
+        }     
+# [ ] --------------------------------------
+
         # ``train_set``：IterableDataset，变换发生在批处理前，因此每次 noiser 只处理一个确定任务的样本。
         train_set = ForeverTaskDataset(data_cfg.dataset, data_cfg.task_db_weights,'train',
                                        transforms=self.transforms, shuffle=True, **num_samplers_args)

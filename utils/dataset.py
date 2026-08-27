@@ -392,7 +392,7 @@ class TestTaskDataset(Dataset):
 #             else:
 #                 data_list.append(data)
 
-
+# XXX
 class ForeverTaskDataset(IterableDataset):
     """
     按任务权重和任务内数据库权重持续采样 PocketXMol 训练/验证样本。
@@ -571,6 +571,7 @@ class ForeverTaskDataset(IterableDataset):
             self.setup(set_iter=True)
 
 
+# [ ] --------------------------------------
     def setup(self, set_index=False, set_db=False, set_iter=False,
               ):
         """
@@ -704,7 +705,6 @@ class ForeverTaskDataset(IterableDataset):
             # ``self.sampler_index_list``：list[dict] 长度 G，完成所有数据库分区后的只读索引范围表。
             self.sampler_index_list = sampler_index_list
             
-
     def _get_global_id(self):
         """
         把 DDP rank 与当前 DataLoader worker 编号映射为全局采样器编号。
@@ -774,8 +774,7 @@ class ForeverTaskDataset(IterableDataset):
                 yield self[(task, db, index)]
             if self.mode != 'train':
                 break
-
-            
+         
     def get_data_key(self, task, db_name, data_id):
         """
         根据逻辑数据库布局构造 ``SingleDatabase`` 可解析的复合 LMDB 键。
@@ -838,6 +837,8 @@ class ForeverTaskDataset(IterableDataset):
         elif task == 'growing':
             key += f';growing/{data_id}'
         return key
+        
+# [ ] --------------------------------------
 
 
     def __getitem__(self, index):
@@ -859,6 +860,7 @@ class ForeverTaskDataset(IterableDataset):
             - data_id: str，assembly 当前索引解析出的样本标识。
             - pdbid: str，受体结构标识。
             - smiles: str，固定二维配体图的规范 SMILES。
+
             - element: LongTensor，形状为 (N,)，配体原子序数。
             - pos_all_confs: FloatTensor，形状为 (C, N, 3)，输入 conformer 坐标，单位 Å。
             - i_conf_list: list[int]，长度为 C，合法 conformer 输入编号。
@@ -867,12 +869,14 @@ class ForeverTaskDataset(IterableDataset):
             - bond_type: LongTensor，形状为 (2M,)，逐双向键类别。
             - num_atoms: int 标量 N，配体原子数。
             - num_bonds: int 标量 M，无向化学键数。
+
             - pocket_element: LongTensor，形状为 (P,)，docking 口袋原子序数；构象数据可缺失。
             - pocket_pos: FloatTensor，形状为 (P, 3)，变换后与配体同原点的口袋局部坐标，单位 Å。
             - pocket_is_backbone: BoolTensor，形状为 (P,)，口袋原子主链标记。
             - pocket_atom_name: list[str]，长度为 P，PDB 原子名。
             - pocket_atom_to_aa_type: LongTensor，形状为 (P,)，口袋原子所属氨基酸类别。
             - pocket_molecule_name: str|None，口袋 PDB ``HEADER`` 名称。
+
             - bond_rotatable: LongTensor，形状为 (2M,)，可旋转键标记。
             - tor_twisted_pairs: dict[tuple[int, int], list[set[int], set[int]]]，可旋转键两侧非轴原子集合。
             - fixed_dist_torsion: Tensor，形状为 (N, N)，扭转下保持距离的 0/1 矩阵。
@@ -889,6 +893,7 @@ class ForeverTaskDataset(IterableDataset):
             - mmpa.anchors_list: list[set[int]]，MMPA 片段锚原子编号。
             - mmpa.nbh_subgraphs: list[list[int]]，MMPA 片段邻接表。
             - mmpa.connections: dict[tuple[int, int], tuple[int, int]]，MMPA 片段连接锚原子对。
+
             - pocket_atom_feature: FloatTensor，形状为 (P, 25)，口袋离散特征。
             - pocket_knn_edge_index: LongTensor，形状为 (2, E_p)，口袋 kNN 有向边。
             - pocket_center: FloatTensor，形状为 (1, 3)，模型局部坐标原点，单位 Å。

@@ -253,6 +253,7 @@ noise:
         max: 1.
 
 
+# see me: 在 C:\Users\15919\Desktop\PocketXMol\utils\transforms.py 里面
 transforms:
   featurizer:
     # utils.transforms.FeaturizeMol；先建立离散词表，再生成 complete-graph 无向半边及 fixed 掩码。
@@ -327,6 +328,7 @@ transforms:
           len_mu: 1.4
           len_sigma: 0.2
 
+# see me: 作用于 C:\Users\15919\Desktop\PocketXMol\utils\dataset.py
 data:
   dataset:
     # ForeverTaskDataset 在 root 下同时解析 assembly 索引与各逻辑数据库的子 LMDB。
