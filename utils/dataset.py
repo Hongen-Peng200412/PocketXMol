@@ -869,6 +869,18 @@ class ForeverTaskDataset(IterableDataset):
             - bond_type: LongTensor，形状为 (2M,)，逐双向键类别。
             - num_atoms: int 标量 N，配体原子数。
             - num_bonds: int 标量 M，无向化学键数。
+            - num_nodes: int 标量 N，PyG 配体节点数。
+            - node_type: LongTensor，形状为 (N,)，模型原子类别编号。
+            - node_pos: FloatTensor，形状为 (N, 3)，模型局部配体坐标，单位 Å。
+            - i_conf: int 标量，当前选择的 conformer 编号。
+            - halfedge_index: LongTensor，形状为 (2, H)，完全图半边端点。
+            - halfedge_type: LongTensor，形状为 (H,)，完全图半边类别。
+            - is_peptide: LongTensor，形状为 (N,)，小分子任务为全 0。
+            - task_setting: str，当前运动模式；训练模式在批处理前排除。
+            - fixed_node: LongTensor，形状为 (N,)，原子类别条件掩码。
+            - fixed_pos: LongTensor，形状为 (N,)，坐标条件掩码。
+            - fixed_halfedge: LongTensor，形状为 (H,)，半边类别条件掩码。
+            - fixed_halfdist: LongTensor，形状为 (H,)，半边距离条件掩码。
 
             - pocket_element: LongTensor，形状为 (P,)，docking 口袋原子序数；构象数据可缺失。
             - pocket_pos: FloatTensor，形状为 (P, 3)，变换后与配体同原点的口袋局部坐标，单位 Å。
@@ -876,7 +888,11 @@ class ForeverTaskDataset(IterableDataset):
             - pocket_atom_name: list[str]，长度为 P，PDB 原子名。
             - pocket_atom_to_aa_type: LongTensor，形状为 (P,)，口袋原子所属氨基酸类别。
             - pocket_molecule_name: str|None，口袋 PDB ``HEADER`` 名称。
+            - pocket_atom_feature: FloatTensor，形状为 (P, 25)，口袋离散特征。
+            - pocket_knn_edge_index: LongTensor，形状为 (2, E_p)，口袋 kNN 有向边。
+            - pocket_center: FloatTensor，形状为 (1, 3)，模型局部坐标原点，单位 Å。
 
+            # see me: 下面的无用
             - bond_rotatable: LongTensor，形状为 (2M,)，可旋转键标记。
             - tor_twisted_pairs: dict[tuple[int, int], list[set[int], set[int]]]，可旋转键两侧非轴原子集合。
             - fixed_dist_torsion: Tensor，形状为 (N, N)，扭转下保持距离的 0/1 矩阵。
@@ -894,21 +910,6 @@ class ForeverTaskDataset(IterableDataset):
             - mmpa.nbh_subgraphs: list[list[int]]，MMPA 片段邻接表。
             - mmpa.connections: dict[tuple[int, int], tuple[int, int]]，MMPA 片段连接锚原子对。
 
-            - pocket_atom_feature: FloatTensor，形状为 (P, 25)，口袋离散特征。
-            - pocket_knn_edge_index: LongTensor，形状为 (2, E_p)，口袋 kNN 有向边。
-            - pocket_center: FloatTensor，形状为 (1, 3)，模型局部坐标原点，单位 Å。
-            - num_nodes: int 标量 N，PyG 配体节点数。
-            - node_type: LongTensor，形状为 (N,)，模型原子类别编号。
-            - node_pos: FloatTensor，形状为 (N, 3)，模型局部配体坐标，单位 Å。
-            - i_conf: int 标量，当前选择的 conformer 编号。
-            - halfedge_index: LongTensor，形状为 (2, H)，完全图半边端点。
-            - halfedge_type: LongTensor，形状为 (H,)，完全图半边类别。
-            - is_peptide: LongTensor，形状为 (N,)，小分子任务为全 0。
-            - task_setting: str，当前运动模式；训练模式在批处理前排除。
-            - fixed_node: LongTensor，形状为 (N,)，原子类别条件掩码。
-            - fixed_pos: LongTensor，形状为 (N,)，坐标条件掩码。
-            - fixed_halfedge: LongTensor，形状为 (H,)，半边类别条件掩码。
-            - fixed_halfdist: LongTensor，形状为 (H,)，半边距离条件掩码。
             - n_domain: LongTensor 标量，刚体域数。
             - domain_node_index: LongTensor，形状为 (2, K)，刚体域—原子归属索引。
             - tor_bonds_anno: LongTensor，形状为 (T, 3)，扭转层级与轴端点。

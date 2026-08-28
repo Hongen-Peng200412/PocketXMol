@@ -1,67 +1,58 @@
-# PocketXMol 缩减数据集联合训练配置。
-# 读取入口: scripts/train_pl.py；模型、损失、噪声和数据组分别传给对应工厂，不使用 Hydra _target_。
-# 下方重点说明 conf、dock 及二者共享的模型、损失、特征和数据装配字段。
+# 本文件仅标注构象生成（conf）和小分子 docking（dock）的任务专属配置。
 model:
-  name: pm_asym_denoiser  # str；models.maskfill.MODEL_DICT 注册键，实例化 PMAsymDenoiser。
-  pocket_dim: 128  # int D_p；口袋点隐藏特征宽度，供口袋编码器及配体-口袋上下文边使用。
-  node_dim: 320  # int D_n；配体原子隐藏特征宽度，也是主去噪器节点通道数。
-  addition_node_features: ['is_peptide']  # list[str]；按此顺序把 batch.is_peptide 的 1 个标量通道拼到 node_in one-hot 后；conf/dock 小分子通常为 0。
-  add_output: ['confidence']  # list[str]；包含 confidence 时建立 node/pos/halfedge 三个置信度输出头。
-  edge_dim: 96  # int D_e；无向半边隐藏特征宽度，双向展开后仍保持此宽度。
+  name: pm_asym_denoiser
+  pocket_dim: 128
+  node_dim: 320
+  addition_node_features: ['is_peptide']
+  add_output: ['confidence']
+  edge_dim: 96
   pocket:
-    # models.graph_context.ContextNodeEdgeNet 的口袋内部编码器；只在 batch.pocket_pos 非空时执行。
-    edge_dim: 32  # int；口袋 kNN 有向边隐藏特征宽度。
-    hidden_dim: 128  # int；口袋节点隐藏宽度，必须与顶层 pocket_dim=128 对齐。
-    num_blocks: 4  # int；口袋内部节点-边消息传递块数。
+    edge_dim: 32
+    hidden_dim: 128
+    num_blocks: 4
     dist_cfg:
-      num_gaussians: 32  # int R_p；口袋边距离展开的高斯基函数数；start/stop 缺省由 GaussianSmearing 使用 0/10 Å。
-    # gate_dim: 0
+      num_gaussians: 32
   denoiser:
-    # 配体内部消息传递及配体-口袋交互网络；hidden_dim 必须与顶层 node_dim 对齐。
-    hidden_dim: 320  # int；主节点隐藏宽度。
-    num_blocks: 6  # int；ContextNodeEdgeNet 交替执行 EdgeBlock 与 ContextNodeBlock 的次数。
+    hidden_dim: 320
+    num_blocks: 6
     dist_cfg:
-      stop: 15  # float，单位 Å；配体原子对距离高斯基的最大中心。
-      num_gaussians: 64  # int R_m；配体边距离高斯基通道数。
-    gate_dim: 2  # int；节点更新门控向量宽度；MLP 输出经 sigmoid 后参与残差混合。
+      stop: 15
+      num_gaussians: 64
+    gate_dim: 2
     context_cfg:
-      # 配体节点作为 target、口袋节点作为 source 的跨图 kNN 边配置。
-      edge_dim: 128  # int D_c；配体-口袋上下文边隐藏宽度。
-      knn: 32  # int k；每个配体原子连接的最近口袋点数上限。
+      edge_dim: 128
+      knn: 32
       dist_cfg:
-        stop: 20  # float，单位 Å；上下文边距离基函数最大中心。
-        num_gaussians: 64  # int R_c；上下文距离高斯基通道数。
-        type_: linear  # str；GaussianSmearing 的线性等间距中心；不是指数间距。
+        stop: 20
+        num_gaussians: 64
+        type_: linear
 
 loss:
-  name: individual_tasks  # str；models.loss.LOSS_DICT 注册键，按任务拆分并加权汇总损失。
+  name: individual_tasks
   weights:
-    # 每个 <task>/<loss-name> 标量进入 <task>/total 前使用的乘子；conf/dock 的类别项通常落在 fixed 分支。
-    node: 1.5  # float；非 fixed 原子类别交叉熵权重。
-    pos: 2.5  # float；非 fixed 原子逐坐标 MSE 权重，conf/dock 的核心直接坐标监督。
-    edge: 1.5  # float；非 fixed 半边类别交叉熵权重。
-    dist: 0.0005  # float；同一刚性域内、非 fixed 原子对距离 MSE 权重。
-    dih: 0.0005  # float；可旋转键二面角的 1-cos(delta) 损失权重。
-    fixed_node: 0.1  # float；fixed 原子类别交叉熵权重。
-    fixed_pos: 0.1  # float；fixed 原子坐标 MSE 权重。
-    fixed_edge: 0.1  # float；fixed 半边类别交叉熵权重。
-    fixed_dist: 0.0005  # float；fixed_halfdist 原子对距离 MSE 权重。
-  tasks: [denovo, conf, sbdd, dock, maskfill, fbdd, pepdesign]  # list[str]；顺序决定任务掩码字典及逐任务 total 的构造顺序；conf/dock 必须与 batch.task 字符串完全一致。
+    node: 1.5
+    pos: 2.5
+    edge: 1.5
+    dist: 0.0005
+    dih: 0.0005
+    fixed_node: 0.1
+    fixed_pos: 0.1
+    fixed_edge: 0.1
+    fixed_dist: 0.0005
+  tasks: [denovo, conf, sbdd, dock, maskfill, fbdd, pepdesign]  # list[str]；conf/dock 必须与 batch.task 完全一致，才能分别汇总这两个任务的损失。
   confidence: 
-    # 置信度辅助监督；本子树使 IndividualTasksLoss 建立 ConfidenceLoss，且必须与 model.add_output 中创建的 confidence 三头同时启用。
-    prob_1A: 0.2  # float；连续坐标目标为 prob_1A**error_Å，故误差 1 Å 时目标恰为 0.2。
+    prob_1A: 0.2
     weights:
-      node: 1  # float；原子类别置信度 BCE 项权重。
-      pos: 20  # float；sigmoid 坐标置信度与连续指数目标之间 MSE 的权重。
-      edge: 1  # float；半边类别置信度 BCE 项权重。
+      node: 1
+      pos: 20
+      edge: 1
 
 common:
-#  seed: 2023        C  N  O  F  P  S  Cl   B   Br   I    Se   <MASK>
   node_prior_probs: &node_prior_probs [3, 2, 2, 2, 1, 1, 1, 0.3, 0.3, 0.3, 0.3, 13.2]
   sc_node_prior_probs: &sc_node_prior_probs [75, 10, 13, 0, 0, 0.3, 0, 0, 0, 0, 0, 98]
 
 noise:
-  name: mixed  # str；utils.sample_noise.MixedSampleNoiser，按 batch.task 分派到 individual 中同名子 noiser。
+  name: mixed
   individual:
   - name: denovo
     prior:
@@ -81,21 +72,26 @@ noise:
       name: uniform
       min: 0.
       max: 1.
-  - name: conf  # str；构象生成子 noiser 注册名，并与 batch.task=conf 对齐。
-    reassign_in: True  # bool；训练加噪后在 matches_iso 的同构排列中选择平均原子距离最小者。
+
+
+  # see me --- 构象生成噪声 ---
+  - name: conf  # str；MixedSampleNoiser 以 batch.task=conf 选择 ConfSampleNoiser。
+    reassign_in: True  # bool；从 matches_iso 的同构原子排列中选择与干净构象平均距离最小的映射。
     prior:
       pos: 
-        name: allpos  # str；AllPosPrior，根据 level_dict 的键选择自由位移或结构化运动先验。
+        name: allpos  # str；AllPosPrior 按 free 或 torsional 对应的信息等级选择坐标先验。
         pos:
-          name: gaussian_simple  # str；free 模式逐原子各向同性高斯坐标先验。
-          sigma_max: 1  # float，单位 Å；level=0 时自由位移噪声的最大尺度。
+          name: gaussian_simple  # str；free 模式对每个原子坐标施加各向同性高斯扰动。
+          sigma_max: 1  # float，单位 Å；训练态 level=0 时高斯扰动的标准差上限。
         torsional:
-          name: torsional  # str；torsional/flexible 模式按可旋转键施加轴角扭转。
+          name: torsional  # str；torsional 模式按可旋转键施加轴角扭转。
           sigma_max: 0.3  # float，以 π 为倍率；实际最大角尺度为 0.3π rad。
     level:
-      name: uniform  # str；train 模式每个分子采一个共享 level，再广播到该分子的请求自由度实体。
-      min: 0.  # float；最小信息保留量，0 表示完全采用先验。
-      max: 1.  # float；最大信息保留量，1 表示完全保留当前/真值状态。
+      name: uniform  # str；训练时每个分子均匀采一个共享信息等级，再广播到其坐标自由度。
+      min: 0.  # float；信息等级下界；训练态 0 对应当前先验实现的最大扰动强度。
+      max: 1.  # float；信息等级上界；1 保留干净构象坐标。
+
+
   - name: sbdd
     prior:
       node: 
@@ -114,30 +110,35 @@ noise:
       name: uniform
       min: 0.
       max: 1.
-  - name: dock  # str；小分子 docking 子 noiser 注册名，并与 batch.task=dock 对齐。
-    reassign_in: True  # bool；训练加噪后按 matches_iso 选择最接近真值的同构原子排列。
+
+
+  # see me --- 小分子 docking 噪声 ---
+  - name: dock  # str；MixedSampleNoiser 以 batch.task=dock 选择 DockSamplNoiser。
+    reassign_in: True  # bool；从 matches_iso 的同构原子排列中选择与参考 pose 平均距离最小的映射。
     prior:
       pos: 
-        name: allpos  # str；按 free 或 trans/rot/tor level 键选择坐标先验组合。
+        name: allpos  # str；AllPosPrior 按 free 或 flexible 对应的信息等级组合坐标运动先验。
         pos:
-          name: gaussian_simple  # str；free docking 模式逐原子高斯位移。
+          name: gaussian_simple  # str；free 模式对配体各原子坐标施加高斯扰动。
           sigma_func: 'sqrt'  # str；按逐原子 mol_size 令 prior 标准差为 max(sigma_max*sqrt(mol_size),1) Å。
           sigma_max: 1.0  # float，单位 Å；与 sqrt(mol_size) 相乘的逐原子 prior 标准差基准。
         translation:
-          name: translation  # str；flexible/rigid 模式逐图整体平移先验。
+          name: translation  # str；flexible 模式的逐图整体平移先验。
           ve: False  # bool；False 采用 VP 混合：sqrt(level)*当前中心 + sqrt(1-level)*Gaussian。
           mean: 0  # float，单位 Å；level=0 时三维平移先验各分量均值。
           std: 1  # float，单位 Å；level=0 时三维平移先验各分量标准差。
         rotation:
-          name: rotation  # str；flexible/rigid 模式逐刚性域轴角旋转先验。
+          name: rotation  # str；flexible 模式的逐刚性域轴角旋转先验。
           sigma_max: 0.0002  # float，以 π 为倍率；最大旋转角尺度为 0.0002π rad，训练中近似保持整体朝向。
         torsional:
           name: torsional  # str；flexible 模式逐可旋转键扭转先验。
           sigma_max: 0.2  # float，以 π 为倍率；最大扭转角尺度为 0.2π rad。
     level:
-      name: uniform  # str；train 模式每个分子采一个共享 level，再广播到 pos/trans/rot/tor 实体。
-      min: 0.  # float；0 表示完全采用相应运动先验。
-      max: 1.  # float；1 表示完全保留当前 docking pose。
+      name: uniform  # str；训练时每个复合物采一个共享信息等级，再广播到 pos/trans/rot/tor 实体。
+      min: 0.  # float；信息等级下界；训练态 0 对应相应运动先验的最大扰动强度。
+      max: 1.  # float；信息等级上界；1 保留参考 docking pose。
+
+
   - name: maskfill
     prior:
       part1:
@@ -253,33 +254,42 @@ noise:
         max: 1.
 
 
-# see me: 在 C:\Users\15919\Desktop\PocketXMol\utils\transforms.py 里面
 transforms:
   featurizer:
-    # utils.transforms.FeaturizeMol；先建立离散词表，再生成 complete-graph 无向半边及 fixed 掩码。
-    use_mask_node: True  # bool；在 11 种元素之后追加 <MASK> 原子类别，故 num_node_types=12。
-    use_mask_edge: True  # bool；在无键+4 种键之后追加 <MASK> 半边类别，故 num_edge_types=6。
+    use_mask_node: True
+    use_mask_edge: True
     chem:
-      atomic_numbers: [6,7,8,9,15,16,17, 5,35,53,34]  # list[int] 长度 11；顺序固定映射为 C,N,O,F,P,S,Cl,B,Br,I,Se，模型输出类别索引必须按同序解码。
-      mol_bond_types: [1, 2, 3, 4]  # list[int] 长度 4；顺序固定映射为 single,double,triple,aromatic；类别 0 另表示无键。
+      atomic_numbers: [6,7,8,9,15,16,17, 5,35,53,34]
+      mol_bond_types: [1, 2, 3, 4]
   featurizer_pocket:
-    # utils.transforms.FeaturizePocket；元素、残基和主链标记拼接为 pocket_atom_feature。
-    knn: 32  # int k；为每个口袋点建立口袋内部 kNN 有向边；实际邻居数受当前图点数限制。
+    knn: 32
   task:
-    name: mixed  # str；MixedTransform，按单样本 data.task 分派到 individual 中同名任务变换。
+    name: mixed  # str；MixedTransform 按单样本 data.task 分派到 conf 或 dock 的同名任务变换。
     individual:
       - name: denovo
-      - name: conf  # str；ConfTransform，构造构象任务的自由度注释和 fixed 掩码。
+
+
+      # --- 构象生成任务提示 ---
+      - name: conf  # str；注册为 ConfTransform，为构象样本写入 fixed 掩码与扭转自由度注释。
         settings:
-          # 键顺序同时是 np.random.choice 的候选顺序；值会在 ConfTransform 中归一化为概率。
+          # float 相对权重；ConfTransform 归一化后为每个训练样本随机选择一种 setting。
           free: 0.999  # float 权重；99.9% 样本采用逐原子自由坐标去噪。
           torsional: 0.001  # float 权重；0.1% 样本仅扰动可旋转键，使用 torsion 注释。
+
+
       - name: sbdd
-      - name: dock  # str；DockTransform/ConfTransform 路径，构造小分子 docking 自由度注释。
+  
+
+
+      # --- 小分子 docking 任务提示 ---
+      - name: dock  # str；注册名 dock 复用 ConfTransform，为配体 pose 写入 fixed 掩码与运动自由度注释。
         settings:
-          # 键顺序同时是采样候选顺序；权重在任务变换中归一化。
+          # float 相对权重；ConfTransform 归一化后为每个训练样本随机选择一种 setting。
           free: 0.999  # float 权重；99.9% 样本采用逐原子自由 pose 去噪。
           flexible: 0.001  # float 权重；0.1% 样本联合整体平移、整体旋转和可旋转键扭转。
+
+
+
       - name: maskfill
         settings:
           decomposition:
@@ -328,71 +338,68 @@ transforms:
           len_mu: 1.4
           len_sigma: 0.2
 
-# see me: 作用于 C:\Users\15919\Desktop\PocketXMol\utils\dataset.py
 data:
   dataset:
-    # ForeverTaskDataset 在 root 下同时解析 assembly 索引与各逻辑数据库的子 LMDB。
-    root: data_train  # path；相对当前运行目录的数据根；所有 lmdb_root 与 assembly_path 都拼到其下。
-    assembly_path: assemblies/split_reduced_assembly.lmdb  # path；setup 时按 split 改为 split_reduced_assembly_train.lmdb 或 _val.lmdb。
-    # assembly_path: assemblies/split_assembly.lmdb  # use the complete training set
+    root: data_train
+    assembly_path: assemblies/split_reduced_assembly.lmdb
     dbs:
-    # 每个 name 是 assembly 的 <task>-<db> 键及 task_db_weights.db_ratio 的数据库标识。
-    # lmdb_path 的键是 assembly 复合记录片段 ``<subdb>/<data_id>`` 的首段；多个片段按顺序合并字段。
-    - name: geom  # str；构象任务来源之一，主要读取分子、扭转和分解记录。
+    # --- 构象生成数据源 ---
+    - name: geom  # str；task_db_weights.conf 引用的 GEOM 逻辑数据库名。
       lmdb_root: geom/lmdb  # path；相对 data.root 的 GEOM 子库目录。
       lmdb_path:
-        mols: mols.lmdb  # path；基础分子字段子库，复合键中通常作为首片段。
-        torsion: torsion.lmdb  # path；tor_bonds、twisted_nodes、dihedral_pairs 等可旋转键注释子库。
+        mols: mols.lmdb  # path；构象坐标、原子与化学键等基础分子字段子库。
+        torsion: torsion.lmdb  # path；torsional setting 所需的可旋转键与扭转几何字段子库。
         decom: decom.lmdb
-    - name: qm9  # str；构象任务来源之一。
+    - name: qm9  # str；task_db_weights.conf 引用的 QM9 逻辑数据库名。
       lmdb_root: qm9/lmdb  # path；相对 data.root 的 QM9 子库目录。
       lmdb_path:
-        mols: mols.lmdb  # path；基础分子记录子库。
-        torsion: torsion.lmdb  # path；可旋转键几何注释子库。
+        mols: mols.lmdb  # path；构象任务的基础分子记录子库。
+        torsion: torsion.lmdb  # path；torsional setting 所需的可旋转键几何字段子库。
         decom: decom.lmdb
-    - name: unmi  # str；构象任务来源之一，任务内采样时其原始权重会再归一化。
+    - name: unmi  # str；task_db_weights.conf 引用的 UNMI 逻辑数据库名。
       lmdb_root: unmi/lmdb  # path；相对 data.root 的 UNMI 子库目录。
       lmdb_path:
-        mols: mols.lmdb  # path；基础分子记录子库。
-        torsion: torsion.lmdb  # path；可旋转键几何注释子库。
+        mols: mols.lmdb  # path；构象任务的基础分子记录子库。
+        torsion: torsion.lmdb  # path；torsional setting 所需的可旋转键几何字段子库。
         decom: decom.lmdb
-    - name: csd  # str；小分子 docking 复合物来源之一。
+    # --- 小分子 docking 数据源 ---
+    - name: csd  # str；task_db_weights.dock 引用的 CSD 口袋—配体逻辑数据库名。
       lmdb_root: csd/lmdb  # path；相对 data.root 的 CSD 子库目录。
       lmdb_path:
-        pocmol10: pocmol10.lmdb  # path；基础口袋-配体复合物字段，口袋截取尺度由数据预处理阶段确定。
-        torsion: torsion.lmdb  # path；配体可旋转键几何注释子库。
+        pocmol10: pocmol10.lmdb  # path；docking 的口袋、配体及参考 pose 基础字段子库。
+        torsion: torsion.lmdb  # path；flexible setting 所需的配体可旋转键几何字段子库。
         decom: decom.lmdb
-    - name: pbdock  # str；小分子 docking 复合物的主要来源之一。
+    - name: pbdock  # str；task_db_weights.dock 引用的 PBDock 口袋—配体逻辑数据库名。
       lmdb_root: pbdock/lmdb  # path；相对 data.root 的 PBDock 子库目录。
       lmdb_path:
-        pocmol10: pocmol10.lmdb  # path；基础口袋-配体复合物记录子库。
-        torsion: torsion.lmdb  # path；配体可旋转键几何注释子库。
+        pocmol10: pocmol10.lmdb  # path；docking 的口袋、配体及参考 pose 基础字段子库。
+        torsion: torsion.lmdb  # path；flexible setting 所需的配体可旋转键几何字段子库。
         decom: decom.lmdb
-    - name: moad  # str；小分子 docking 复合物来源之一。
+    - name: moad  # str；task_db_weights.dock 引用的 MOAD 口袋—配体逻辑数据库名。
       lmdb_root: moad/lmdb  # path；相对 data.root 的 MOAD 子库目录。
       lmdb_path:
-        pocmol10: pocmol10.lmdb  # path；基础口袋-配体复合物记录子库。
-        torsion: torsion.lmdb  # path；配体可旋转键几何注释子库。
+        pocmol10: pocmol10.lmdb  # path；docking 的口袋、配体及参考 pose 基础字段子库。
+        torsion: torsion.lmdb  # path；flexible setting 所需的配体可旋转键几何字段子库。
         decom: decom.lmdb
-    - name: cremp  # str；构象任务来源之一。
+    # --- 构象生成数据源（续）---
+    - name: cremp  # str；task_db_weights.conf 引用的 CREMP 逻辑数据库名。
       lmdb_root: cremp/lmdb  # path；相对 data.root 的 CREMP 子库目录。
       lmdb_path:
         mols: mols.lmdb  # path；该库在本配置中只声明基础分子记录，不提供 torsion 子库。
-    - name: apep
+    # --- 小分子 docking 数据源（续）---
+    - name: apep  # str；task_db_weights.dock 也把 APEP 作为 docking 样本来源。
       lmdb_root: apep/lmdb
       lmdb_path:
-        pocmol10: pocmol10.lmdb
-        torsion: torsion.lmdb
+        pocmol10: pocmol10.lmdb  # path；docking 的口袋—配体基础字段子库。
+        torsion: torsion.lmdb  # path；flexible setting 所需的配体扭转字段子库。
         decom: decom.lmdb
         peptide: peptide.lmdb
-    - name: pepbdb
+    - name: pepbdb  # str；task_db_weights.dock 也把 PepBDB 作为 docking 样本来源。
       lmdb_root: pepbdb/lmdb
       lmdb_path:
-        pocmol10: pocmol10.lmdb
+        pocmol10: pocmol10.lmdb  # path；docking 的口袋—配体基础字段子库。
         peptide: peptide.lmdb
   task_db_weights:
-    # ForeverTaskDataset 先按各任务 weight 选 task；同任务内再把 db_ratio 原始值归一化后选数据库。
-    # 顶层 weight 总和必须为 1 才能直接作为 np.random.choice(p=...)；本文件七项之和为 1.0。
     denovo:
       weight: 0.14
       db_ratio:
@@ -400,9 +407,10 @@ data:
         qm9: 0.08
         unmi: 11.5
     conf:
+      # ForeverTaskDataset 先用 weight 选择 conf，再归一化 db_ratio 以选择构象数据库。
       weight: 0.12  # float；每次无限数据流选中构象任务的概率。
       db_ratio:
-        # 以下是相对权重而非概率；运行时分别除以总和 0.763，并保持当前键顺序与数据库候选对齐。
+        # float 相对权重；运行时除以总和 0.763，得到 conf 内部的数据库采样概率。
         geom: 0.3  # float；GEOM 构象样本相对权重。
         qm9: 0.133  # float；QM9 构象样本相对权重。
         unmi: 0.3  # float；UNMI 构象样本相对权重。
@@ -416,14 +424,15 @@ data:
         apep: 0.01
         pepbdb: 0.0025
     dock:
+      # ForeverTaskDataset 先用 weight 选择 dock，再归一化 db_ratio 以选择口袋—配体数据库。
       weight: 0.25  # float；每次无限数据流选中 docking 任务的概率，是本配置中最高的单任务权重。
       db_ratio:
-        # 以下相对权重运行时除以总和 0.267；顺序固定为 csd,pbdock,moad,apep,pepbdb。
+        # float 相对权重；运行时除以总和 0.267，得到 dock 内部的数据库采样概率。
         csd: 0.032  # float；CSD 复合物相对权重。
         pbdock: 0.115  # float；PBDock 复合物相对权重。
         moad: 0.03  # float；MOAD 复合物相对权重。
-        apep: 0.06
-        pepbdb: 0.03
+        apep: 0.06  # float；APEP 复合物相对权重。
+        pepbdb: 0.03  # float；PepBDB 复合物相对权重。
     maskfill:
       weight: 0.11
       db_ratio:
@@ -448,50 +457,31 @@ data:
         apep: 37
         pepbdb: 7
 
-# geom: 0.3
-# qm9: 0.133
-# unmi: 11.5
-# csd: 0.064
-# pbdock: 0.0115
-# moad: 0.03
-
-# cremp: 0.035
-# apep: 0.037
-# pepbdb: 0.005
-
-
 train:
-  seed: 2023  # int；由 seed_all 设置 Python/NumPy/PyTorch 随机状态，并启用 workers=True 的 worker 派生种子。
-  batch_size: 40  # int；每个 DataLoader、每个进程的图数 B；不是全局多卡 batch size。
-  num_workers: 2  # int；每个训练 DataLoader 的 worker 数；同时参与 ForeverTaskDataset 的全局索引分片。
-  pin_memory: True  # bool；DataLoader 是否把 CPU batch 放入页锁定内存以加速 GPU 传输。
-  max_steps: 180_000  # int；Lightning Trainer 的优化步终止上限，优先于按 epoch 终止。
-  ckpt_every_n_steps: 1000  # int；ModelCheckpoint 保存 last/step checkpoint 的步间隔。
-  val_check_interval: &val_check_interval 1000  # int；每 1000 个训练 batch 执行验证；锚点同时供 scheduler.params.frequency 引用。
-  precision: bf16-mixed  # str；Lightning 混合精度模式，矩阵主计算使用 bfloat16，必要归约保留框架选择的精度。
-  persistent_workers: True  # bool；每轮验证/训练结束后保留 worker 进程；要求 num_workers>0。
-  # gradient_clip_val: 1.0
-  # gradient_clip_algorithm: norm
+  seed: 2023
+  batch_size: 40
+  num_workers: 2
+  pin_memory: True
+  max_steps: 180_000
+  ckpt_every_n_steps: 1000
+  val_check_interval: &val_check_interval 1000
+  precision: bf16-mixed
+  persistent_workers: True
   optimizer:
-    # utils.train.get_optimizer 的 AdamW 配置，参数集合只来自 PMAsymDenoiser。
-    type: adamw  # str；优化器类型注册名。
-    lr: 1.e-3  # float；warmup 完成后的基础学习率。
-    weight_decay: 1.e-3  # float；AdamW 解耦权重衰减系数。
-    beta1: 0.99  # float；一阶动量指数衰减系数。
-    beta2: 0.999  # float；二阶动量指数衰减系数。
+    type: adamw
+    lr: 1.e-3
+    weight_decay: 1.e-3
+    beta1: 0.99
+    beta2: 0.999
   scheduler:
-    warmup_step: 1000  # int；前 1000 个 global_step 在 on_before_optimizer_step 中从 1/1000 线性升到基础学习率。
+    warmup_step: 1000
     instance:
-      # utils.train.get_scheduler 构造 ReduceLROnPlateau 类调度器。
-      type: plateau  # str；调度器类型注册名。
-      factor: 0.75  # float；触发衰减时新学习率乘子。
-      patience: 20  # int；连续 20 次 scheduler 检查未改善后触发衰减。
-      min_lr: 1.e-5  # float；学习率下界。
-      cooldown: 10  # int；每次衰减后暂停再次触发的检查次数。
+      type: plateau
+      factor: 0.75
+      patience: 20
+      min_lr: 1.e-5
+      cooldown: 10
     params:
-      # 以下字段原样展开为 Lightning ``lr_scheduler`` 元数据，不传给调度器构造函数。
-      interval: step  # str；按训练 step 计数调度器调用周期。
-      frequency: *val_check_interval  # int=1000；每 1000 step 调用一次，与验证间隔对齐。
-      monitor: val/loss  # str；ReduceLROnPlateau 读取的验证标量名，由 validation_step 显式记录。
-      # strict: True
-      # name: lr
+      interval: step
+      frequency: *val_check_interval
+      monitor: val/loss

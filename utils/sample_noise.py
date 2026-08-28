@@ -54,7 +54,7 @@ def get_sample_noiser(config, num_node_types, num_edge_types, *args, **kwargs):
     name = config['name']
     return SAMPLE_NOISE_DICT[name](config, num_node_types, num_edge_types, *args, **kwargs)
 
-
+# XXX tool
 def dict_list2item(inputs):
     """
     递归把 PyG 批处理产生的列表叶子压缩为第一个元素。
@@ -148,7 +148,7 @@ class BaseSampleNoiser:
         # ``self.pos_only``：bool，当前任务是否只改变坐标；构象/docking 为 True。
         self.pos_only = pos_only
         
-
+        # see me: free docking 在推理时实际只使用其中的逐原子 Gaussian prior。
         if mode == 'sample':
             # ``self.num_steps``：int，反向去噪循环的迭代步数。
             self.num_steps = config.num_steps
@@ -293,7 +293,7 @@ class BaseSampleNoiser:
         """返回未改动的 ``in_dict``；需要处理同构原子置换的子类覆盖此钩子。"""
         return in_dict
 
-    
+    # see me: 下面函数无用
     def spring_in_pos(self, batch, in_dict):
         """
         对预测为化学键的半边施加区间键长弹簧，同时保持 fixed 原子不动。
@@ -501,347 +501,7 @@ class BaseSampleNoiser:
         for step in steps[::-1]:
             yield (step / self.num_steps) * self.init_step # include 1 but not 0
 
-
-@register_sample_noise('mixed')
-class MixedSampleNoiser:
-    """
-    按 ``batch.task`` 把样本分派给相应任务噪声器。
-
-    构造参数:
-        - config.name: str, 固定为 ``mixed``。
-        - config.individual: list[config], 每项是一个子噪声器配置；``task_cfg.name`` 同时作为注册名和分派键。
-        - ``*args``/``**kwargs``: 原样传给每个 ``get_sample_noiser``，通常含类别数、mode、device 与训练参考配置。
-
-    派生字段:
-        - noiser_dict: dict[str, BaseSampleNoiser], 从任务名到已实例化子噪声器的映射。
-
-    调用输入:
-        - batch.task: str|list[str], 训练变换通常传 str；采样批次可能传同值列表。
-
-    调用输出:
-        - batch: 对应子噪声器原地新增 ``node_in``、``pos_in``、``halfedge_in`` 后的同一对象。
-    """
-    def __init__(self, config, *args, **kwargs):
-        super().__init__()
-        # ``config.name``：str，固定为 ``mixed``，选择当前分派器。
-        # ``config.individual[*].name``：str，子 noiser 注册名与 ``batch.task`` 分派键。
-        # ``config.individual[*].prior``：Mapping|str，子任务先验配置。
-        # ``config.individual[*].level``：Mapping，子任务信息等级配置。
-        # ``config.individual[*].num_steps``：int|缺省，子任务 sample 迭代步数。
-        # ``config.individual[*].reassign_in``：bool|缺省，子任务训练输入同构重排开关。
-        # ``self.config``：EasyDict，保留上述 mixed 顶层和有序子任务叶。
-        self.config = config
-        # ``self.noiser_dict``：dict[str, noiser]，键来自每个 task_cfg.name；同名项会覆盖先前实例。
-        self.noiser_dict = {}
-        # ``task_cfg.name``：str，当前子 noiser 的注册名与分派键。
-        # ``task_cfg.prior``：Mapping|str，当前子任务先验配置。
-        # ``task_cfg.level``：Mapping，当前子任务信息等级配置。
-        # ``task_cfg.num_steps``：int|缺省，当前子任务 sample 步数。
-        # ``task_cfg.reassign_in``：bool|缺省，当前子任务训练同构重排开关。
-        for task_cfg in config.individual:
-            # ``self.noiser_dict``：BaseSampleNoiser 子类实例，以 task_cfg.name 为分派键；同名项覆盖旧实例。
-            self.noiser_dict[task_cfg.name] = get_sample_noiser(task_cfg, *args, **kwargs)
-
-    def __call__(self, batch, *args, **kwargs):
-        """按图级任务名把同任务批次分派给对应子 noiser。
-
-        输入参数:
-            - batch: PyG Data|Batch，至少含图级 ``task`` 叶及被子 noiser 读取的分子状态、prompt 和运动注释叶。
-            - batch.task: str|list[str]，单样本任务名或 PyG 收集后的逐图任务名列表。
-            - ``*args``: 位置参数，原样传给选中的 ``BaseSampleNoiser.__call__``。
-            - ``**kwargs``: 关键字参数，原样传给选中的 ``BaseSampleNoiser.__call__``。
-
-        返回值:
-            - batch: PyG Data|Batch，选中子 noiser 写入 ``node_in``、``pos_in`` 和 ``halfedge_in`` 后的同一容器。
-        """
-        # ``task``：str|list[str]，列表时假定批次内同任务并选择第一项；此处没有独立的一致性校验。
-        task = batch['task']
-        if isinstance(task, list):
-            # ``task``：str，采样批次假定所有 task 同值并取首项；此处不验证一致性。
-            task = task[0]
-        return self.noiser_dict[task](batch, *args, **kwargs)
-
-
-@register_sample_noise('dynamic')
-class DynamicSettingSampleNoiser:
-    def __init__(self, config, *args, **kwargs):
-        self.config = config
-        # process phase
-        self.phases = config.phases
-        self.total_steps = sum(self.phases.num_steps)
-        self.cum_steps = np.cumsum(self.phases.num_steps)
-
-        base_noise_cfg = config.base_noise
-        base_noise_cfg.num_steps = self.total_steps
-        self.base_noiser = get_sample_noiser(base_noise_cfg, *args, **kwargs)
-
-    def __call__(self, batch, *args, **kwargs):
-        step = kwargs['step']
-        global_step = self.total_steps * (1 - step)
-        index_stage = np.where(step > self.cum_steps)[0]
-        settings_this_stage = self.phases.settings[index_stage]
-        
-        # renew setting step
-        phase_step = self.phases.num_steps[index_stage]
-        phase_interval = self.phases.step_intervals[index_stage]
-        phase_bins = phase_interval / phase_step
-        phase_local_step = global_step - max(self.cum_steps[index_stage-1], 0)
-        step = phase_interval[0] - phase_bins * phase_local_step
-        assert step > phase_interval[1], 'step out of interval'
-        kwargs.update({'step': step})
-        
-        # supress settings
-        batch = self._overwrite_settings(batch, settings_this_stage)
-        return self.base_noiser(batch, *args, **kwargs)
-        
-    def _overwrite_settings(self, batch, new_settings):
-        old_settings = batch.setting
-        if isinstance(old_settings, list):
-            assert len(old_settings) == len(set(old_settings)), 'settings are not unique for the batch'
-            new_settings = [new_settings for _ in old_settings]
-        else:
-            raise NotImplementedError('not implement for the setting types')
-        batch.update({'settings': new_settings})
-        return batch
-    
-    def steps_loop(self, *args, **kwargs):
-        return self.base_noiser.steps_loop(*args, **kwargs)
-
-    def outputs2batch(self, batch, outputs):
-        return self.base_noiser.outputs2batch(batch, outputs)
-
-
-@register_sample_noise('denovo')
-class DenovoSampleNoiser(BaseSampleNoiser):
-    def __init__(self,
-        config, num_node_types, num_edge_types,
-        mode='sample', device='cpu', ref_config=None, task_name='denovo',
-        **kwargs
-    ):
-        super().__init__(task_name, config, num_node_types, num_edge_types,
-                mode, device, ref_config, **kwargs)
-        
-        # define prior
-        prior_config = config.prior if config.prior != 'from_train' else self.ref_prior_config
-        self.prior = MolPrior(prior_config, num_node_types, num_edge_types).to(device)
-
-        # define info level
-        self.level = MolInfoLevel(config.level, device=device, mode=mode)
-        
-        self.post_process = config.get('post_process', None)
-        
-
-    def sample_level(self, step, batch):
-        level_dict = {}
-        level_node, level_pos, level_halfedge = self.level.sample_for_mol(
-            step,
-            n_node=batch['node_type'].shape[0],
-            n_pos=batch['node_type'].shape[0],
-            n_edge=batch['halfedge_type'].shape[0],
-        )
-        level_dict.update({
-            f'node': level_node,
-            f'pos': level_pos,
-            f'halfedge': level_halfedge,
-        })
-        
-        
-        if 'scaling_level_node' in batch:
-            level_dict['node'] = level_dict['node'] ** batch['scaling_level_node']
-        elif 'scaling_noise_node' in batch:
-            level_dict['node'] = 1 - (1 - level_dict['node']) * batch['scaling_noise_node']
-        if 'scaling_level_pos' in batch:
-            level_dict['pos'] = level_dict['pos'] ** batch['scaling_level_pos']
-        elif 'scaling_noise_pos' in batch:
-            level_dict['pos'] = 1 - (1 - level_dict['pos']) * batch['scaling_noise_pos']
-        if 'scaling_level_halfedge' in batch:
-            level_dict['halfedge'] = level_dict['halfedge'] ** batch['scaling_level_halfedge']
-        elif 'scaling_noise_halfedge' in batch:
-            level_dict['halfedge'] = 1 - (1 - level_dict['halfedge']) * batch['scaling_noise_halfedge']
-        
-        return level_dict
-
-    def add_noise(self, node_type, node_pos, halfedge_type, batch,
-                  from_prior=False, level_dict=None):
-        
-        task = self._get_task(batch)
-        # # recenter before add noise
-        if (task == 'denovo'):
-            batch_node = getattr(batch, 'node_type_batch',
-                        torch.zeros(node_type.shape[0], dtype=torch.long, device=node_pos.device))  
-            node_pos_center = scatter_mean(node_pos, batch_node, dim=0, dim_size=batch_node.max()+1)[batch_node]
-            node_pos = node_pos - node_pos_center
-            if self.mode == 'train':
-                batch.update({'node_pos': node_pos.clone()})
-        
-        noised_data = self.prior.add_noise(
-            node_type, node_pos, halfedge_type, 
-            level_dict=level_dict, from_prior=from_prior)
-        pos_in = noised_data[1]
-
-        # # recenter after add noise
-        if (task == 'denovo'):
-            batch_node = getattr(batch, 'node_type_batch',
-                        torch.zeros(node_type.shape[0], dtype=torch.long, device=node_pos.device))
-            pos_in_center = scatter_mean(pos_in, batch_node, dim=0, dim_size=batch_node.max()+1)[batch_node]
-            pos_in = pos_in - pos_in_center
-
-        in_dict = {'node':noised_data[0], 'pos':pos_in, 'halfedge':noised_data[2]}
-        return in_dict
-    
-    def outputs2batch(self, batch, outputs):
-        
-        if self.post_process is None:
-            batch['node_type'] = outputs['pred_node'].argmax(-1)
-            batch['node_pos'] = outputs['pred_pos']
-            batch['halfedge_type'] = outputs['pred_halfedge'].argmax(-1)
-        elif self.post_process == 'redock':
-            fixed_node = batch['fixed_node']
-            fixed_node_bool = (fixed_node == 1)
-            fixed_halfedge = batch['fixed_halfedge']
-            fixed_halfedge_bool = (fixed_halfedge == 1)
-            batch['node_type'][~fixed_node_bool] = outputs['pred_node'].argmax(-1)[~fixed_node_bool]
-            batch['halfedge_type'][~fixed_halfedge_bool] = outputs['pred_halfedge'].argmax(-1)[~fixed_halfedge_bool]
-            batch['node_pos'] = outputs['pred_pos']
-
-            redock_config = self.config.redock
-            start_step = redock_config.start_step
-            step = batch['step']
-
-            if step <= start_step:  # now in dock mode
-                fixed_node = torch.ones_like(fixed_node)
-                fixed_halfedge = torch.ones_like(fixed_halfedge)
-                batch['fixed_node'] = fixed_node
-                batch['fixed_halfedge'] = fixed_halfedge
-        elif self.post_process == 'corr_shape':
-            step = batch['step']
-            cfg_shape = self.config['corr_shape']
-            corr_th_step = cfg_shape.get('corr_th_shape', 0.1)
-            
-            if step > corr_th_step:
-                letter = cfg_shape['letter']
-                length = cfg_shape.get('length', 12)
-                height = cfg_shape.get('height', 2)
-                corr_th_dist = cfg_shape.get('corr_th_dist', 2)
-                
-                delta_all = []
-                pred_pos = outputs['pred_pos']
-                for i_batch in range(batch['node_type_batch'].max() + 1):
-                    this_batch = (batch['node_type_batch'] == i_batch)
-                    
-                    pred_pos_batch = pred_pos[this_batch].detach().cpu().numpy()
-                    n_points = pred_pos_batch.shape[0]
-                    shape_points = get_points_from_letter(letter, n_points, length=length, height=height)
-                    
-                    # calc dist mat and match
-                    dist_mat = np.linalg.norm(pred_pos_batch[:, None] - shape_points[None], axis=-1)
-                    row_ind, col_ind = linear_sum_assignment(dist_mat)
-                    
-                    # get delta
-                    shape_points = shape_points[col_ind]
-                    delta_vec = shape_points - pred_pos_batch
-                    delta_dist = np.linalg.norm(delta_vec, axis=-1, keepdims=True)
-                    delta_vec = np.where(delta_dist > corr_th_dist, delta_vec * (step - corr_th_step)/(1-corr_th_step), 0)
-                    delta_all.append(delta_vec)
-                delta_all = np.concatenate(delta_all, axis=0)
-                delta_all = torch.tensor(delta_all, dtype=pred_pos.dtype, device=pred_pos.device)
-            else:
-                delta_all = 0
-            
-            batch['node_pos'] = outputs['pred_pos'] + delta_all
-            batch['node_type'] = outputs['pred_node'].argmax(-1)
-            batch['halfedge_type'] = outputs['pred_halfedge'].argmax(-1)
-            
-        else:
-            raise NotImplementedError('not implement for the post_process types')
-        
-        if self.config.get('scaling_level', False):
-            cfd_node = torch.sigmoid(outputs['confidence_node'][:, 0])
-            cfd_pos = torch.sigmoid(outputs['confidence_pos'][:, 0])
-            cfd_halfedge = torch.sigmoid(outputs['confidence_halfedge'][:, 0])
-
-            batch_node = batch['node_type_batch']
-            batch_halfedge = batch['halfedge_type_batch']
-            n_batch = batch_node.max() + 1
-
-            scaling_level_node = []
-            scaling_level_pos = []
-            scaling_level_halfedge = []
-            for i_batch in range(n_batch):
-                cfd_node_this = cfd_node[batch_node==i_batch]
-                cfd_pos_this = cfd_pos[batch_node==i_batch]
-                cfd_halfedge_this = cfd_halfedge[batch_halfedge==i_batch]
-                
-                s = self.config.scaling_level.s
-                # scaling_node = 1 - ((cfd_node_this - cfd_node_this.min()) / (cfd_node_this.max() - cfd_node_this.min() + 1e-8)) * 2
-                scaling_node = torch.median(cfd_node_this) - cfd_node_this
-                scaling_node = scaling_node / scaling_node.max()
-                scaling_node = scaling_node.clamp(min=0)
-                scaling_node = s ** scaling_node  # 2 -> 0.5: cfd low -> high
-                scaling_level_node.append(scaling_node)
-                
-                # scaling_pos = 1 - ((cfd_pos_this - cfd_pos_this.min()) / (cfd_pos_this.max() - cfd_pos_this.min() + 1e-8)) * 2
-                scaling_pos = torch.median(cfd_pos_this) - cfd_pos_this
-                scaling_pos = scaling_pos / scaling_pos.max()
-                scaling_pos = scaling_pos.clamp(min=0)
-                scaling_pos = s ** scaling_pos
-                scaling_level_pos.append(scaling_pos)
-                
-                # scaling_halfedge = 1 - ((cfd_halfedge_this - cfd_halfedge_this.min()) / (cfd_halfedge_this.max() - cfd_halfedge_this.min() + 1e-8)) * 2
-                scaling_halfedge = torch.median(cfd_halfedge_this) - cfd_halfedge_this
-                scaling_halfedge = scaling_halfedge / scaling_halfedge.max()
-                scaling_halfedge = scaling_halfedge.clamp(min=0)
-                scaling_halfedge = s ** scaling_halfedge
-                scaling_level_halfedge.append(scaling_halfedge)
-            
-            scaling_level_node = torch.cat(scaling_level_node)
-            scaling_level_pos = torch.cat(scaling_level_pos)
-            scaling_level_halfedge = torch.cat(scaling_level_halfedge)
-            batch.update({
-                'scaling_level_node': scaling_level_node,
-                'scaling_level_pos': scaling_level_pos,
-                'scaling_level_halfedge': scaling_level_halfedge,
-            })
-        elif self.config.get('shift_level', False):
-            end_step = self.config.shift_level.end_step
-            step = batch['step']
-
-            scaling = (step - end_step) / (self.init_step - end_step) + 0.01
-            scaling = np.clip(scaling, 0.01, 1)
-            batch.update({
-                'scaling_noise_node': scaling,
-                'scaling_noise_pos': scaling,
-                'scaling_noise_halfedge': scaling,
-            })
-        elif self.config.get('shift_typelevel', False):
-            end_step = self.config.shift_typelevel.end_step
-            step = batch['step']
-
-            scaling = (step - end_step) / (self.init_step - end_step) + 0.01
-            scaling = np.clip(scaling, 0.01, 1)
-            batch.update({
-                'scaling_noise_node': scaling,
-                'scaling_noise_halfedge': scaling,
-            })
-        
-        
-        return batch
-    
-    def additional_process(self, batch, in_dict):
-        if self.post_process == 'redock':
-            fixed_node = batch['fixed_node'].bool()
-            fixed_halfedge = batch['fixed_halfedge'].bool()
-            in_dict['node'][fixed_node] = batch['node_type'][fixed_node].clone()
-            in_dict['halfedge'][fixed_halfedge] = batch['halfedge_type'][fixed_halfedge].clone()
-        return in_dict
-
-
-@register_sample_noise('sbdd')
-class SBDDSamplNoiser(DenovoSampleNoiser):
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs, task_name='sbdd')
-
-
+# XXX
 @register_sample_noise('conf')
 class ConfSampleNoiser(BaseSampleNoiser):
     """
@@ -1467,7 +1127,7 @@ class ConfSampleNoiser(BaseSampleNoiser):
         #     batch['confidence_halfedge'] = outputs['confidence_halfedge']
         return batch
 
-
+# XXX
 @register_sample_noise('dock')
 class DockSamplNoiser(ConfSampleNoiser):
     """
@@ -1481,6 +1141,346 @@ class DockSamplNoiser(ConfSampleNoiser):
     """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs, task_name='dock')
+
+@register_sample_noise('mixed')
+class MixedSampleNoiser:
+    """
+    按 ``batch.task`` 把样本分派给相应任务噪声器。
+
+    构造参数:
+        - config.name: str, 固定为 ``mixed``。
+        - config.individual: list[config], 每项是一个子噪声器配置；``task_cfg.name`` 同时作为注册名和分派键。
+        - ``*args``/``**kwargs``: 原样传给每个 ``get_sample_noiser``，通常含类别数、mode、device 与训练参考配置。
+
+    派生字段:
+        - noiser_dict: dict[str, BaseSampleNoiser], 从任务名到已实例化子噪声器的映射。
+
+    调用输入:
+        - batch.task: str|list[str], 训练变换通常传 str；采样批次可能传同值列表。
+
+    调用输出:
+        - batch: 对应子噪声器原地新增 ``node_in``、``pos_in``、``halfedge_in`` 后的同一对象。
+    """
+    def __init__(self, config, *args, **kwargs):
+        super().__init__()
+        # ``config.name``：str，固定为 ``mixed``，选择当前分派器。
+        # ``config.individual[*].name``：str，子 noiser 注册名与 ``batch.task`` 分派键。
+        # ``config.individual[*].prior``：Mapping|str，子任务先验配置。
+        # ``config.individual[*].level``：Mapping，子任务信息等级配置。
+        # ``config.individual[*].num_steps``：int|缺省，子任务 sample 迭代步数。
+        # ``config.individual[*].reassign_in``：bool|缺省，子任务训练输入同构重排开关。
+        # ``self.config``：EasyDict，保留上述 mixed 顶层和有序子任务叶。
+        self.config = config
+        # ``self.noiser_dict``：dict[str, noiser]，键来自每个 task_cfg.name；同名项会覆盖先前实例。
+        self.noiser_dict = {}
+        # ``task_cfg.name``：str，当前子 noiser 的注册名与分派键。
+        # ``task_cfg.prior``：Mapping|str，当前子任务先验配置。
+        # ``task_cfg.level``：Mapping，当前子任务信息等级配置。
+        # ``task_cfg.num_steps``：int|缺省，当前子任务 sample 步数。
+        # ``task_cfg.reassign_in``：bool|缺省，当前子任务训练同构重排开关。
+        for task_cfg in config.individual:
+            # ``self.noiser_dict``：BaseSampleNoiser 子类实例，以 task_cfg.name 为分派键；同名项覆盖旧实例。
+            self.noiser_dict[task_cfg.name] = get_sample_noiser(task_cfg, *args, **kwargs)
+
+    def __call__(self, batch, *args, **kwargs):
+        """按图级任务名把同任务批次分派给对应子 noiser。
+
+        输入参数:
+            - batch: PyG Data|Batch，至少含图级 ``task`` 叶及被子 noiser 读取的分子状态、prompt 和运动注释叶。
+            - batch.task: str|list[str]，单样本任务名或 PyG 收集后的逐图任务名列表。
+            - ``*args``: 位置参数，原样传给选中的 ``BaseSampleNoiser.__call__``。
+            - ``**kwargs``: 关键字参数，原样传给选中的 ``BaseSampleNoiser.__call__``。
+
+        返回值:
+            - batch: PyG Data|Batch，选中子 noiser 写入 ``node_in``、``pos_in`` 和 ``halfedge_in`` 后的同一容器。
+        """
+        # ``task``：str|list[str]，列表时假定批次内同任务并选择第一项；此处没有独立的一致性校验。
+        task = batch['task']
+        if isinstance(task, list):
+            # ``task``：str，采样批次假定所有 task 同值并取首项；此处不验证一致性。
+            task = task[0]
+        return self.noiser_dict[task](batch, *args, **kwargs)
+
+
+@register_sample_noise('dynamic')
+class DynamicSettingSampleNoiser:
+    def __init__(self, config, *args, **kwargs):
+        self.config = config
+        # process phase
+        self.phases = config.phases
+        self.total_steps = sum(self.phases.num_steps)
+        self.cum_steps = np.cumsum(self.phases.num_steps)
+
+        base_noise_cfg = config.base_noise
+        base_noise_cfg.num_steps = self.total_steps
+        self.base_noiser = get_sample_noiser(base_noise_cfg, *args, **kwargs)
+
+    def __call__(self, batch, *args, **kwargs):
+        step = kwargs['step']
+        global_step = self.total_steps * (1 - step)
+        index_stage = np.where(step > self.cum_steps)[0]
+        settings_this_stage = self.phases.settings[index_stage]
+        
+        # renew setting step
+        phase_step = self.phases.num_steps[index_stage]
+        phase_interval = self.phases.step_intervals[index_stage]
+        phase_bins = phase_interval / phase_step
+        phase_local_step = global_step - max(self.cum_steps[index_stage-1], 0)
+        step = phase_interval[0] - phase_bins * phase_local_step
+        assert step > phase_interval[1], 'step out of interval'
+        kwargs.update({'step': step})
+        
+        # supress settings
+        batch = self._overwrite_settings(batch, settings_this_stage)
+        return self.base_noiser(batch, *args, **kwargs)
+        
+    def _overwrite_settings(self, batch, new_settings):
+        old_settings = batch.setting
+        if isinstance(old_settings, list):
+            assert len(old_settings) == len(set(old_settings)), 'settings are not unique for the batch'
+            new_settings = [new_settings for _ in old_settings]
+        else:
+            raise NotImplementedError('not implement for the setting types')
+        batch.update({'settings': new_settings})
+        return batch
+    
+    def steps_loop(self, *args, **kwargs):
+        return self.base_noiser.steps_loop(*args, **kwargs)
+
+    def outputs2batch(self, batch, outputs):
+        return self.base_noiser.outputs2batch(batch, outputs)
+
+
+@register_sample_noise('denovo')
+class DenovoSampleNoiser(BaseSampleNoiser):
+    def __init__(self,
+        config, num_node_types, num_edge_types,
+        mode='sample', device='cpu', ref_config=None, task_name='denovo',
+        **kwargs
+    ):
+        super().__init__(task_name, config, num_node_types, num_edge_types,
+                mode, device, ref_config, **kwargs)
+        
+        # define prior
+        prior_config = config.prior if config.prior != 'from_train' else self.ref_prior_config
+        self.prior = MolPrior(prior_config, num_node_types, num_edge_types).to(device)
+
+        # define info level
+        self.level = MolInfoLevel(config.level, device=device, mode=mode)
+        
+        self.post_process = config.get('post_process', None)
+        
+
+    def sample_level(self, step, batch):
+        level_dict = {}
+        level_node, level_pos, level_halfedge = self.level.sample_for_mol(
+            step,
+            n_node=batch['node_type'].shape[0],
+            n_pos=batch['node_type'].shape[0],
+            n_edge=batch['halfedge_type'].shape[0],
+        )
+        level_dict.update({
+            f'node': level_node,
+            f'pos': level_pos,
+            f'halfedge': level_halfedge,
+        })
+        
+        
+        if 'scaling_level_node' in batch:
+            level_dict['node'] = level_dict['node'] ** batch['scaling_level_node']
+        elif 'scaling_noise_node' in batch:
+            level_dict['node'] = 1 - (1 - level_dict['node']) * batch['scaling_noise_node']
+        if 'scaling_level_pos' in batch:
+            level_dict['pos'] = level_dict['pos'] ** batch['scaling_level_pos']
+        elif 'scaling_noise_pos' in batch:
+            level_dict['pos'] = 1 - (1 - level_dict['pos']) * batch['scaling_noise_pos']
+        if 'scaling_level_halfedge' in batch:
+            level_dict['halfedge'] = level_dict['halfedge'] ** batch['scaling_level_halfedge']
+        elif 'scaling_noise_halfedge' in batch:
+            level_dict['halfedge'] = 1 - (1 - level_dict['halfedge']) * batch['scaling_noise_halfedge']
+        
+        return level_dict
+
+    def add_noise(self, node_type, node_pos, halfedge_type, batch,
+                  from_prior=False, level_dict=None):
+        
+        task = self._get_task(batch)
+        # # recenter before add noise
+        if (task == 'denovo'):
+            batch_node = getattr(batch, 'node_type_batch',
+                        torch.zeros(node_type.shape[0], dtype=torch.long, device=node_pos.device))  
+            node_pos_center = scatter_mean(node_pos, batch_node, dim=0, dim_size=batch_node.max()+1)[batch_node]
+            node_pos = node_pos - node_pos_center
+            if self.mode == 'train':
+                batch.update({'node_pos': node_pos.clone()})
+        
+        noised_data = self.prior.add_noise(
+            node_type, node_pos, halfedge_type, 
+            level_dict=level_dict, from_prior=from_prior)
+        pos_in = noised_data[1]
+
+        # # recenter after add noise
+        if (task == 'denovo'):
+            batch_node = getattr(batch, 'node_type_batch',
+                        torch.zeros(node_type.shape[0], dtype=torch.long, device=node_pos.device))
+            pos_in_center = scatter_mean(pos_in, batch_node, dim=0, dim_size=batch_node.max()+1)[batch_node]
+            pos_in = pos_in - pos_in_center
+
+        in_dict = {'node':noised_data[0], 'pos':pos_in, 'halfedge':noised_data[2]}
+        return in_dict
+    
+    def outputs2batch(self, batch, outputs):
+        
+        if self.post_process is None:
+            batch['node_type'] = outputs['pred_node'].argmax(-1)
+            batch['node_pos'] = outputs['pred_pos']
+            batch['halfedge_type'] = outputs['pred_halfedge'].argmax(-1)
+        elif self.post_process == 'redock':
+            fixed_node = batch['fixed_node']
+            fixed_node_bool = (fixed_node == 1)
+            fixed_halfedge = batch['fixed_halfedge']
+            fixed_halfedge_bool = (fixed_halfedge == 1)
+            batch['node_type'][~fixed_node_bool] = outputs['pred_node'].argmax(-1)[~fixed_node_bool]
+            batch['halfedge_type'][~fixed_halfedge_bool] = outputs['pred_halfedge'].argmax(-1)[~fixed_halfedge_bool]
+            batch['node_pos'] = outputs['pred_pos']
+
+            redock_config = self.config.redock
+            start_step = redock_config.start_step
+            step = batch['step']
+
+            if step <= start_step:  # now in dock mode
+                fixed_node = torch.ones_like(fixed_node)
+                fixed_halfedge = torch.ones_like(fixed_halfedge)
+                batch['fixed_node'] = fixed_node
+                batch['fixed_halfedge'] = fixed_halfedge
+        elif self.post_process == 'corr_shape':
+            step = batch['step']
+            cfg_shape = self.config['corr_shape']
+            corr_th_step = cfg_shape.get('corr_th_shape', 0.1)
+            
+            if step > corr_th_step:
+                letter = cfg_shape['letter']
+                length = cfg_shape.get('length', 12)
+                height = cfg_shape.get('height', 2)
+                corr_th_dist = cfg_shape.get('corr_th_dist', 2)
+                
+                delta_all = []
+                pred_pos = outputs['pred_pos']
+                for i_batch in range(batch['node_type_batch'].max() + 1):
+                    this_batch = (batch['node_type_batch'] == i_batch)
+                    
+                    pred_pos_batch = pred_pos[this_batch].detach().cpu().numpy()
+                    n_points = pred_pos_batch.shape[0]
+                    shape_points = get_points_from_letter(letter, n_points, length=length, height=height)
+                    
+                    # calc dist mat and match
+                    dist_mat = np.linalg.norm(pred_pos_batch[:, None] - shape_points[None], axis=-1)
+                    row_ind, col_ind = linear_sum_assignment(dist_mat)
+                    
+                    # get delta
+                    shape_points = shape_points[col_ind]
+                    delta_vec = shape_points - pred_pos_batch
+                    delta_dist = np.linalg.norm(delta_vec, axis=-1, keepdims=True)
+                    delta_vec = np.where(delta_dist > corr_th_dist, delta_vec * (step - corr_th_step)/(1-corr_th_step), 0)
+                    delta_all.append(delta_vec)
+                delta_all = np.concatenate(delta_all, axis=0)
+                delta_all = torch.tensor(delta_all, dtype=pred_pos.dtype, device=pred_pos.device)
+            else:
+                delta_all = 0
+            
+            batch['node_pos'] = outputs['pred_pos'] + delta_all
+            batch['node_type'] = outputs['pred_node'].argmax(-1)
+            batch['halfedge_type'] = outputs['pred_halfedge'].argmax(-1)
+            
+        else:
+            raise NotImplementedError('not implement for the post_process types')
+        
+        if self.config.get('scaling_level', False):
+            cfd_node = torch.sigmoid(outputs['confidence_node'][:, 0])
+            cfd_pos = torch.sigmoid(outputs['confidence_pos'][:, 0])
+            cfd_halfedge = torch.sigmoid(outputs['confidence_halfedge'][:, 0])
+
+            batch_node = batch['node_type_batch']
+            batch_halfedge = batch['halfedge_type_batch']
+            n_batch = batch_node.max() + 1
+
+            scaling_level_node = []
+            scaling_level_pos = []
+            scaling_level_halfedge = []
+            for i_batch in range(n_batch):
+                cfd_node_this = cfd_node[batch_node==i_batch]
+                cfd_pos_this = cfd_pos[batch_node==i_batch]
+                cfd_halfedge_this = cfd_halfedge[batch_halfedge==i_batch]
+                
+                s = self.config.scaling_level.s
+                # scaling_node = 1 - ((cfd_node_this - cfd_node_this.min()) / (cfd_node_this.max() - cfd_node_this.min() + 1e-8)) * 2
+                scaling_node = torch.median(cfd_node_this) - cfd_node_this
+                scaling_node = scaling_node / scaling_node.max()
+                scaling_node = scaling_node.clamp(min=0)
+                scaling_node = s ** scaling_node  # 2 -> 0.5: cfd low -> high
+                scaling_level_node.append(scaling_node)
+                
+                # scaling_pos = 1 - ((cfd_pos_this - cfd_pos_this.min()) / (cfd_pos_this.max() - cfd_pos_this.min() + 1e-8)) * 2
+                scaling_pos = torch.median(cfd_pos_this) - cfd_pos_this
+                scaling_pos = scaling_pos / scaling_pos.max()
+                scaling_pos = scaling_pos.clamp(min=0)
+                scaling_pos = s ** scaling_pos
+                scaling_level_pos.append(scaling_pos)
+                
+                # scaling_halfedge = 1 - ((cfd_halfedge_this - cfd_halfedge_this.min()) / (cfd_halfedge_this.max() - cfd_halfedge_this.min() + 1e-8)) * 2
+                scaling_halfedge = torch.median(cfd_halfedge_this) - cfd_halfedge_this
+                scaling_halfedge = scaling_halfedge / scaling_halfedge.max()
+                scaling_halfedge = scaling_halfedge.clamp(min=0)
+                scaling_halfedge = s ** scaling_halfedge
+                scaling_level_halfedge.append(scaling_halfedge)
+            
+            scaling_level_node = torch.cat(scaling_level_node)
+            scaling_level_pos = torch.cat(scaling_level_pos)
+            scaling_level_halfedge = torch.cat(scaling_level_halfedge)
+            batch.update({
+                'scaling_level_node': scaling_level_node,
+                'scaling_level_pos': scaling_level_pos,
+                'scaling_level_halfedge': scaling_level_halfedge,
+            })
+        elif self.config.get('shift_level', False):
+            end_step = self.config.shift_level.end_step
+            step = batch['step']
+
+            scaling = (step - end_step) / (self.init_step - end_step) + 0.01
+            scaling = np.clip(scaling, 0.01, 1)
+            batch.update({
+                'scaling_noise_node': scaling,
+                'scaling_noise_pos': scaling,
+                'scaling_noise_halfedge': scaling,
+            })
+        elif self.config.get('shift_typelevel', False):
+            end_step = self.config.shift_typelevel.end_step
+            step = batch['step']
+
+            scaling = (step - end_step) / (self.init_step - end_step) + 0.01
+            scaling = np.clip(scaling, 0.01, 1)
+            batch.update({
+                'scaling_noise_node': scaling,
+                'scaling_noise_halfedge': scaling,
+            })
+        
+        
+        return batch
+    
+    def additional_process(self, batch, in_dict):
+        if self.post_process == 'redock':
+            fixed_node = batch['fixed_node'].bool()
+            fixed_halfedge = batch['fixed_halfedge'].bool()
+            in_dict['node'][fixed_node] = batch['node_type'][fixed_node].clone()
+            in_dict['halfedge'][fixed_halfedge] = batch['halfedge_type'][fixed_halfedge].clone()
+        return in_dict
+
+
+@register_sample_noise('sbdd')
+class SBDDSamplNoiser(DenovoSampleNoiser):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs, task_name='sbdd')
+
 
 
 @register_sample_noise('fbdd')
