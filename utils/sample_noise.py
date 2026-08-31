@@ -406,7 +406,7 @@ class BaseSampleNoiser:
             - batch.halfedge_in: int64, (H,), 经过先验、可选处理及 fixed_halfedge 恢复后的模型输入类别。
 
         处理顺序:
-            - 复制当前状态 -> 采信息等级 -> 按 step 选择先验初始化或局部加噪 -> 可选 spring -> 可选同构重排 -> 任务预处理 -> fixed 硬恢复。
+            - 复制当前状态 -> 采信息等级 -> 按 step 选择先验初始化或局部加噪 -> (在 docking&free不会触发) spring -> 可选同构重排 -> (在 docking&free不会触发) 任务预处理 -> fixed 硬恢复。
         """
         # node_pos_protect = deepcopy(batch.node_pos.detach().clone())
         # # check mode and inputs consistency
@@ -485,7 +485,7 @@ class BaseSampleNoiser:
             - add_last: bool, False 产生 S 个正进度；True 额外在末尾产生 0。
 
         产生值:
-            - step: float, ``init_step * k / S``，k 从 S 递减到 1；``add_last=True`` 时再产生 k=0。
+            - step: float, ``init_step * k / S``，k 从 S(=self.num_step) 递减到 1；``add_last=True`` 时再产生 k=0。
 
         边界:
             - 默认序列包含 ``init_step``，不包含 0；当 ``init_step=1`` 时首值会触发 ``from_prior=True``。
@@ -502,6 +502,7 @@ class BaseSampleNoiser:
             yield (step / self.num_steps) * self.init_step # include 1 but not 0
 
 # XXX
+# TODO: 目前的原版实现中, 有太多关于类的嵌套。但是在后续微调中，我们会：不使用多数据集、多任务，关注docking任务;  只使用free版本的噪声，所以在这些配置中，代码的嵌套次数和复杂度都理应得到优化。
 @register_sample_noise('conf')
 class ConfSampleNoiser(BaseSampleNoiser):
     """
@@ -592,6 +593,8 @@ class ConfSampleNoiser(BaseSampleNoiser):
             )
             # ``level_dict``：dict.pos: float, (N,)，free 逐原子位移的信息等级。
             level_dict = {'pos': level_pos}
+        
+        # see me: 下面不需要关注, 因为我们只使用 free 噪声
         elif setting == 'flexible':
             # ``n_trans``：int B，每个图对应一个整体平移向量。
             n_trans = getattr(batch, 'num_graphs', 1)
@@ -681,7 +684,7 @@ class ConfSampleNoiser(BaseSampleNoiser):
         # ``task``：str，决定是否在加噪前后移除配体整体平移；conf 会，dock 不会。
         task = self._get_task(batch)
         # ``setting``：str，决定自由原子噪声或结构化 trans/rot/tor 先验。
-        setting = self._get_setting(batch)
+        setting = self._get_setting(batch)  # return dict_list2item(batch['task_setting'])
         # setting = 'free'
         # ``additional_kwargs.node_type``：None，pos_only 路径明确不向原子类别先验传标签。
         # ``additional_kwargs.halfedge_type``：None，pos_only 路径明确不向半边类别先验传标签。
@@ -695,7 +698,7 @@ class ConfSampleNoiser(BaseSampleNoiser):
             if 'node_type_batch' in batch:
                 # ``mol_size``：LongTensor，形状为 (B,)；每个图的原子计数；由 N 个图号直方图得到。
                 mol_size = torch.bincount(batch['node_type_batch'])
-                # ``mol_size``：LongTensor，形状为 (N,)；按 node_type_batch 把所属图的原子数广播回每个原子。
+                # ``mol_size``：LongTensor，形状为 (N,)；原子所在图(配体)的原子个数
                 mol_size = mol_size[batch['node_type_batch']]
             else:
                 # ``mol_size``：LongTensor，形状为 (N,)；单图时每个原子位置都填相同的 num_nodes=N。
@@ -703,6 +706,8 @@ class ConfSampleNoiser(BaseSampleNoiser):
             additional_kwargs.update({
                 'mol_size': mol_size,
             })
+
+        # see me: 下面的不用看
         elif setting in ['flexible', 'torsional']:
             additional_kwargs.update({
                 'tor_bonds_anno': batch['tor_bonds_anno'],
@@ -717,7 +722,6 @@ class ConfSampleNoiser(BaseSampleNoiser):
             additional_kwargs.update({
                 'domain_node_index': batch['domain_node_index'],
             })
-                
         # # recenter before add_noise
         if (task == 'conf'):
             # ``batch_node``：LongTensor，形状为 (N,)；每个原子所属图号；单图 Data 缺省为全 0。
@@ -730,10 +734,13 @@ class ConfSampleNoiser(BaseSampleNoiser):
             if self.mode == 'train':
                 batch.update({'node_pos': node_pos.clone()})  # can be ommited since featurizer has done this
             
+
         # ``pos_in``：FloatTensor，形状为 (N, 3)；按 free 或 trans/rot/tor 先验生成的坐标，单位 Å。
         pos_in = self.prior.add_noise(node_pos=node_pos.clone(), level_dict=level_dict,
                                       from_prior=from_prior, **additional_kwargs,)
         
+
+        # see me: 下面的不用看
         # # recenter after add_noise
         if (task == 'conf'):
             # ``batch_node``：LongTensor，形状为 (N,)；与上面的分图中心计算相同；此处重新取得以保持分支局部完整。
@@ -773,7 +780,7 @@ class ConfSampleNoiser(BaseSampleNoiser):
 
     def reassign_in_node(self, batch, in_dict):
         """
-        在训练加噪后选择与真值最接近的同构原子排列，减小对称原子的标签歧义。
+        按照预先计算好的自同构映射, 在训练加噪后选择与真值最接近的原子排列。
 
         输入字段:
             - batch.matches_iso: int64/array-like, (M, S), M 种同构映射；每行给出同一组 S 个对称原子在该映射下的全局索引。
@@ -811,6 +818,7 @@ class ConfSampleNoiser(BaseSampleNoiser):
 
         return in_dict
     
+    # see me: 对于 docking + free 配置, 默认配置下不会触发
     def additional_process(self, batch, in_dict):
         """
         在基类 fixed 恢复前，为锚点先验选取并固定最靠近口袋的配体原子。
@@ -820,7 +828,7 @@ class ConfSampleNoiser(BaseSampleNoiser):
             - batch.pocket_pos_batch: int64, (P,), 口袋点所属图号。
             - batch.gt_node_pos: float, (N, 3), 已知真值配体坐标，单位 Å。
             - batch.pocket_pos: float, (P, 3), 口袋坐标，单位 Å，和 gt_node_pos 位于同一口袋局部坐标系。
-            - batch.node_closest: int64, (B,), 可选缓存；每图离任一口袋点最近的配体原子全局索引。
+            - batch.node_closest: int64, (B,), 可选缓存；每图离任一口袋点最近的配体原子全局索引(node_closest_this + (batch['node_type_batch']<i_mol).sum())
             - batch.fixed_pos: 0/1, (N,), 坐标硬固定掩码。
             - batch.node_pos: float, (N, 3), 当前参考坐标，单位 Å。
             - in_dict.pos: float, (N, 3), 待约束的加噪输入坐标，单位 Å。
@@ -869,9 +877,11 @@ class ConfSampleNoiser(BaseSampleNoiser):
                 raise NotImplementedError('not implemented for pre_process:', self.pre_process)
         return in_dict
 
+    # see me: 对于 docking & free, 这个原本专门用于推理阶段后处理的函数没有用
     def outputs2batch(self, batch, outputs):
         """
         把网络坐标预测转换为下一采样步的 ``batch.node_pos``，并最后恢复 fixed 原子坐标。
+        outputs2batch() 只用于推理迭代；训练阶段直接计算 pred_pos 对真值的损失，不经过这里。
 
         输入 ``outputs``:
             - pred_pos: float, (N, 3), 网络直接预测的配体坐标，单位 Å。

@@ -1,4 +1,6 @@
 # 本文件仅标注构象生成（conf）和小分子 docking（dock）的任务专属配置。
+# 同行注释解释字段语义；独立的 ``# →`` 注释只记录已经核实的“配置路径 → 初始化/读取位置 → 运行影响”。
+# 为控制阅读密度，当前追溯只覆盖 docking 专线；共用类仅在 docking 确实经过该路径时出现。
 model:
   name: pm_asym_denoiser
   pocket_dim: 128
@@ -39,6 +41,8 @@ loss:
     fixed_pos: 0.1
     fixed_edge: 0.1
     fixed_dist: 0.0005
+  # → scripts/train_pl.py::ModelLightning.__init__() 把 config.loss 交给 models/loss.py::get_loss_func()，name=individual_tasks 实例化 IndividualTasksLoss，并保存 weights 与 tasks。
+  # → models/loss.py::IndividualTasksLoss.forward() 用 tasks 中的 dock 与 batch.task 建立实体掩码；dock/* 只作为分任务日志，实际反向传播仍使用 mixed/total。
   tasks: [denovo, conf, sbdd, dock, maskfill, fbdd, pepdesign]  # list[str]；conf/dock 必须与 batch.task 完全一致，才能分别汇总这两个任务的损失。
   confidence: 
     prob_1A: 0.2
@@ -74,7 +78,7 @@ noise:
       max: 1.
 
 
-  # see me --- 构象生成噪声 ---
+  # NOTE: --- 构象生成噪声 ---
   - name: conf  # str；MixedSampleNoiser 以 batch.task=conf 选择 ConfSampleNoiser。
     reassign_in: True  # bool；从 matches_iso 的同构原子排列中选择与干净构象平均距离最小的映射。
     prior:
@@ -112,16 +116,28 @@ noise:
       max: 1.
 
 
-  # see me --- 小分子 docking 噪声 ---
+  # NOTE --- 小分子 docking 噪声 ---
+  # → scripts/train_pl.py::DataModule.setup() 把 config.noise 交给 get_sample_noiser(..., mode='train')，name=mixed 先实例化 MixedSampleNoiser。
+  # → utils/sample_noise.py::MixedSampleNoiser.__init__() 再把 individual[name=dock] 实例化为 DockSamplNoiser；后者复用 ConfSampleNoiser，但把 task_name 固定为 dock。
+  # → ConfSampleNoiser.__init__() 分别把 prior 初始化为 MolPrior(pos_only=True)，把 level 初始化为 MolInfoLevel；docking 因而只扰动坐标，不扰动已知原子与键类别。
+  # → ForeverTaskDataset.__getitem__() 执行 Compose 后，MixedSampleNoiser.__call__() 按 data.task=dock 分派；BaseSampleNoiser.__call__() 最终写出 node_in、pos_in、halfedge_in。
   - name: dock  # str；MixedSampleNoiser 以 batch.task=dock 选择 DockSamplNoiser。
+    # → BaseSampleNoiser.__call__() 在先验加噪后读取该开关；训练态调用 ConfSampleNoiser.reassign_in_node()，只重排同构原子的 pos 输入行，不改变化学类别。
     reassign_in: True  # bool；从 matches_iso 的同构原子排列中选择与参考 pose 平均距离最小的映射。
     prior:
       pos: 
+
+        # → utils/prior.py::MolPrior.__init__() 对 config.pos 调用 get_prior()；name=allpos 实例化 AllPosPrior，并继续初始化下列逐原子或结构化坐标先验。
+        # → AllPosPrior.add_noise() 不同时混用两套路径：level_dict 含 pos 时走 free Gaussian；否则按 trans → rot → tor 顺序执行 flexible 运动。
         name: allpos  # str；AllPosPrior 按 free 或 flexible 对应的信息等级组合坐标运动先验。
         pos:
+          # → GaussianExplodePrior.__init__() 保存 sigma_max 与 sigma_func；add_noise() 收到 ConfSampleNoiser 按分子大小广播的 mol_size 后构造逐原子噪声。
           name: gaussian_simple  # str；free 模式对配体各原子坐标施加高斯扰动。
           sigma_func: 'sqrt'  # str；按逐原子 mol_size 令 prior 标准差为 max(sigma_max*sqrt(mol_size),1) Å。
           sigma_max: 1.0  # float，单位 Å；与 sqrt(mol_size) 相乘的逐原子 prior 标准差基准。
+
+        # see me: 下面是关于flexible的噪声, 不用看(0.001)
+        # → AllPosPrior.__init__() 分别实例化 TranslationPrior、RotationPrior、TorsionalPrior；只有 task_setting=flexible 产生 trans/rot/tor level，运行时才会依次调用它们。
         translation:
           name: translation  # str；flexible 模式的逐图整体平移先验。
           ve: False  # bool；False 采用 VP 混合：sqrt(level)*当前中心 + sqrt(1-level)*Gaussian。
@@ -133,7 +149,10 @@ noise:
         torsional:
           name: torsional  # str；flexible 模式逐可旋转键扭转先验。
           sigma_max: 0.2  # float，以 π 为倍率；最大扭转角尺度为 0.2π rad。
+
     level:
+      # → ConfSampleNoiser.__init__() 用本组初始化 MolInfoLevel；sample_level() 再按 task_setting 决定广播为逐原子 pos，还是逐图 trans/rot 与逐键 tor。
+      # → 训练时 MolInfoLevel.sample_for_mol(step=None) 先为每个复合物采一个共享随机 step；uniform 将其反向映射并缩放到 [min, max]。
       name: uniform  # str；训练时每个复合物采一个共享信息等级，再广播到 pos/trans/rot/tor 实体。
       min: 0.  # float；信息等级下界；训练态 0 对应相应运动先验的最大扰动强度。
       max: 1.  # float；信息等级上界；1 保留参考 docking pose。
@@ -282,6 +301,9 @@ transforms:
 
 
       # --- 小分子 docking 任务提示 ---
+      # → scripts/train_pl.py::DataModule.setup() 把 transforms.task 交给 get_transforms(..., mode='train')；name=mixed 初始化 MixedTransform，再把 individual[name=dock] 初始化为 ConfTransform。
+      # → ForeverTaskDataset.__getitem__() 已先写入 data.task=dock；Compose 中 MixedTransform.__call__() 据此分派到该 ConfTransform。
+      # → ConfTransform.__call__() 用 settings 经 np.random.choice() 选 task_setting，随后 set_fixed() 与 set_torsional_feat() 写入 noiser 和损失共同消费的 fixed_*、刚体域及扭转注释。
       - name: dock  # str；注册名 dock 复用 ConfTransform，为配体 pose 写入 fixed 掩码与运动自由度注释。
         settings:
           # float 相对权重；ConfTransform 归一化后为每个训练样本随机选择一种 setting。
@@ -363,6 +385,8 @@ data:
         torsion: torsion.lmdb  # path；torsional setting 所需的可旋转键几何字段子库。
         decom: decom.lmdb
     # --- 小分子 docking 数据源 ---
+    # → scripts/train_pl.py::DataModule.setup() 把 data.dataset 与 data.task_db_weights 交给 ForeverTaskDataset；其 setup() 遍历 dbs，并为每个逻辑库初始化 SingleDatabase。
+    # → utils/dataset.py::SingleDatabase.__init__() 将 root、lmdb_root 与 lmdb_path 拼成子库路径并打开只读 LMDB；get_data_key() 对下列三库生成 pocmol10 → torsion → decom 的有序复合键。
     - name: csd  # str；task_db_weights.dock 引用的 CSD 口袋—配体逻辑数据库名。
       lmdb_root: csd/lmdb  # path；相对 data.root 的 CSD 子库目录。
       lmdb_path:
@@ -387,6 +411,7 @@ data:
       lmdb_path:
         mols: mols.lmdb  # path；该库在本配置中只声明基础分子记录，不提供 torsion 子库。
     # --- 小分子 docking 数据源（续）---
+    # → ForeverTaskDataset.get_data_key() 对 apep 追加 peptide 子库，对 pepbdb 只合并 pocmol10 与 peptide；SingleDatabase.__getitem__() 按复合键顺序用后续记录更新基础样本。
     - name: apep  # str；task_db_weights.dock 也把 APEP 作为 docking 样本来源。
       lmdb_root: apep/lmdb
       lmdb_path:
@@ -424,6 +449,8 @@ data:
         apep: 0.01
         pepbdb: 0.0025
     dock:
+      # → ForeverTaskDataset.__init__() 把 weight 原样放入一级 task_weights，并把 db_ratio 除以本组总和后保存为二级 db_weights['dock']。
+      # → ForeverTaskDataset.__iter__() 先按一级概率抽中 dock，再按二级概率抽数据库；__getitem__() 解析 assembly 得到 data_id，并在运行 task transform/noiser 前写入 data.task='dock'。
       # ForeverTaskDataset 先用 weight 选择 dock，再归一化 db_ratio 以选择口袋—配体数据库。
       weight: 0.25  # float；每次无限数据流选中 docking 任务的概率，是本配置中最高的单任务权重。
       db_ratio:

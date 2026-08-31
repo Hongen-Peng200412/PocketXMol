@@ -19,6 +19,7 @@ def register_info_level(name):
 def get_level(name, *args, **kwargs):
     return INFO_LEVEL_DICT[name](*args, **kwargs)
 
+# XXX
 class MolInfoLevel:
     """
     为一个分子采样共享进度，并按自由度实体数广播信息保留比例。
@@ -72,7 +73,7 @@ class MolInfoLevel:
         self.max = config.max
         # ``self.asym``：str|None，几何与离散类型进度的非对称调度策略。
         self.asym = getattr(config, 'asym', None)
-
+        # NOTE: 训练时 configs\train\train_pxm_reduced.yml 是 uniform 没用到, 但推理时 /C:/Users/15919/Desktop/PocketXMol/configs/sample/examples/dock_smallmol.yml 用的 free 指定了 advance 
         if self.name == 'advance':
             # ``self.step2level``：AdvanceScaler，端点校准 sigmoid step->level 映射，并迁移到 device。
             self.step2level = AdvanceScaler(config.step2level).to(device)
@@ -173,7 +174,8 @@ class MolInfoLevel:
             - levels: shape, 位于 ``self.device``；每个元素数值都等于 value。
         """
         return torch.ones(shape, device=self.device) * value
-        
+
+    # NOTE: 此类的核心函数        
     def sample_for_mol(self, step, **kwargs):
         """
         为调用方点名的分子自由度生成逐实体 level 向量。

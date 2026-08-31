@@ -28,6 +28,7 @@ def register_prior(name):
         return cls
     return decorator
 
+# XXX 总————————>class MolPrior(nn.Module)
 def get_prior(config, *args, **kwargs):
     """
     从映射式配置实例化一个先验，或解析 ``name=from_train`` 的配置引用。
@@ -54,7 +55,7 @@ def get_prior(config, *args, **kwargs):
         train_config = kwargs.pop('train_config')
         return get_prior(train_config, *args, **kwargs)
 
-
+# XXX 总————————>class AllPosPrior(nn.Module)
 class MolPrior(nn.Module):
     """
     组合一个位置先验与可选离散原子/半边先验，统一返回带噪模型输入。
@@ -118,7 +119,8 @@ class MolPrior(nn.Module):
             return node_pert, pos_pert, halfedge_pert
         else:
             return pos_pert
-    
+
+# XXX  总————> class GaussianExplodePrior(nn.Module)
 @register_prior('allpos')
 # @register_prior('flexible')
 class AllPosPrior(nn.Module):
@@ -192,6 +194,55 @@ class AllPosPrior(nn.Module):
                             kwargs['domain_node_index'])
         return pos
 
+# XXX
+@register_prior('gaussian_simple')
+class GaussianExplodePrior(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+        sigma_max = getattr(config, 'sigma_max', 1) 
+        # self.sigma_max = nn.Parameter(torch.tensor(sigma_max), requires_grad=False)
+        self.register_buffer('sigma_max', torch.tensor(sigma_max))
+        self.sigma_func = getattr(config, 'sigma_func', None)
+        
+    @torch.no_grad()
+    def add_noise(self, x, info_level, from_prior, mol_size=None):
+
+        if info_level.dim() < x.dim():
+            info_level_exp = info_level[:, None].expand_as(x)
+        else:
+            info_level_exp = info_level
+
+        # NOTE: when info_level == 0, the prior mean is 0. DIFFERENT from GaussianPrior
+        # x = torch.where(info_level_exp == 0, torch.zeros_like(x), x)
+
+        if mol_size is None or self.sigma_func is None:
+            noise = torch.zeros_like(x)
+            noise.normal_(mean=0, std=self.sigma_max)
+        else:
+            assert len(mol_size) == len(x), 'Error: mol_size and x have different dim'
+            if self.sigma_func == 'sqrt': # 
+                sigma = self.sigma_max * mol_size.sqrt()
+                noise = torch.randn_like(x) * sigma[:, None].clamp(min=1)
+            elif self.sigma_func == 'linbias':
+                sigma = (0.08 * mol_size + 1).clamp(min=5)
+                noise = torch.randn_like(x) * sigma[:, None]
+            elif self.sigma_func == 'sqrtbias':
+                sigma = ((mol_size - 40).clamp(min=0).sqrt() + 2).clamp(min=5)
+                noise = torch.randn_like(x) * sigma[:, None]
+            elif self.sigma_func == 'seg59':
+                sigma = torch.clamp(0.08 * mol_size + 1, min=5, max=9)
+                noise = torch.randn_like(x) * sigma[:, None]
+            else:
+                raise NotImplementedError(f'Error: sigma_func {self.sigma_func} not implemented')
+            
+        pert = x + (1 - info_level_exp) * noise
+        if  from_prior:
+            pert = torch.where(info_level_exp == 0, noise, pert)
+            
+        pert = torch.where(info_level_exp == 1, x, pert)
+        return pert
+   
 
 @register_prior('torsional')
 class TorsionalPrior(nn.Module):
@@ -500,55 +551,7 @@ class TranslationPrior(nn.Module):
         x[node_index] = pert
         return x
 
-
-@register_prior('gaussian_simple')
-class GaussianExplodePrior(nn.Module):
-    def __init__(self, config):
-        super().__init__()
-        self.config = config
-        sigma_max = getattr(config, 'sigma_max', 1) 
-        # self.sigma_max = nn.Parameter(torch.tensor(sigma_max), requires_grad=False)
-        self.register_buffer('sigma_max', torch.tensor(sigma_max))
-        self.sigma_func = getattr(config, 'sigma_func', None)
-        
-    @torch.no_grad()
-    def add_noise(self, x, info_level, from_prior, mol_size=None):
-
-        if info_level.dim() < x.dim():
-            info_level_exp = info_level[:, None].expand_as(x)
-        else:
-            info_level_exp = info_level
-
-        # NOTE: when info_level == 0, the prior mean is 0. DIFFERENT from GaussianPrior
-        # x = torch.where(info_level_exp == 0, torch.zeros_like(x), x)
-
-        if mol_size is None or self.sigma_func is None:
-            noise = torch.zeros_like(x)
-            noise.normal_(mean=0, std=self.sigma_max)
-        else:
-            assert len(mol_size) == len(x), 'Error: mol_size and x have different dim'
-            if self.sigma_func == 'sqrt': # 
-                sigma = self.sigma_max * mol_size.sqrt()
-                noise = torch.randn_like(x) * sigma[:, None].clamp(min=1)
-            elif self.sigma_func == 'linbias':
-                sigma = (0.08 * mol_size + 1).clamp(min=5)
-                noise = torch.randn_like(x) * sigma[:, None]
-            elif self.sigma_func == 'sqrtbias':
-                sigma = ((mol_size - 40).clamp(min=0).sqrt() + 2).clamp(min=5)
-                noise = torch.randn_like(x) * sigma[:, None]
-            elif self.sigma_func == 'seg59':
-                sigma = torch.clamp(0.08 * mol_size + 1, min=5, max=9)
-                noise = torch.randn_like(x) * sigma[:, None]
-            else:
-                raise NotImplementedError(f'Error: sigma_func {self.sigma_func} not implemented')
-            
-        pert = x + (1 - info_level_exp) * noise
-        if  from_prior:
-            pert = torch.where(info_level_exp == 0, noise, pert)
-            
-        pert = torch.where(info_level_exp == 1, x, pert)
-        return pert
-    
+ 
 
 @register_prior('gaussian')
 class GaussianPrior(nn.Module):
