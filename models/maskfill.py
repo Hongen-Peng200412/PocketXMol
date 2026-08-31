@@ -31,6 +31,11 @@ class PMAsymDenoiser(Module):
     """
     用同一非时间条件网络预测干净原子类别、坐标和半边类别。
 
+    当前 reduced 配置的 docking + free 路径:
+        - ``model.name=pm_asym_denoiser`` 只实例化本类; ``gvp``、``pocket.name`` 和 ``denoiser.name`` 均缺省, 因而口袋编码器与配体去噪骨干都选择 ``ContextNodeEdgeNet``.
+        - 口袋实例以 ``node_only=True`` 执行 4 个节点更新块; 配体实例执行 6 个节点—边—坐标联合更新块, 每层通过 32-NN 口袋上下文更新 pose.
+        - ``free`` 不选择另一神经网络; 它只让 noiser 对坐标加入逐原子 Gaussian 噪声, 并传入 ``fixed_node=1, fixed_pos=0, fixed_halfedge=1, fixed_halfdist=0`` prompt. 网络仍输出原子、坐标、半边和 confidence 预测, 采样器只把 ``pred_pos`` 写回下一步.
+
     形状符号:
         - B: PyG 批次中的分子图数量。
         - N: 批次中配体原子总数。

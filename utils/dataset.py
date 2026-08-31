@@ -571,7 +571,7 @@ class ForeverTaskDataset(IterableDataset):
             self.setup(set_iter=True)
 
 
-# [ ] --------------------------------------
+# [ ] 较为次要 --------------------------------------
     def setup(self, set_index=False, set_db=False, set_iter=False,
               ):
         """

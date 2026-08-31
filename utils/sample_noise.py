@@ -405,8 +405,8 @@ class BaseSampleNoiser:
             - batch.pos_in: float, (N, 3), 经过先验、可选处理及 fixed_pos 恢复后的模型输入坐标，单位 Å。
             - batch.halfedge_in: int64, (H,), 经过先验、可选处理及 fixed_halfedge 恢复后的模型输入类别。
 
-        处理顺序:
-            - 复制当前状态 -> 采信息等级 -> 按 step 选择先验初始化或局部加噪 -> (在 docking&free不会触发) spring -> 可选同构重排 -> (在 docking&free不会触发) 任务预处理 -> fixed 硬恢复。
+        # see me 处理顺序:
+            - 复制当前状态 -> 采信息等级 -> 按 step 选择先验初始化或局部加噪 -> (在 docking&free不会触发) spring -> [在 docking&free下会触发]同构重排 -> (在 docking&free不会触发) 任务预处理 -> fixed 硬恢复。
         """
         # node_pos_protect = deepcopy(batch.node_pos.detach().clone())
         # # check mode and inputs consistency
@@ -443,7 +443,7 @@ class BaseSampleNoiser:
         # ``in_dict``：三叶 dict，执行任务子类的已知坐标预处理。
         in_dict = self.additional_process(batch, in_dict)
             
-        
+        # see me: 这些逻辑也有些别扭。类似的很多事实意味着新版代码可能需要大重构————即便不改变科学逻辑
         # fixed_node 对齐 N 个原子；先比较后覆盖，避免 fixed 原子类别被先验或预处理改变。
         if not (batch.node_type[batch['fixed_node']==1] ==  in_dict['node'][batch['fixed_node']==1]).all():
             # print('Force fixed_node to be fixed')
@@ -877,7 +877,7 @@ class ConfSampleNoiser(BaseSampleNoiser):
                 raise NotImplementedError('not implemented for pre_process:', self.pre_process)
         return in_dict
 
-    # see me: 对于 docking & free, 这个原本专门用于推理阶段后处理的函数没有用
+    # see me: 对于 docking & free, 这个原本专门用于推理阶段的函数没有用, 也就是退化为: pred_pos = outputs['pred_pos']  batch['node_pos'] = pred_pos.clone()
     def outputs2batch(self, batch, outputs):
         """
         把网络坐标预测转换为下一采样步的 ``batch.node_pos``，并最后恢复 fixed 原子坐标。

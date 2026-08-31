@@ -227,7 +227,7 @@ class DataModule(pl.LightningDataModule):
         # ``in_dims``：dict[str, int]，键集合是模型构造所需的类别数及可选口袋输入宽度。
         in_dims = self.get_in_dims(featurizers)
 
-# [ ] --------------------------------------
+        # [ ] --------------------------------------
         # ``task_trans``：callable，训练时在单个样本上按 ``data['task']`` 构造 fixed prompt 与刚体/扭转注释。
         task_trans = get_transforms(self.config.transforms.task, mode='train',
                                     num_node_types=in_dims['num_node_types'],)
@@ -261,7 +261,7 @@ class DataModule(pl.LightningDataModule):
             # ``num_samplers_args.world_size``：int，参与训练的 DDP 进程总数。
             'world_size': self.trainer.world_size,
         }     
-# [ ] --------------------------------------
+        # [ ] --------------------------------------
 
         # ``train_set``：IterableDataset，变换发生在批处理前，因此每次 noiser 只处理一个确定任务的样本。
         train_set = ForeverTaskDataset(data_cfg.dataset, data_cfg.task_db_weights,'train',
@@ -297,7 +297,7 @@ class DataModule(pl.LightningDataModule):
     def val_dataloader(self):
         return self.val_loader
 
-
+# XXX
 class ModelLightning(pl.LightningModule):
     """
     封装共享去噪网络、逐任务损失、优化器和训练/验证日志。
@@ -595,15 +595,19 @@ class ModelLightning(pl.LightningModule):
             - batch.fixed_pos: LongTensor|BoolTensor，形状为 (N,)，坐标条件掩码。
             - batch.fixed_halfedge: LongTensor|BoolTensor，形状为 (H,)，半边类别条件掩码。
             - batch.fixed_halfdist: LongTensor|BoolTensor，形状为 (H,)，半边距离条件掩码。
+
             - batch.node_type_batch: LongTensor，形状为 (N,)，逐原子图归属编号。
             - batch.halfedge_type_batch: LongTensor，形状为 (H,)，逐半边图归属编号。
+
             - batch.pocket_atom_feature: FloatTensor，形状为 (P, D_p_raw)，口袋输入特征。
             - batch.pocket_pos: FloatTensor，形状为 (P, 3)，口袋局部坐标，单位 Å。
             - batch.pocket_knn_edge_index: LongTensor，形状为 (2, E_p)，口袋 kNN 有向边端点。
             - batch.pocket_pos_batch: LongTensor，形状为 (P,)，逐口袋原子图归属编号。
+
             - batch.node_type: LongTensor，形状为 (N,)，干净原子类别监督。
             - batch.node_pos: FloatTensor，形状为 (N, 3)，干净配体局部坐标监督，单位 Å。
             - batch.halfedge_type: LongTensor，形状为 (H,)，干净半边类别监督。
+
             - batch.task: list[str]，长度为 B，逐图任务名。
             - batch.domain_node_index: LongTensor，形状为 (2, K)，刚体域—原子归属索引。
             - batch.tor_bonds_anno: LongTensor，形状为 (T, 3)，扭转层级与轴端点。
@@ -617,6 +621,7 @@ class ModelLightning(pl.LightningModule):
             - outputs.confidence_node: FloatTensor，形状为 (N, 1)，可选原子 confidence 原始输出。
             - outputs.confidence_pos: FloatTensor，形状为 (N, 1)，可选坐标 confidence 原始输出。
             - outputs.confidence_halfedge: FloatTensor，形状为 (H, 1)，可选半边 confidence 原始输出。
+
             - loss_dict.<scope>/node: 标量 Tensor，待恢复原子类别损失。
             - loss_dict.<scope>/fixed_node: 标量 Tensor，条件原子类别损失。
             - loss_dict.<scope>/pos: 标量 Tensor，待恢复坐标损失。
