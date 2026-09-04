@@ -2,32 +2,41 @@
 # 同行注释解释字段语义；独立的 ``# →`` 注释只记录已经核实的“配置路径 → 初始化/读取位置 → 运行影响”。
 # 为控制阅读密度，当前追溯只覆盖 docking 专线；共用类仅在 docking 确实经过该路径时出现。
 model:
-  name: pm_asym_denoiser
-  pocket_dim: 128
-  node_dim: 320
-  addition_node_features: ['is_peptide']
-  add_output: ['confidence']
-  edge_dim: 96
+  # → scripts/train_pl.py::ModelLightning.__init__() 依据 model.name 实例化 PMAsymDenoiser，并把整个 model 映射作为 config 传入。
+  name: pm_asym_denoiser  # str，模型注册名；选择 models/maskfill.py::PMAsymDenoiser。
+
+  # --- 配体、口袋表示与可选输出 ---
+  pocket_dim: 128  # int，口袋原子特征投影及编码后的节点宽度，也是去噪器的 context_dim。
+  node_dim: 320  # int，配体节点总宽度；包含原子类别 Embedding、2 维 fixed prompt 和下列附加标量。
+  addition_node_features: ['is_peptide']  # list[str]，按列表顺序追加的逐原子标量字段；此处从 batch.is_peptide 追加 1 维。
+  add_output: ['confidence']  # list[str]，额外输出头名称；confidence 使能节点类别、坐标和半边三个置信度头。
+  edge_dim: 96  # int，配体有向边的总宽度；半边类别 Embedding 预留 2 维给 fixed_halfedge/fixed_halfdist prompt。
+
+  # --- 口袋节点编码器 ---
+  # → models/maskfill.py::PMAsymDenoiser.__init__() 以 node_only=True 将 pocket 展开传给 models/graph_context.py::ContextNodeEdgeNet。
   pocket:
-    edge_dim: 32
-    hidden_dim: 128
-    num_blocks: 4
+    edge_dim: 32  # int，口袋内有向边隐藏宽度；首层把距离径向基映射到该宽度。
+    hidden_dim: 128  # int，口袋节点消息网络的隐藏宽度。
+    num_blocks: 4  # int，口袋节点更新块数；node_only 模式不更新边和坐标。
     dist_cfg:
-      num_gaussians: 32
+      num_gaussians: 32  # int，口袋内每条边的距离高斯基通道数；start/stop/type_ 缺省为 0/10/exp，单位 Å。
+
+  # --- 配体—口袋联合去噪器 ---
+  # → models/maskfill.py::PMAsymDenoiser.__init__() 将 denoiser 展开传给 ContextNodeEdgeNet，并额外传入 context_dim=pocket_dim。
   denoiser:
-    hidden_dim: 320
-    num_blocks: 6
+    hidden_dim: 320  # int，配体节点消息网络的隐藏宽度。
+    num_blocks: 6  # int，节点、边和坐标的联合更新块数；每层都重算配体内距离与口袋近邻。
     dist_cfg:
-      stop: 15
-      num_gaussians: 64
-    gate_dim: 2
+      stop: 15  # float，配体内距离高斯基的上界，单位 Å；超出值在展开前截断到该上界。
+      num_gaussians: 64  # int，配体内每条边的距离高斯基通道数；start/type_ 缺省为 0/exp。
+    gate_dim: 2  # int，逐节点/边 fixed prompt 宽度；分别对应 fixed_node+fixed_pos 与 fixed_halfedge+fixed_halfdist。
     context_cfg:
-      edge_dim: 128
-      knn: 32
+      edge_dim: 128  # int，配体—口袋有向边的隐藏宽度。
+      knn: 32  # int，每层为每个配体原子选取的同图口袋近邻数上限；小于 100 时走 PyG kNN 分支。
       dist_cfg:
-        stop: 20
-        num_gaussians: 64
-        type_: linear
+        stop: 20  # float，配体—口袋距离高斯基的上界，单位 Å；超出值在展开前截断到该上界。
+        num_gaussians: 64  # int，每条配体—口袋边的距离高斯基通道数。
+        type_: linear  # str，在缺省 start=0 与 stop=20 Å 的闭区间内等距放置 64 个高斯中心。
 
 loss:
   name: individual_tasks
