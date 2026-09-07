@@ -1,3 +1,13 @@
+——————————————————————————— 分割线：这是我为了改造设置的 README ———————————————————————————
+- C:\Users\15919\Desktop\PocketXMol\代码阅读指南 是代码阅读路线图，用于AI agent 或人类新手快速根据它阅读整个科学库。
+- C:\Users\15919\Desktop\PocketXMol\想法 里面是粗糙的想法或规划。
+
+
+
+
+
+
+———————————————————————————— 分割线：以下是原作者旧版 README ———————————————————————————
 # PocketXMol
 
 [![DOI](https://img.shields.io/badge/DOI-10.1016%2Fj.cell.2026.01.003-blue)](https://doi.org/10.1016/j.cell.2026.01.003)
