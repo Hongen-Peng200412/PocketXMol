@@ -44,7 +44,9 @@ class ContextNodeBlock(Module):
         - x: (N, node_dim), 当前节点特征。
         - edge_index: int64, (2, E), 分子内有向边；每列 ``[目标节点, 来源节点]``，两行数值均索引 x 第一维。
         - edge_attr: (E, edge_dim), 分子内有向边特征；与 ``edge_index`` 第二维逐边对齐。
+
         - node_extra: (N, gate_dim)|None, fixed prompt；``gate_dim>0`` 时必需，第 i 行与 x 第 i 个节点对齐。
+
         - ctx_x: (P, context_dim)|None, 可选上下文节点特征。
         - ctx_edge_index: int64, (2, C)|None, 上下文边；每列 ``[待更新目标节点, 上下文来源节点]``，两行分别索引 x 与 ctx_x 第一维。
         - ctx_edge_attr: (C, context_edge_dim)|None, 上下文边的距离特征；与 ``ctx_edge_index`` 第二维对齐。
@@ -52,7 +54,6 @@ class ContextNodeBlock(Module):
     前向输出:
         - out: (N, node_dim), 融合分子内邻居、可选上下文与残差后的节点特征；节点顺序保持不变。
     """
-
     def __init__(self, node_dim, edge_dim, hidden_dim, gate_dim,
                  context_dim=0, context_edge_dim=0, layernorm_before=False):
         super().__init__()
@@ -101,13 +102,15 @@ class ContextNodeBlock(Module):
 
     def forward(self, x, edge_index, edge_attr, node_extra,
                 ctx_x=None, ctx_edge_index=None, ctx_edge_attr=None):
-        """将分子内边与可选口袋上下文消息归约到目标节点。
+        """将分子内边与可选口袋上下文消息归约到目标节点。口袋-only编码时无 gate(也就是 self.gate_dim=0).
 
         输入参数:
             - x: FloatTensor，形状为 (N, node_dim)，当前待更新节点特征。
             - edge_index: LongTensor，形状为 (2, E)，每列为目标节点、来源节点，均索引 ``x`` 第一维。
             - edge_attr: FloatTensor，形状为 (E, edge_dim)，与 ``edge_index`` 列逐边对齐的分子内边特征。
+
             - node_extra: FloatTensor|None，形状为 (N, gate_dim)，逐节点 fixed prompt；``gate_dim>0`` 时必需。
+
             - ctx_x: FloatTensor|None，形状为 (P, context_dim)，可选口袋上下文节点特征。
             - ctx_edge_index: LongTensor|None，形状为 (2, C)，第一行索引 ``x``，第二行索引 ``ctx_x``。
             - ctx_edge_attr: FloatTensor|None，形状为 (C, context_edge_dim)，与 ``ctx_edge_index`` 列逐边对齐的上下文边特征。
@@ -149,8 +152,8 @@ class ContextNodeBlock(Module):
             h_ctx = self.ctx_node_net(ctx_x)
             # ``h_ctx_edge``：FloatTensor，形状为 (C, hidden_dim)；逐上下文边投影距离基特征。
             h_ctx_edge = self.ctx_edge_net(ctx_edge_attr)
-            # ``msg_ctx``：FloatTensor，形状为 (C, hidden_dim)；上下文边特征与来源口袋节点特征逐通道相乘，再经线性层形成消息。
-            msg_ctx = self.ctx_msg_net(h_ctx_edge * h_ctx[col])
+            # ``msg_ctx``：FloatTensor，形状为 (C, hidden_dim)
+            msg_ctx = self.ctx_msg_net(h_ctx_edge * h_ctx[col])  # ----- context 只有和非context连边, 所以和上面的 self.msg_net 结构不同 -----
             if self.gate_dim > 0:
                 # ``gate``：FloatTensor，形状为 (C, hidden_dim)；门控输入依次为上下文边、口袋来源节点、分子目标节点和目标 fixed prompt。
                 gate = self.ctx_gate(torch.cat([ctx_edge_attr, ctx_x[col], x[row], node_extra[row]], dim=-1))
@@ -171,94 +174,27 @@ class ContextNodeBlock(Module):
             out = self.layer_norm(out) + x
         return out
 
-
-class NodeEncoder(Module):
-    
-    def __init__(self, node_dim=256, edge_dim=64, key_dim=128, num_heads=4, 
-                    num_blocks=6, k=48, cutoff=10.0, use_atten=True, use_gate=True,
-                    dist_version='new'):
-        super().__init__()
-
-        self.node_dim = node_dim
-        self.edge_dim = edge_dim
-        self.key_dim = key_dim
-        self.num_heads = num_heads
-        self.num_blocks = num_blocks
-        self.k = k
-        self.cutoff = cutoff
-        self.use_atten = use_atten
-        self.use_gate = use_gate
-
-        if dist_version == 'new':
-            self.distance_expansion = GaussianSmearing(stop=cutoff, num_gaussians=20)
-            self.edge_emb = Linear(self.additional_edge_feat+20, edge_dim)
-        elif dist_version == 'old':
-            self.distance_expansion = GaussianSmearing(stop=cutoff, num_gaussians=edge_dim-self.additional_edge_feat)
-            self.edge_emb = Linear(edge_dim, edge_dim)
-        else:
-            raise NotImplementedError('dist_version notimplemented')
-        self.node_blocks = ModuleList()
-        for _ in range(num_blocks):
-            block = NodeBlock(
-                node_dim=node_dim,
-                edge_dim=edge_dim,
-                key_dim=key_dim,
-                num_heads=num_heads,
-                use_atten=use_atten,
-                use_gate=use_gate,
-            )
-            self.node_blocks.append(block)
-
-    @property
-    def out_channels(self):
-        return self.node_dim
-
-    def forward(self, h, pos, edge_index, is_mol):
-        #NOTE in the encoder, the edge dose not change since the position of mol and protein is fixed
-        # edge_index = radius_graph(pos, self.cutoff, batch=batch, loop=False)
-        edge_attr = self._add_edge_features(pos, edge_index, is_mol)
-        for interaction in self.node_blocks:
-            h = h + interaction(h, edge_index, edge_attr)
-        return h
-
-    @property
-    def additional_edge_feat(self,):
-        return 2
-
-    def _add_edge_features(self, pos, edge_index, is_mol):
-        edge_length = torch.norm(pos[edge_index[0]] - pos[edge_index[1]], dim=1)
-        edge_attr = self.distance_expansion(edge_length)
-        # 2-vector represent the two node types (atoms of protein or mol)
-        edge_src_feat = is_mol[edge_index[0]].float().view(-1, 1)
-        edge_dst_feat = is_mol[edge_index[1]].float().view(-1, 1)
-        edge_attr = torch.cat([edge_attr, edge_src_feat, edge_dst_feat], dim=1)
-        edge_attr = self.edge_emb(edge_attr)
-        return edge_attr
-
-
 class BondFFN(Module):
-    """
-    将一条边的特征、一个端点的节点特征和可选 prompt 融合为定宽边消息。
-
-    形状符号:
-        - E: 并行处理的边数。
-
-    构造参数:
-        - bond_dim: int, 输入边特征宽度。
-        - node_dim: int, 与每条边对齐的端点/端点组合特征宽度。
-        - inter_dim: int, 两路投影相加后的中间宽度。
-        - gate_dim: int, ``extra`` prompt 宽度；大于 0 时启用输出门控。
-        - out_dim: int|None, 输出边特征宽度；None 时取 ``bond_dim``。
-
-    前向输入:
-        - bond_feat_input: (E, bond_dim), 每条有向边当前特征。
-        - node_feat_input: (E, node_dim), 与同一边逐行对齐的端点或双端点特征。
-        - extra: (E, gate_dim)|None, 与边逐行对齐的 fixed prompt；仅 ``gate_dim>0`` 时读取。
-
-    前向输出:
-        - inter_feat: (E, out_dim), 边—节点加性融合后的消息；启用门控时逐通道乘 ``sigmoid(gate)``。
-    """
     def __init__(self, bond_dim, node_dim, inter_dim, gate_dim, out_dim=None):
+        """
+        将一条边的特征、一个端点的节点特征和可选 prompt 融合为定宽边消息。
+
+        构造参数:
+            - bond_dim: int, 输入边特征宽度。
+            - node_dim: int, 与每条边对齐的端点/端点组合特征宽度。
+            - inter_dim: int, 隐藏层维度。
+            - out_dim: int|None, 输出边特征宽度；None 时取 ``bond_dim``。
+
+            - gate_dim: int, ``extra`` prompt 宽度；大于 0 时启用输出门控。
+        
+        前向输入:
+            - bond_feat_input: (E, bond_dim), 每条有向边当前特征。
+            - node_feat_input: (E, node_dim), 与同一边逐行对齐的端点或双端点特征。
+            - extra: (E, gate_dim)|None, 与边逐行对齐的 fixed prompt；仅 ``gate_dim>0`` 时读取。
+
+        前向输出:
+            - inter_feat: (E, out_dim), 边—节点加性融合后的消息；启用门控时逐通道乘 ``sigmoid(gate)``。
+        """
         super().__init__()
         # ``out_dim``：int，未显式提供时保持输入边宽度 ``bond_dim``。
         out_dim = bond_dim if out_dim is None else out_dim
@@ -300,32 +236,27 @@ class BondFFN(Module):
             inter_feat = inter_feat * torch.sigmoid(gate)
         return inter_feat
 
-
 class EdgeBlock(Module):
-    """
-    通过共享端点的邻边消息、双端点节点特征和边残差更新每条有向边。
-
-    形状符号:
-        - N: 节点数。
-        - E: 有向边数。
-
-    构造参数:
-        - edge_dim: int, 输入与输出边特征宽度。
-        - node_dim: int, 节点特征宽度。
-        - hidden_dim: int|None, ``BondFFN`` 中间宽度；None 时取 ``2 * edge_dim``。
-        - gate_dim: int, ``bond_extra`` 宽度；大于 0 时端点邻边消息启用门控。
-        - layernorm_before: bool, False 使用 ``LayerNorm(update+residual)``，True 使用 ``LayerNorm(update)+residual``。
-
-    前向输入:
-        - h_bond: (E, edge_dim), 当前有向边特征。
-        - bond_index: int64, (2, E), 每列 ``[左/目标节点, 右/来源节点]``；两行索引 h_node 第一维。
-        - h_node: (N, node_dim), 已在当前 block 更新后的节点特征。
-        - bond_extra: (E, gate_dim)|None, 与有向边逐行对齐的 fixed edge/distance prompt。
-
-    前向输出:
-        - h_bond: (E, edge_dim), 融合两端邻边、两端节点和自身残差的有向边特征；边顺序不变。
-    """
     def __init__(self, edge_dim, node_dim, hidden_dim=None, gate_dim=0, layernorm_before=False):
+        """
+        通过共享端点的邻边消息、双端点节点特征和边残差更新每条有向边(五项逐边相加：两侧邻边消息、两端节点投影和当前边自身投影)。N为点数, E为边数。
+
+        构造参数:
+            - edge_dim: int, 输入与输出边特征宽度。
+            - node_dim: int, 节点特征宽度。
+            - hidden_dim: int|None, 隐藏层维度；None 时取 ``2 * edge_dim``。
+            - gate_dim: int, ``bond_extra`` 宽度；大于 0 时端点邻边消息启用门控。
+            - layernorm_before: bool, False 使用 ``LayerNorm(update+residual)``，True 使用 ``LayerNorm(update)+residual``。
+
+        前向输入:
+            - h_bond: (E, edge_dim), 当前有向边特征。
+            - bond_index: int64, (2, E), 每列 ``[左/目标节点, 右/来源节点]``；两行索引 h_node 第一维。
+            - h_node: (N, node_dim), 已在当前 block 更新后的节点特征。
+            - bond_extra: (E, gate_dim)|None, 与有向边逐行对齐的 fixed edge/distance prompt。
+
+        前向输出:
+            - h_bond: (E, edge_dim), 融合两端邻边、两端节点和自身残差的有向边特征；边顺序不变。
+        """
         super().__init__()
         # ``self.gate_dim``：int，逐边 prompt 宽度；0 关闭两个 BondFFN 的门控。
         self.gate_dim = gate_dim
@@ -357,7 +288,7 @@ class EdgeBlock(Module):
         self.out_layer = MLP(edge_dim, edge_dim, edge_dim)
 
     def forward(self, h_bond, bond_index, h_node, bond_extra):
-        """按共享端点归约邻边消息，再更新每条有向边。
+        """按共享端点归约邻边消息，再更新每条有向边(五项逐边相加：两侧邻边消息、两端节点投影和当前边自身投影)。
 
         输入参数:
             - h_bond: FloatTensor，形状为 (E, edge_dim)，当前有向边特征。
@@ -408,58 +339,155 @@ class EdgeBlock(Module):
             h_bond = self.layer_norm(h_bond_update) + h_bond
         return h_bond
 
+class PosUpdate(Module):
+    def __init__(self, node_dim, edge_dim, hidden_dim, gate_dim, node_dim_right=None):
+        """
+        用每条边预测的标量权重缩放相对坐标方向，并归约为目标节点的 E(3) 等变位移。
 
+        形状符号:
+            - N: 待更新左节点数。
+            - E: 有向边数。
+
+        构造参数:
+            - node_dim: int, 待更新左/目标节点特征宽度。
+            - edge_dim: int, 有向边特征宽度。
+            - hidden_dim: int, MLP 隐藏宽度。
+            - gate_dim: int, ``node_extra`` 与可选 ``edge_extra`` 拼接后的实际宽度；分子内边为 4，上下文边为 2。
+            - node_dim_right: int|None, 右/来源节点特征宽度；None 时等于 node_dim，口袋上下文更新时取 context_dim。
+
+        前向输入:
+            - h_node: (N, node_dim), 待更新目标节点特征。
+            - h_edge: (E, edge_dim), 有向边特征。
+            - edge_index: int64, (2, E), 每列 ``[左/目标节点, 右/来源节点]``。
+            - node_extra: (N, 2), 目标节点 fixed prompt；宽度 2 既由 ``pos_scale_net`` 输入层硬编码，也必须与上游 prompt 对齐。
+            - edge_extra: (E, gate_dim - 2)|None, 有向边 fixed prompt；上下文边更新为 None。
+            - h_node_right: (P, node_dim_right)|None, 可选另一实体集合的来源节点特征；None 时来源也从 h_node 读取。
+
+            - relative_vec: (E, 3), ``目标坐标 - 来源坐标``，单位 Å。
+            - distance: (E,), ``relative_vec`` 的欧氏长度，单位 Å。
+
+        前向输出:
+            - delta_pos: (N, 3), 每个目标节点的坐标增量，单位 Å；节点顺序与 h_node 第一维一致。
+
+        实现约束:
+            - ``pos_scale_net`` 的输入宽度固定为 ``node_dim + 1 + 2``，因此当前实现要求 ``node_extra`` 恰有 2 个 fixed prompt 通道。
+        """
+        super().__init__()
+        # ``self.left_lin_edge``：MLP；[E, node_dim] -> [E, node_dim] 的目标节点逐边投影。
+        self.left_lin_edge = MLP(node_dim, node_dim, hidden_dim)
+        # ``node_dim_right``：int，来源节点宽度；内部边缺省与目标节点宽度相同。
+        node_dim_right = node_dim if node_dim_right is None else node_dim_right
+        # ``self.right_lin_edge``：MLP；[E, node_dim_right] -> [E, node_dim] 的来源节点逐边投影。
+        self.right_lin_edge = MLP(node_dim_right, node_dim, hidden_dim)
+        # ``self.edge_lin``：BondFFN，融合边、双端点与 prompt，输出每条边一个有符号标量权重。
+        self.edge_lin = BondFFN(edge_dim, node_dim*2, node_dim, gate_dim, out_dim=1)
+        # ``self.pos_scale_net``：Sequential，按 ``node_dim`` 维节点特征、固定 2 维节点 prompt 与 1 维位移范数预测形状为 (N, 1) 的 0..1 节点缩放。
+        self.pos_scale_net = nn.Sequential(MLP(node_dim+1+2, 1, hidden_dim), nn.Sigmoid())
+
+    def forward(self, h_node, h_edge, edge_index, relative_vec, distance, node_extra, edge_extra=None, h_node_right=None):
+        """从标量特征与相对方向构造 E(3) 等变节点位移。
+
+        输入参数:
+            - h_node: FloatTensor，形状为 (N, node_dim)，待更新目标节点特征。
+            - h_edge: FloatTensor，形状为 (E, edge_dim)，与有向边逐行对齐的边特征。
+            - edge_index: LongTensor，形状为 (2, E)，每列为目标节点、来源节点。
+            - relative_vec: FloatTensor，形状为 (E, 3)，目标坐标减来源坐标的相对向量，单位 Å。
+            - distance: FloatTensor，形状为 (E,)，``relative_vec`` 的欧氏长度，单位 Å。
+            - node_extra: FloatTensor，形状为 (N, 2)，逐目标节点 fixed prompt。
+            - edge_extra: FloatTensor|None，形状为 (E, gate_dim - 2)，逐有向边 fixed prompt。
+            - h_node_right: FloatTensor|None，形状为 (P, node_dim_right)，另一来源实体集合的节点特征；None 时来源也读取 ``h_node``。
+
+        返回值:
+            - delta_pos: FloatTensor，形状为 (N, 3)，按目标节点归约并缩放后的坐标增量，单位 Å。
+        """
+        # ``edge_index_left``：LongTensor，形状为 (E,)，逐边目标节点编号，索引 ``h_node`` 第一维。
+        # ``edge_index_right``：LongTensor，形状为 (E,)，逐边来源节点编号，索引 ``h_node_right`` 第一维。
+        edge_index_left, edge_index_right = edge_index
+
+        # ``left_feat``：Tensor，形状为 (E, node_dim)；目标节点特征经共享 MLP 投影，保持边顺序。
+        left_feat = self.left_lin_edge(h_node[edge_index_left])
+        # ``h_node_right``：(N, node_dim) 或 (P, node_dim_right)，None 时内部边两端共用同一节点特征表。
+        h_node_right = h_node if h_node_right is None else h_node_right
+        # ``right_feat``：Tensor，形状为 (E, node_dim)；来源节点特征投影到与目标相同的宽度。
+        right_feat = self.right_lin_edge(h_node_right[edge_index_right])
+
+        # ``both_extra``：Tensor，形状为 (E, 2)；为每条边选择其目标节点的固定 2 维 prompt。
+        both_extra = node_extra[edge_index_left]
+        if edge_extra is not None:
+            # ``both_extra``：[E, 2] + [E, gate_dim - 2] -> [E, gate_dim]，只拼接 prompt 通道。
+            both_extra = torch.cat([both_extra, edge_extra], dim=-1)
+        # ``weight_edge``：Tensor，形状为 (E, 1)；每条边的有符号标量作用强度；节点双端特征在末维拼成 ``2 * node_dim``。
+        weight_edge = self.edge_lin(h_edge,
+                            torch.cat([left_feat, right_feat], dim=-1),
+                            both_extra)
+        
+        # ``force_edge``：Tensor，形状为 (E, 3)；标量权重乘单位相对方向，再乘 5/(distance+5) 抑制远距离作用；数值按坐标增量解释，常数 5 使用 Å 距离尺度。
+        force_edge = weight_edge * relative_vec / (distance.unsqueeze(-1) + 1e-6) / (distance.unsqueeze(-1) + 5.) * 5
+        # ``delta_pos``：[E,3] -> [N,3]，按 edge_index_left 对所有入边作用求和；没有入边的节点得到零向量。
+        delta_pos = scatter_sum(force_edge, edge_index_left, dim=0, dim_size=h_node.shape[0])
+        # ``delta_pos``：Tensor，(N, 3), 它在这一步乘以 (N, 1) 的权重；节点级缩放输入依次为节点特征、fixed prompt 和当前位移范数；sigmoid 输出 0..1。
+        delta_pos = delta_pos * self.pos_scale_net(torch.cat([h_node, node_extra,
+                                        torch.norm(delta_pos, dim=-1, keepdim=True)], dim=-1))
+        return delta_pos
+
+
+# ========================================================== 主函数 ==========================================================
 class ContextNodeEdgeNet(Module):
-    """
-    堆叠多层节点—边—坐标更新，并在每层重建分子—口袋近邻关系。
-
-    形状符号:
-        - N: 待更新图的节点数。
-        - E: 待更新图的有向边数；配体图中由无向半边复制出正反两个方向，口袋图使用既有有向边。
-        - P: 可选口袋上下文节点数。
-        - C: 分子—口袋有向边数。
-
-    构造参数:
-        - node_dim: int, 输入、隐藏和输出节点宽度。
-        - edge_dim: int, block 内有向边宽度；``node_only=True`` 时只是距离嵌入后的临时宽度。
-        - hidden_dim: int, ``ContextNodeBlock`` 消息隐藏宽度。
-        - num_blocks: int, 节点/边/坐标联合更新层数。
-        - dist_cfg: 映射，传给 ``GaussianSmearing``；``num_gaussians`` 定义距离基通道数，``start/stop/type_`` 定义距离基区间。
-        - gate_dim: int, 节点 prompt 宽度；默认配体为 2、口袋为 0。
-        - context_dim: int, 口袋上下文节点宽度；无上下文时为 0。
-        - context_cfg.edge_dim: int, 分子—口袋边隐藏宽度。
-        - context_cfg.knn: int, 每个配体原子选择的口袋近邻数；小于 100 时使用 ``torch_geometric.nn.knn``。
-        - context_cfg.dist_cfg: 映射，定义分子—口袋距离高斯基。
-        - node_only: bool, True 时只更新节点特征，不更新边和坐标；用于固定口袋编码。
-        - downsample_context: bool, True 时仅在选择口袋近邻时给口袋坐标加标准差 5 Å 的高斯扰动，距离仍用原坐标计算。
-        - layernorm_before: bool, 传给节点/边 block 的残差归一化顺序。
-
-    前向输入:
-        - h_node: (N, node_dim), 当前节点特征。
-        - pos_node: (N, 3), 当前节点局部坐标，最后一维按 XYZ 排列，单位 Å。
-        - h_edge: (E, edge_dim)|None, 当前有向边特征；``node_only=True`` 的口袋编码传 None。
-        - edge_index: int64, (2, E), 每列 ``[目标节点, 来源节点]``，两行索引 h_node/pos_node 第一维。
-        - node_extra: (N, gate_dim)|None, 节点 fixed prompt；口袋编码传 None。
-        - edge_extra: (E, gate_dim)|None, 有向边 fixed prompt；口袋编码传 None。
-        - batch_node: int64, (N,)|None, 每个节点所属图编号；构造上下文 kNN 时必需。
-        - h_ctx: (P, context_dim)|None, 已编码口袋节点特征；None 表示不注入上下文。
-        - pos_ctx: (P, 3)|None, 与 pos_node 使用同一局部原点的口袋坐标，单位 Å。
-        - batch_ctx: int64, (P,)|None, 每个口袋原子所属图编号。
-
-    前向输出:
-        - ``node_only=True``: h_node, (N, node_dim), num_blocks 层更新后的节点特征。
-        - ``node_only=False``: tuple ``(h_node, pos_node, h_edge)``，形状依次为 ``(N, node_dim)``、``(N, 3)``、``(E, edge_dim)``。
-
-    每层数据流:
-        - 由当前 pos_node 计算 E 条分子内边的相对向量、距离和 RBF；位置更新后下一层会重新计算。
-        - 若有口袋，每层按当前配体位置重建 C 条近邻边并计算上下文 RBF。
-        - 依次更新节点、边，再把分子内与口袋相对向量产生的两个坐标增量加到 pos_node。
-        - 口袋编码 ``node_only=True`` 时固定使用首次计算的距离 RBF，只执行节点更新。
-    """
     def __init__(self, node_dim, edge_dim, hidden_dim,
                  num_blocks, dist_cfg, gate_dim=0,
                  context_dim=0, context_cfg=None,
                  node_only=False, **kwargs):
+        """
+        RBF的距离特征和普通边特征直接拼接嵌入 
+        ——————> self.node_blocks_with_edge[ContextNodeBlock] , context(口袋) 和 小分子累加式更新小分子的节点
+        ——————> self.edge_blocks[EdgeBlock] , 小分子自己更新自己的边特征(无 context 作用)
+        ——————> self.pos_blocks[PosUpdate] & self.ctx_pos_blocks[PosUpdate] , 小分子自身更新自身位置 & context 更新小分子位置
+
+        形状符号:
+            - N: 待更新图的节点数。
+            - E: 待更新图的有向边数；配体图中由无向半边复制出正反两个方向，口袋图使用既有有向边。
+            - P: 可选口袋上下文节点数。
+            - C: 分子—口袋有向边数。
+
+        构造参数:
+            - node_dim: int, 输入、隐藏和输出节点宽度。
+            - edge_dim: int, block 内有向边宽度；``node_only=True`` 时只是距离嵌入后的临时宽度。
+            - hidden_dim: int, ``ContextNodeBlock`` 消息隐藏宽度。
+            - num_blocks: int, 节点/边/坐标联合更新层数。
+            - dist_cfg: 映射，传给 ``GaussianSmearing``；``num_gaussians`` 定义距离基通道数，``start/stop/type_`` 定义距离基区间。
+            - gate_dim: int, 节点 prompt 宽度；默认配体为 2、口袋为 0。
+
+            - context_dim: int, 口袋上下文节点宽度；无上下文时为 0。
+            - context_cfg.edge_dim: int, 分子—口袋边隐藏宽度。
+            - context_cfg.knn: int, 每个配体原子选择的口袋近邻数；小于 100 时使用 ``torch_geometric.nn.knn``。
+            - context_cfg.dist_cfg: 映射，定义分子—口袋距离高斯基。
+
+            - node_only: bool, True 时只更新节点特征，不更新边和坐标；用于固定口袋编码。
+            - downsample_context: bool, True 时仅在选择口袋近邻时给口袋坐标加标准差 5 Å 的高斯扰动，距离仍用原坐标计算。
+            - layernorm_before: bool, 传给节点/边 block 的残差归一化顺序。
+
+        前向输入:
+            - h_node: (N, node_dim), 当前节点特征。
+            - pos_node: (N, 3), 当前节点局部坐标，最后一维按 XYZ 排列，单位 Å。
+            - h_edge: (E, edge_dim)|None, 当前有向边特征；``node_only=True`` 的口袋编码传 None。
+            - edge_index: int64, (2, E), 每列 ``[目标节点, 来源节点]``，两行索引 h_node/pos_node 第一维。
+            - node_extra: (N, gate_dim)|None, 节点 fixed prompt；口袋编码传 None。
+            - edge_extra: (E, gate_dim)|None, 有向边 fixed prompt；口袋编码传 None。
+
+            - h_ctx: (P, context_dim)|None, 已编码口袋节点特征；None 表示不注入上下文。
+            - pos_ctx: (P, 3)|None, 与 pos_node 使用同一局部原点的口袋坐标，单位 Å。
+
+            - batch_ctx: int64, (P,)|None, 每个口袋原子所属图编号。
+            - batch_node: int64, (N,)|None, 每个节点所属图编号；构造上下文 kNN 时必需。
+
+        前向输出:
+            - ``node_only=True``: h_node, (N, node_dim), num_blocks 层更新后的节点特征。
+            - ``node_only=False``: tuple ``(h_node, pos_node, h_edge)``，形状依次为 ``(N, node_dim)``、``(N, 3)``、``(E, edge_dim)``。
+
+        小提示:
+            - 由当前 pos_node 计算 E 条分子内边的相对向量、距离和 RBF；位置更新后下一层会重新计算。
+            - 若有口袋，每层按当前配体位置重建 C 条近邻边并计算上下文 RBF: 口袋(ctx)本身没有独立边特征, 边特征只是RBF做嵌入
+        """
         super().__init__()
         # ``self.node_dim``：int，所有 block 的节点输入/输出宽度。
         self.node_dim = node_dim
@@ -532,7 +560,7 @@ class ContextNodeEdgeNet(Module):
                 self.ctx_edge_embs = ModuleList()
                 # ``self.ctx_pos_blocks``：ModuleList 长度 ``num_blocks``，每层一个配体—口袋坐标更新块。
                 self.ctx_pos_blocks = ModuleList()
-        # ``_``：int，当前 block 的 0-based 构造序号；网络层存入 ModuleList 后无需保留该编号。
+
         for _ in range(num_blocks):
             # edge emb
             self.edge_embs.append(Linear(input_edge_dim, edge_dim))
@@ -559,9 +587,8 @@ class ContextNodeEdgeNet(Module):
                 ))
         
         self.local_update = kwargs.get('local_update', False)
-        if self.local_update:
+        if self.local_update:  # 不用
             self.local_net = LocalPosUpdate(node_dim, edge_dim, node_dim, cutoff=3.8)
-        
                 
     def forward(self, h_node, pos_node, h_edge, edge_index,
                 node_extra, edge_extra, batch_node=None,
@@ -632,6 +659,7 @@ class ContextNodeEdgeNet(Module):
             # # edge feature updates
             h_edge = self.edge_blocks[i](h_edge, edge_index, h_node, edge_extra)
 
+
             # # pos updates
             # ``pos_node``：[N,3] + [N,3] -> [N,3]；内部边坐标增量由配体相对向量生成，单位 Å。
             pos_node = pos_node + self.pos_blocks[i](h_node, h_edge, edge_index, relative_vec, distance, node_extra, edge_extra)
@@ -641,7 +669,7 @@ class ContextNodeEdgeNet(Module):
                     h_node, h_ctx_edge, ctx_knn_edge_index, vec_ctx, dist_ctx, node_extra,
                     edge_extra=None, h_node_right=h_ctx)
 
-        if self.local_update:
+        if self.local_update:   # 不用
             pos_node = pos_node + self.local_net(h_node, pos_node, h_edge, edge_index, batch_node)
 
         if self.node_only:
@@ -739,103 +767,74 @@ class ContextNodeEdgeNet(Module):
         return h_dist, relative_vec, distance, ctx_knn_edge_index
         
 
-class PosUpdate(Module):
-    """
-    用每条边预测的标量权重缩放相对坐标方向，并归约为目标节点的 E(3) 等变位移。
 
-    形状符号:
-        - N: 待更新左节点数。
-        - E: 有向边数。
 
-    构造参数:
-        - node_dim: int, 待更新左/目标节点特征宽度。
-        - edge_dim: int, 有向边特征宽度。
-        - hidden_dim: int, MLP 隐藏宽度。
-        - gate_dim: int, ``node_extra`` 与可选 ``edge_extra`` 拼接后的实际宽度；分子内边为 4，上下文边为 2。
-        - node_dim_right: int|None, 右/来源节点特征宽度；None 时等于 node_dim，口袋上下文更新时取 context_dim。
 
-    前向输入:
-        - h_node: (N, node_dim), 待更新目标节点特征。
-        - h_edge: (E, edge_dim), 有向边特征。
-        - edge_index: int64, (2, E), 每列 ``[左/目标节点, 右/来源节点]``。
-        - relative_vec: (E, 3), ``目标坐标 - 来源坐标``，单位 Å。
-        - distance: (E,), ``relative_vec`` 的欧氏长度，单位 Å。
-        - node_extra: (N, 2), 目标节点 fixed prompt；宽度 2 既由 ``pos_scale_net`` 输入层硬编码，也必须与上游 prompt 对齐。
-        - edge_extra: (E, gate_dim - 2)|None, 有向边 fixed prompt；上下文边更新为 None。
-        - h_node_right: (P, node_dim_right)|None, 可选另一实体集合的来源节点特征；None 时来源也从 h_node 读取。
 
-    前向输出:
-        - delta_pos: (N, 3), 每个目标节点的坐标增量，单位 Å；节点顺序与 h_node 第一维一致。
 
-    等变性:
-        - MLP 只从节点/边标量特征产生 ``weight_edge`` 和 ``pos_scale`` 标量。
-        - 唯一方向量是相对坐标 ``relative_vec``；整体旋转会同步旋转输出位移，整体平移不会改变位移。
 
-    实现约束:
-        - ``pos_scale_net`` 的输入宽度固定为 ``node_dim + 1 + 2``，因此当前实现要求 ``node_extra`` 恰有 2 个 fixed prompt 通道。
-    """
-    def __init__(self, node_dim, edge_dim, hidden_dim, gate_dim, node_dim_right=None):
+class NodeEncoder(Module):
+    
+    def __init__(self, node_dim=256, edge_dim=64, key_dim=128, num_heads=4, 
+                    num_blocks=6, k=48, cutoff=10.0, use_atten=True, use_gate=True,
+                    dist_version='new'):
         super().__init__()
-        # ``self.left_lin_edge``：MLP；[E, node_dim] -> [E, node_dim] 的目标节点逐边投影。
-        self.left_lin_edge = MLP(node_dim, node_dim, hidden_dim)
-        # ``node_dim_right``：int，来源节点宽度；内部边缺省与目标节点宽度相同。
-        node_dim_right = node_dim if node_dim_right is None else node_dim_right
-        # ``self.right_lin_edge``：MLP；[E, node_dim_right] -> [E, node_dim] 的来源节点逐边投影。
-        self.right_lin_edge = MLP(node_dim_right, node_dim, hidden_dim)
-        # ``self.edge_lin``：BondFFN，融合边、双端点与 prompt，输出每条边一个有符号标量权重。
-        self.edge_lin = BondFFN(edge_dim, node_dim*2, node_dim, gate_dim, out_dim=1)
-        # ``self.pos_scale_net``：Sequential，按 ``node_dim`` 维节点特征、固定 2 维节点 prompt 与 1 维位移范数预测形状为 (N, 1) 的 0..1 节点缩放。
-        self.pos_scale_net = nn.Sequential(MLP(node_dim+1+2, 1, hidden_dim), nn.Sigmoid())
 
-    def forward(self, h_node, h_edge, edge_index, relative_vec, distance, node_extra, edge_extra=None, h_node_right=None):
-        """从标量特征与相对方向构造 E(3) 等变节点位移。
+        self.node_dim = node_dim
+        self.edge_dim = edge_dim
+        self.key_dim = key_dim
+        self.num_heads = num_heads
+        self.num_blocks = num_blocks
+        self.k = k
+        self.cutoff = cutoff
+        self.use_atten = use_atten
+        self.use_gate = use_gate
 
-        输入参数:
-            - h_node: FloatTensor，形状为 (N, node_dim)，待更新目标节点特征。
-            - h_edge: FloatTensor，形状为 (E, edge_dim)，与有向边逐行对齐的边特征。
-            - edge_index: LongTensor，形状为 (2, E)，每列为目标节点、来源节点。
-            - relative_vec: FloatTensor，形状为 (E, 3)，目标坐标减来源坐标的相对向量，单位 Å。
-            - distance: FloatTensor，形状为 (E,)，``relative_vec`` 的欧氏长度，单位 Å。
-            - node_extra: FloatTensor，形状为 (N, 2)，逐目标节点 fixed prompt。
-            - edge_extra: FloatTensor|None，形状为 (E, gate_dim - 2)，逐有向边 fixed prompt。
-            - h_node_right: FloatTensor|None，形状为 (P, node_dim_right)，另一来源实体集合的节点特征；None 时来源也读取 ``h_node``。
+        if dist_version == 'new':
+            self.distance_expansion = GaussianSmearing(stop=cutoff, num_gaussians=20)
+            self.edge_emb = Linear(self.additional_edge_feat+20, edge_dim)
+        elif dist_version == 'old':
+            self.distance_expansion = GaussianSmearing(stop=cutoff, num_gaussians=edge_dim-self.additional_edge_feat)
+            self.edge_emb = Linear(edge_dim, edge_dim)
+        else:
+            raise NotImplementedError('dist_version notimplemented')
+        self.node_blocks = ModuleList()
+        for _ in range(num_blocks):
+            block = NodeBlock(
+                node_dim=node_dim,
+                edge_dim=edge_dim,
+                key_dim=key_dim,
+                num_heads=num_heads,
+                use_atten=use_atten,
+                use_gate=use_gate,
+            )
+            self.node_blocks.append(block)
 
-        返回值:
-            - delta_pos: FloatTensor，形状为 (N, 3)，按目标节点归约并缩放后的坐标增量，单位 Å。
-        """
-        # ``edge_index_left``：LongTensor，形状为 (E,)，逐边目标节点编号，索引 ``h_node`` 第一维。
-        # ``edge_index_right``：LongTensor，形状为 (E,)，逐边来源节点编号，索引 ``h_node_right`` 第一维。
-        edge_index_left, edge_index_right = edge_index
+    @property
+    def out_channels(self):
+        return self.node_dim
 
-        # ``left_feat``：Tensor，形状为 (E, node_dim)；目标节点特征经共享 MLP 投影，保持边顺序。
-        left_feat = self.left_lin_edge(h_node[edge_index_left])
-        # ``h_node_right``：(N, node_dim) 或 (P, node_dim_right)，None 时内部边两端共用同一节点特征表。
-        h_node_right = h_node if h_node_right is None else h_node_right
-        # ``right_feat``：Tensor，形状为 (E, node_dim)；来源节点特征投影到与目标相同的宽度。
-        right_feat = self.right_lin_edge(h_node_right[edge_index_right])
-        # ``both_extra``：Tensor，形状为 (E, 2)；为每条边选择其目标节点的固定 2 维 prompt。
-        both_extra = node_extra[edge_index_left]
-        if edge_extra is not None:
-            # ``both_extra``：[E, 2] + [E, gate_dim - 2] -> [E, gate_dim]，只拼接 prompt 通道。
-            both_extra = torch.cat([both_extra, edge_extra], dim=-1)
-        # ``weight_edge``：Tensor，形状为 (E, 1)；每条边的有符号标量作用强度；节点双端特征在末维拼成 ``2 * node_dim``。
-        weight_edge = self.edge_lin(h_edge,
-                            torch.cat([left_feat, right_feat], dim=-1),
-                            both_extra)
-        
-        # ``force_edge``：Tensor，形状为 (E, 3)；标量权重乘单位相对方向，再乘 5/(distance+5) 抑制远距离作用；数值按坐标增量解释，常数 5 使用 Å 距离尺度。
-        force_edge = weight_edge * relative_vec / (distance.unsqueeze(-1) + 1e-6) / (distance.unsqueeze(-1) + 5.) * 5
-        # ``delta_pos``：[E,3] -> [N,3]，按 edge_index_left 对所有入边作用求和；没有入边的节点得到零向量。
-        delta_pos = scatter_sum(force_edge, edge_index_left, dim=0, dim_size=h_node.shape[0])
-        # ``delta_pos``：Tensor，形状为 (N, 1)；节点级缩放输入依次为节点特征、fixed prompt 和当前位移范数；sigmoid 输出 0..1。
-        delta_pos = delta_pos * self.pos_scale_net(torch.cat([h_node, node_extra,
-                                        torch.norm(delta_pos, dim=-1, keepdim=True)], dim=-1))
-        return delta_pos
+    def forward(self, h, pos, edge_index, is_mol):
+        #NOTE in the encoder, the edge dose not change since the position of mol and protein is fixed
+        # edge_index = radius_graph(pos, self.cutoff, batch=batch, loop=False)
+        edge_attr = self._add_edge_features(pos, edge_index, is_mol)
+        for interaction in self.node_blocks:
+            h = h + interaction(h, edge_index, edge_attr)
+        return h
 
+    @property
+    def additional_edge_feat(self,):
+        return 2
 
-
-
-
+    def _add_edge_features(self, pos, edge_index, is_mol):
+        edge_length = torch.norm(pos[edge_index[0]] - pos[edge_index[1]], dim=1)
+        edge_attr = self.distance_expansion(edge_length)
+        # 2-vector represent the two node types (atoms of protein or mol)
+        edge_src_feat = is_mol[edge_index[0]].float().view(-1, 1)
+        edge_dst_feat = is_mol[edge_index[1]].float().view(-1, 1)
+        edge_attr = torch.cat([edge_attr, edge_src_feat, edge_dst_feat], dim=1)
+        edge_attr = self.edge_emb(edge_attr)
+        return edge_attr
 
 class LocalPosUpdate(Module):
     def __init__(self, node_dim, edge_dim, hidden_dim, cutoff=3.5):
@@ -892,8 +891,6 @@ class LocalPosUpdate(Module):
         unit = vec / (distance.unsqueeze(-1) + 1e-8)
         is_short_edge = distance < self.cutoff
         return is_short_edge, unit, distance
-
-
 
 class RigidNet(nn.Module):
     def __init__(self, node_dim, edge_dim, hidden_dim, cutoff, use_gate):
@@ -959,7 +956,6 @@ class RigidNet(nn.Module):
         pos_out[domain_node_index_1] = pos_update
         return pos_out, rot_axis, rot_angle
         
-
 class TorsionNet(nn.Module):
     def __init__(self, node_dim, edge_dim, hidden_dim, cutoff, use_gate):
         super().__init__()

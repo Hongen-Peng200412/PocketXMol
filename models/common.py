@@ -249,33 +249,22 @@ class EdgeExpansion(nn.Module):
 
 
 class GaussianSmearing(nn.Module):
-    """
-    把标量距离展开为一组中心和宽度可不均匀的高斯径向基响应。
-
-    形状符号:
-        - ``...``: 任意距离实体维，例如 E 条分子内边或 C 条分子—口袋边。
-        - R: 高斯基数量 ``num_gaussians``。
-
-    构造参数:
-        - start: float, 有效距离下界；前向时小于该值的输入被截断到该值，单位继承输入距离。
-        - stop: float, 有效距离上界；前向时大于该值的输入被截断到该值，单位继承输入距离。
-        - num_gaussians: int, 基函数数量 R，也是输出最后一维宽度。
-        - type_: str, ``linear`` 在 ``[start, stop]`` 等距放置中心，``exp`` 在 ``log(distance+1)`` 空间等距后映回原距离。
-
-    缓冲区:
-        - offset: (R,), 每个高斯基中心；随模块迁移设备和保存 state_dict，不参与梯度更新。
-        - coeff: (R,), 每个中心对应的负半逆方差 ``-0.5 / width^2``；首中心复用第一段中心间距。
-
-    前向输入:
-        - dist: (...,), 标量距离；默认 GNN 调用中单位为 Å。
-
-    前向输出:
-        - basis: (Q, R), Q 是输入 ``dist`` 全部维度元素数；第 r 个通道为 ``exp(coeff[r] * (clamp(dist)-offset[r])^2)``，现实现会展平前导维而不恢复原形状。
-
-    数值边界:
-        - 截断发生在展开前，因此超出区间的全部距离分别共享首端或末端的基响应。
-    """
     def __init__(self, start=0.0, stop=10.0, num_gaussians=50, type_='exp'):
+        """
+        把标量距离展开为一组中心和宽度可不均匀的高斯径向基响应。
+
+        构造参数:
+            - start: float, 有效距离下界；前向时小于该值的输入被截断到该值，单位继承输入距离。
+            - stop: float, 有效距离上界；前向时大于该值的输入被截断到该值，单位继承输入距离。
+            - num_gaussians: int, 基函数数量 R，也是输出最后一维宽度。
+            - type_: str, ``linear`` 在 ``[start, stop]`` 等距放置中心，``exp`` 在 ``log(distance+1)`` 空间等距后映回原距离。
+
+        前向输入:
+            - dist: (...,), 标量距离；默认 GNN 调用中单位为 Å。
+
+        前向输出:
+            - basis: (Q, R), Q 是输入 ``dist`` 全部元素总数；第 r 个通道为 ``exp(coeff[r] * (clamp(dist)-offset[r])^2)``，现实现会展平前导维而不恢复原形状。
+        """
         super().__init__()
         # float，有效距离下界；默认 GNN 坐标中单位为 Å。
         self.start = start
@@ -304,7 +293,7 @@ class GaussianSmearing(nn.Module):
         dist = dist.clamp_min(self.start)
         # 与输入同形，再把所有高于上界的距离截到 stop。
         dist = dist.clamp_max(self.stop)
-        # [...] -> [Q, 1] -> [Q, R]；展平全部前导实体维后与 R 个中心广播相减。
+        # [Q, 1] - [1, R] -> [Q, R]；展平全部前导实体维后与 R 个中心广播相减。
         dist = dist.view(-1, 1) - self.offset.view(1, -1)
         # (Q, R)，每个距离对每个中心的径向基响应；当前实现返回展平后的 Q 维而不恢复原多维前导形状。
         return torch.exp(self.coeff * torch.pow(dist, 2))
