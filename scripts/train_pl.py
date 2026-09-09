@@ -884,7 +884,8 @@ if __name__ == '__main__':
             saved_config = deepcopy(resume_checkpoint['hyper_parameters']['config'])
             requested_config = deepcopy(config)
             for compared_config in (saved_config, requested_config):
-                compared_config.pop('resume', None)
+                if 'resume' in compared_config:
+                    compared_config.pop('resume')
                 for resource_key in ('batch_size', 'accumulate_grad_batches', 'num_workers', 'pin_memory', 'persistent_workers', 'log_every_n_steps'):
                     compared_config.train.pop(resource_key, None)
                 compared_config.train.wandb.pop('mode', None)
