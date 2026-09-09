@@ -1,6 +1,18 @@
 # 模块与调用结构概览
 
-本文从正式入口出发说明两项任务实际调用哪些模块、每个模块接收什么、交出什么，以及推荐的源码阅读顺序。
+本文从入口说明模块之间的调用与数据交接。当前六模型的 occurrence 接线列在前面，随后各节解释原 LMDB 构象／docking 入口。
+
+## 当前六模型的调用入口
+
+| 阶段 | 调用顺序 | 具体职责 |
+|---|---|---|
+| 共同准备 | `scripts/prepare_docking.py → docking/preparation.py` | 继承split资格，检查累计条件，生成共享对称、逐实例标签和冻结清单 |
+| 训练 | `scripts/train_pl.py → OccurrenceDataset → 原变换与noiser → ModelLightning` | 使用原loss和自动优化；DockingCheckpoint按优化器更新数触发验证、调度与保存 |
+| 模型 | `models/maskfill.py::PMAsymDenoiser` | RA联合编码或RB分别编码，随后调用原配体去噪主干和置信度头 |
+| 采样 | `scripts/sample_docking.py → docking/sampling.py → 原sample_loop3` | 明确checkpoint和冻结定位条件，保存逐实例候选与实际失败阶段 |
+| 评价 | `scripts/evaluate_docking.py → docking/evaluation.py` | 原self-ranking、完整标准受体碰撞、未对齐RMSD及实例内统计 |
+
+T1在原 `ConfSampleNoiser.add_noise` 中增加非先验步的整分子平移；原 `sample_loop3` 的可选 `progress` 只记录执行阶段与模型调用次数。两处均保持原噪声／模型／预测写回的主调用顺序。正式短命令与资源边界见[训练与运行说明](../训练与运行/README.md)，当前实现和验证状态见[执行记录](../日志/第一类实验（不加密度信息）/00-实现与共同数据准备.md)。
 
 ## 1. 推理主链
 

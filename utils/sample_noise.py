@@ -506,62 +506,74 @@ class BaseSampleNoiser:
 @register_sample_noise('conf')
 class ConfSampleNoiser(BaseSampleNoiser):
     """
-    为构象生成与小分子 docking 生成仅坐标噪声，并把坐标预测投影回所选运动自由度。
+    为构象生成与小分子 docking 生成仅坐标噪声, 并把坐标预测投影回所选运动自由度.
+
+    形状中 N 是当前样本或批次的配体原子总数, H 是无向半边数, B 是分子数, T 是可旋转键数, W 是随扭转运动的原子注释数, N_d 是刚性域登记的原子数.
 
     构造参数 ``config``:
-        - prior: dict|``from_train``, 坐标先验配置；后者读取 ``ref_prior_config``。
-        - level: dict, ``MolInfoLevel`` 的训练分布或采样 step 映射配置。
-        - pre_process: None|str, 可选输入硬约束；小分子锚点先验使用 ``fix_closest``。
-        - post_process: None|str|dict, 模型输出到下一步坐标的约束策略。
-        - recenter: str, free 构象加噪后的整体刚体处理；``norotate`` 额外用 Kabsch 移除全局旋转。
-        - spring_in: dict|False, 继承自基类的可选键长弹簧配置。
-        - reassign_in: bool, 是否在训练加噪后选择最接近真值的同构原子排列。
+        - prior: dict|``from_train``, 坐标先验配置; 后者读取 ``ref_prior_config``.
+        - level: dict, ``MolInfoLevel`` 的训练分布或采样 step 映射配置.
+        - pre_process: None|str, 可选输入硬约束; 小分子锚点先验使用 ``fix_closest``.
+        - post_process: None|str|dict, 模型输出到下一步坐标的约束策略.
+        - recenter: str, free 构象加噪后的整体刚体处理; ``norotate`` 额外用 Kabsch 移除全局旋转.
+        - spring_in: dict|False, 继承自基类的可选键长弹簧配置.
+        - reassign_in: bool, 是否在训练加噪后选择最接近真值的同构原子排列.
+        - center_translation: bool, 缺省 False 保持原噪声; True 仅在 dock/free 的非先验步加入 T1 整分子平移, 强度为真实信息等级对应的 1-level_dict['pos'].
 
     运动模式 ``batch.task_setting``:
-        - free: 每个原子独立三维位移；level 字段 ``pos`` 与 N 个原子对齐。
-        - flexible: 每图整体平移/旋转加每条可旋转键扭转；level 字段为 ``trans``、``rot``、``tor``。
-        - torsional: 只改变可旋转键扭转角；level 字段只有 ``tor``。
-        - rigid: 每图只做整体平移和旋转；level 字段为 ``trans``、``rot``。
+        - free: 每个原子独立三维位移; level 字段 ``pos`` 与 N 个原子对齐.
+        - flexible: 每图整体平移/旋转加每条可旋转键扭转; level 字段为 ``trans``、``rot``、``tor``.
+        - torsional: 只改变可旋转键扭转角; level 字段只有 ``tor``.
+        - rigid: 每图只做整体平移和旋转; level 字段为 ``trans``、``rot``.
 
     构象与 docking 的关键差异:
-        - ``task=conf`` 在先验前后按图减去配体几何中心，消除无意义的整体平移。
-        - ``task=dock`` 不重居中，因而保留配体相对口袋的整体平移与旋转作为待预测自由度。
+        - ``task=conf`` 在先验前后按图减去配体几何中心, 消除无意义的整体平移.
+        - ``task=dock`` 不重居中, 因而保留配体相对口袋的整体平移与旋转作为待预测自由度.
+        - T1 在原高斯加噪后加入 s*(given_center_local-当前干净配体质心), 首步 from_prior=True 不加入; 训练的当前干净坐标是真值, 采样后续步是上次模型预测.
 
     模型输出契约:
-        - outputs.pred_pos: float, (N, 3), 网络直接预测坐标，单位 Å。
-        - batch.node_pos: float, (N, 3), ``outputs2batch`` 写回的下一迭代坐标，单位 Å。
-        - 原子类别 ``node_type`` 和半边类别 ``halfedge_type`` 在本类中保持不变。
+        - outputs.pred_pos: float, (N, 3), 网络直接预测坐标, 单位 Å.
+        - batch.node_pos: float, (N, 3), ``outputs2batch`` 写回的下一迭代坐标, 单位 Å.
+        - 原子类别 ``node_type`` 和半边类别 ``halfedge_type`` 在本类中保持不变.
     """
     def __init__(self,
         config, num_node_types, num_edge_types,
         mode='sample', device='cpu', ref_config=None, task_name='conf',
         **kwargs
     ):
+        """装配坐标先验、信息等级和可选 T1 平移开关, 其余预处理与输出约束保持原配置.
+
+        config 字段及自由度含义见类 Docstring; num_node_types、num_edge_types 是原离散词表大小, 坐标任务不增加类别噪声.
+        mode 决定训练或采样的信息等级来源, device 决定先验张量设备; ref_config 仅用于原有 prior='from_train' 配置读取.
+        """
         super().__init__(task_name, config, num_node_types, num_edge_types,
             mode, device, ref_config, pos_only=True, **kwargs)
         
-        # ``prior_config.pos``：Mapping|None，free 模式逐原子高斯先验。
-        # ``prior_config.translation``：Mapping|None，flexible/rigid 模式整体平移先验。
-        # ``prior_config.rotation``：Mapping|None，flexible/rigid 模式整体旋转先验。
-        # ``prior_config.torsional``：Mapping|None，flexible/torsional 模式内部扭转先验。
-        # ``prior_config``：EasyDict，直接取 ``config.prior``，或在其为 ``from_train`` 时取训练同名任务的上述先验叶。
+        # ``prior_config.pos.name``: str, allpos 将四种坐标自由度交给 AllPosPrior, 本项目free只使用其中的pos.
+        # ``prior_config.pos.pos``: Mapping|None, free 模式逐原子高斯先验.
+        # ``prior_config.pos.translation``: Mapping|None, flexible/rigid 模式整体平移先验.
+        # ``prior_config.pos.rotation``: Mapping|None, flexible/rigid 模式整体旋转先验.
+        # ``prior_config.pos.torsional``: Mapping|None, flexible/torsional 模式内部扭转先验.
+        # ``prior_config``: EasyDict, 直接取 ``config.prior``, 或在其为 ``from_train`` 时取训练同名任务的上述先验字段.
         prior_config = config.prior if config.prior != 'from_train' else self.ref_prior_config
-        # ``self.prior``：MolPrior，pos_only=True 关闭 node/halfedge 离散先验，只实例化坐标自由度先验。
+        # ``self.prior``: MolPrior, pos_only=True 关闭 node/halfedge 离散先验, 只实例化坐标自由度先验.
         self.prior = MolPrior(prior_config, num_node_types, num_edge_types, 
                               pos_only=True).to(device)
 
-        # ``self.level``：MolInfoLevel，将训练随机采样或采样 step 转为各自由度的 [0, 1] 信息保留量。
+        # ``self.level``: MolInfoLevel, 将训练随机采样或采样 step 转为各自由度的 [0, 1] 信息保留量.
         self.level = MolInfoLevel(config.level, device=device, mode=mode)
+        # bool, False 保持原版输入分布; T1 只在 add_noise 的 dock/free 非先验分支使用.
+        self.center_translation = config.get('center_translation', False)
         
-        # ``self.pre_process``：str|None，在先验之后、fixed 硬恢复之前约束输入坐标；锚点先验使用 ``fix_closest``。
+        # ``self.pre_process``: str|None, 在先验之后、fixed 硬恢复之前约束输入坐标; 锚点先验使用 ``fix_closest``.
         self.pre_process = config.get('pre_process', None)
-        # ``self.post_process``：None 时直接写回 ``pred_pos``。
-        # ``self.post_process``：str 时可选择 correct_pos/correct_dist/correct_center/correct_closest/flex_to_free/transparency。
-        # ``self.post_process.name``：str，Mapping 模式的 use 约束名称。
-        # ``self.post_process.atom_space[*].atom``：int，Mapping 模式约束的图内原子编号。
-        # ``self.post_process.atom_space[*].coord``：list[float]|缺省，长度为 3 的已知世界坐标，单位 Å。
-        # ``self.post_process.atom_space[*].radius``：float|缺省，允许位置偏差半径，单位 Å。
-        # ``self.post_process``：None|str|EasyDict，把网络坐标投影或修正成下一步 ``node_pos``；标准构象/docking 配置为 None。
+        # ``self.post_process``: None 时直接写回 ``pred_pos``.
+        # ``self.post_process``: str 时可选择 correct_pos/correct_dist/correct_center/correct_closest/flex_to_free/transparency.
+        # ``self.post_process.name``: str, Mapping 模式的 use 约束名称.
+        # ``self.post_process.atom_space[*].atom``: int, Mapping 模式约束的图内原子编号.
+        # ``self.post_process.atom_space[*].coord``: list[float]|缺省, 长度为 3 的已知世界坐标, 单位 Å.
+        # ``self.post_process.atom_space[*].radius``: float|缺省, 允许位置偏差半径, 单位 Å.
+        # ``self.post_process``: None|str|EasyDict, 把网络坐标投影或修正成下一步 ``node_pos``; 标准构象/docking 配置为 None.
         self.post_process = config.get('post_process', None)
 
     def sample_level(self, step, batch):
@@ -649,127 +661,135 @@ class ConfSampleNoiser(BaseSampleNoiser):
     def add_noise(self, node_type, node_pos, halfedge_type, batch,
                    from_prior=False, level_dict=None):
         """
-        按 ``task_setting`` 装配坐标先验参数，并生成当前步配体坐标输入。
+        按 ``task_setting`` 装配坐标先验参数, 并生成当前步配体坐标输入.
 
         输入参数:
-            - node_type: int64, (N,), 当前原子类别；本任务不加类别噪声，返回时原样引用。
-            - node_pos: float, (N, 3), 当前配体坐标，单位 Å。
-            - halfedge_type: int64, (H,), 当前半边类别；本任务不加类别噪声，返回时原样引用。
-            - batch.task: str|list[str], ``conf`` 或 ``dock``。
-            - batch.task_setting: str|list[str], ``free``、``flexible``、``torsional`` 或 ``rigid``。
-            - batch.node_type_batch: int64, (N,), 可选；每个原子所属图号，范围 0..B-1。
-            - batch.tor_bonds_anno: int64, (T, 3), ``[BFS 序号, 远端轴原子, 近端轴原子]``。
-            - batch.twisted_nodes_anno: int64, (W, 2), ``[扭转行号, 随该键转动的原子]``。
-            - batch.domain_node_index: int64, (2, N_d), ``[刚性域号, 域内原子]``；结构化先验据此按域展开变换。
-            - batch.num_nodes: int, 单个 Data 不含 node_type_batch 时使用的原子数。
-            - from_prior: bool, True 从先验初始化；False 在当前坐标周围按 level 加噪。
-            - level_dict: dict[str, Tensor], 键和形状由 ``sample_level`` 定义。
+            - node_type: int64, (N,), 当前原子类别; 本任务不加类别噪声, 返回时原样引用.
+            - node_pos: float, (N, 3), 当前配体坐标, 单位 Å.
+            - halfedge_type: int64, (H,), 当前半边类别; 本任务不加类别噪声, 返回时原样引用.
+            - batch.task: str|list[str], ``conf`` 或 ``dock``.
+            - batch.task_setting: str|list[str], ``free``、``flexible``、``torsional`` 或 ``rigid``.
+            - batch.node_type_batch: int64, (N,), 可选; 每个原子所属图号, 范围 0..B-1.
+            - batch.given_center_local: float32, (B, 3), T1 专用; 给定 docking 中心的模型局部 XYZ 坐标, 单位 Å, 与 node_pos 共用本次旋转后的坐标轴和模型原点; 中心模式为全零, 单样本 B=1.
+            - batch.tor_bonds_anno: int64, (T, 3), ``[BFS 序号, 远端轴原子, 近端轴原子]``.
+            - batch.twisted_nodes_anno: int64, (W, 2), ``[扭转行号, 随该键转动的原子]``.
+            - batch.domain_node_index: int64, (2, N_d), ``[刚性域号, 域内原子]``; 结构化先验据此按域展开变换.
+            - batch.num_nodes: int, 单个 Data 不含 node_type_batch 时使用的原子数.
+            - from_prior: bool, True 从先验初始化; False 在当前坐标周围按 level 加噪.
+            - level_dict: dict[str, Tensor], 键和形状由 ``sample_level`` 定义.
+            - level_dict.pos: float, (N,), free 模式的真实信息保留量; 同一分子的原子共享数值, T1 使用 s=1-level_dict.pos, 不用采样步号代替.
 
-        传给 ``MolPrior`` 的附加叶子:
-            - node_type: None, 明确关闭原子类别先验输入。
-            - halfedge_type: None, 明确关闭半边类别先验输入。
-            - mol_size: int64, (N,), free 模式中每个原子位置重复其所属分子的原子数。
-            - tor_bonds_anno: int64, (T, 3), flexible/torsional 模式使用。
-            - twisted_nodes_anno: int64, (W, 2), flexible/torsional 模式使用。
-            - domain_node_index: int64, (2, N_d), flexible/torsional/rigid 模式使用。
+        传给 ``MolPrior`` 的附加字段:
+            - node_type: None, 明确关闭原子类别先验输入.
+            - halfedge_type: None, 明确关闭半边类别先验输入.
+            - mol_size: int64, (N,), free 模式中每个原子位置重复其所属分子的原子数.
+            - tor_bonds_anno: int64, (T, 3), flexible/torsional 模式使用.
+            - twisted_nodes_anno: int64, (W, 2), flexible/torsional 模式使用.
+            - domain_node_index: int64, (2, N_d), flexible/torsional/rigid 模式使用.
 
         返回值 ``in_dict``:
-            - node: int64, (N,), 与输入 node_type 相同。
-            - pos: float, (N, 3), 加噪、必要时重居中并可选去全局旋转后的坐标，单位 Å。
-            - halfedge: int64, (H,), 与输入 halfedge_type 相同。
+            - node: int64, (N,), 与输入 node_type 相同.
+            - pos: float, (N, 3), 加噪、必要时重居中并可选去全局旋转后的坐标, 单位 Å.
+            - halfedge: int64, (H,), 与输入 halfedge_type 相同.
+
+        T1 执行边界:
+            - 仅 center_translation=True、task=dock、task_setting=free、from_prior=False 时加入整分子平移; 不改变高斯噪声的分子尺寸缩放和裁限.
+            - 质心从本次 node_pos 沿每个分子的原子维取算术平均, 不读取独立真值字段; 本函数返回后, BaseSampleNoiser.__call__ 再执行同构重排和 fixed 恢复.
         """
-        # batch_node = getattr(batch, 'node_type_batch', 
-        #                      torch.zeros(node_type.shape[0], dtype=torch.long, device=device))
-        # node_pos = node_pos - scatter_mean(node_pos, batch_node, dim=0, dim_size=batch_node.max()+1)[batch_node]
-        # ``task``：str，决定是否在加噪前后移除配体整体平移；conf 会，dock 不会。
+        # ``task``: str, 决定是否在加噪前后移除配体整体平移; conf 会, dock 不会.
         task = self._get_task(batch)
-        # ``setting``：str，决定自由原子噪声或结构化 trans/rot/tor 先验。
+        # ``setting``: str, 决定自由原子噪声或结构化 trans/rot/tor 先验.
         setting = self._get_setting(batch)  # return dict_list2item(batch['task_setting'])
-        # setting = 'free'
-        # ``additional_kwargs.node_type``：None，pos_only 路径明确不向原子类别先验传标签。
-        # ``additional_kwargs.halfedge_type``：None，pos_only 路径明确不向半边类别先验传标签。
-        # ``additional_kwargs``：dict[str, object]，随后按 setting 追加坐标先验需要的叶。
+        # ``additional_kwargs.node_type``: None, pos_only 路径明确不向原子类别先验传标签.
+        # ``additional_kwargs.halfedge_type``: None, pos_only 路径明确不向半边类别先验传标签.
+        # ``additional_kwargs``: dict[str, object], 随后按 setting 追加坐标先验需要的字段.
         additional_kwargs = {
             'node_type': None,
             'halfedge_type': None,
         }
         if setting == 'free':
-            # pass
             if 'node_type_batch' in batch:
-                # ``mol_size``：LongTensor，形状为 (B,)；每个图的原子计数；由 N 个图号直方图得到。
+                # ``mol_size``: LongTensor, 形状为 (B,); 每个图的原子计数; 由 N 个图号直方图得到.
                 mol_size = torch.bincount(batch['node_type_batch'])
-                # ``mol_size``：LongTensor，形状为 (N,)；原子所在图(配体)的原子个数
+                # ``mol_size``: LongTensor, 形状为 (N,); 原子所在图(配体)的原子个数
                 mol_size = mol_size[batch['node_type_batch']]
             else:
-                # ``mol_size``：LongTensor，形状为 (N,)；单图时每个原子位置都填相同的 num_nodes=N。
+                # ``mol_size``: LongTensor, 形状为 (N,); 单图时每个原子位置都填相同的 num_nodes=N.
                 mol_size = batch['num_nodes'] * torch.ones(node_type.shape[0], dtype=torch.long, device=node_type.device)
             additional_kwargs.update({
                 'mol_size': mol_size,
             })
 
-        # see me: 下面的不用看
         elif setting in ['flexible', 'torsional']:
             additional_kwargs.update({
                 'tor_bonds_anno': batch['tor_bonds_anno'],
                 'twisted_nodes_anno': batch['twisted_nodes_anno'],
                 'domain_node_index': batch['domain_node_index'],
             })
-            # if setting == 'flexible':
-            #     additional_kwargs.update({
-            #         'domain_center_nodes': batch['domain_center_nodes'],
-            #     })
         elif setting == 'rigid':
             additional_kwargs.update({
                 'domain_node_index': batch['domain_node_index'],
             })
         # # recenter before add_noise
         if (task == 'conf'):
-            # ``batch_node``：LongTensor，形状为 (N,)；每个原子所属图号；单图 Data 缺省为全 0。
+            # ``batch_node``: LongTensor, 形状为 (N,); 每个原子所属图号; 单图 Data 缺省为全 0.
             batch_node = getattr(batch, 'node_type_batch',
                         torch.zeros(node_type.shape[0], dtype=torch.long, device=node_pos.device))
-            # ``node_pos_center``：FloatTensor，形状为 (N, 3)；每个原子位置重复其所属图的几何中心，单位 Å。
+            # ``node_pos_center``: FloatTensor, 形状为 (N, 3); 每个原子位置重复其所属图的几何中心, 单位 Å.
             node_pos_center = scatter_mean(node_pos, batch_node, dim=0, dim_size=batch_node.max()+1)[batch_node]
-            # ``node_pos``：[N, 3] -> [N, 3]；逐图减中心，转入各分子质心位于原点的局部坐标系。
+            # ``node_pos``: [N, 3] -> [N, 3]; 逐图减中心, 转入各分子质心位于原点的局部坐标系.
             node_pos = node_pos - node_pos_center
             if self.mode == 'train':
                 batch.update({'node_pos': node_pos.clone()})  # can be ommited since featurizer has done this
             
 
-        # ``pos_in``：FloatTensor，形状为 (N, 3)；按 free 或 trans/rot/tor 先验生成的坐标，单位 Å。
+        # ``pos_in``: FloatTensor, 形状为 (N, 3); 按 free 或 trans/rot/tor 先验生成的坐标, 单位 Å.
         pos_in = self.prior.add_noise(node_pos=node_pos.clone(), level_dict=level_dict,
                                       from_prior=from_prior, **additional_kwargs,)
-        
 
-        # see me: 下面的不用看
+        if self.center_translation and task == 'dock' and setting == 'free' and not from_prior:
+            # int64, (N,), 每个配体原子所属分子编号; 训练单样本没有 PyG batch 向量时全部属于分子 0.
+            batch_node = batch['node_type_batch'] if 'node_type_batch' in batch else torch.zeros_like(node_type)
+            # (B, 3), 给定 docking 中心的模型局部 XYZ 坐标, 单位 Å; 中心模式原点本身即给定中心.
+            given_center_local = batch['given_center_local']
+            # [N, 3] -> [B, 3], 按分子对当前干净配体坐标取算术平均; 训练使用真值坐标, 迭代采样使用上次干净预测.
+            clean_center = scatter_mean(node_pos, batch_node, dim=0, dim_size=given_center_local.shape[0])
+            # [B, 3] -> [N, 3], 每个原子共享所属分子的指向给定中心的平移向量, 单位 Å.
+            center_shift = (given_center_local - clean_center)[batch_node]
+            # (N,), 真实信息等级对应的噪声权重 s; 同一分子取相同值, s=0 时完全不平移.
+            noise_weight = 1 - level_dict['pos']
+            # [N, 1] * [N, 3] -> [N, 3], 广播 XYZ 轴并加入 s 倍整体平移; 不额外抽取随机偏移.
+            pos_in = pos_in + noise_weight[:, None] * center_shift
+
         # # recenter after add_noise
         if (task == 'conf'):
-            # ``batch_node``：LongTensor，形状为 (N,)；与上面的分图中心计算相同；此处重新取得以保持分支局部完整。
+            # ``batch_node``: LongTensor, 形状为 (N,); 与上面的分图中心计算相同; 此处重新取得以保持分支局部完整.
             batch_node = getattr(batch, 'node_type_batch',
                         torch.zeros(node_type.shape[0], dtype=torch.long, device=node_pos.device))
-            # ``pos_in_center``：FloatTensor，形状为 (N, 3)；每个原子位置重复其所属图的加噪后几何中心，单位 Å。
+            # ``pos_in_center``: FloatTensor, 形状为 (N, 3); 每个原子位置重复其所属图的加噪后几何中心, 单位 Å.
             pos_in_center = scatter_mean(pos_in, batch_node, dim=0, dim_size=batch_node.max()+1)[batch_node]
-            # ``pos_in``：[N, 3] -> [N, 3]；再次逐图减中心，消除随机先验产生的数值整体平移。
+            # ``pos_in``: [N, 3] -> [N, 3]; 再次逐图减中心, 消除随机先验产生的数值整体平移.
             pos_in = pos_in - pos_in_center
             if (setting == 'free') and (self.config.get('recenter', 'default') == 'norotate'):
-                # ``domain_index``：LongTensor，形状为 (N,)；把每个图当作一个 Kabsch 对齐域。
+                # ``domain_index``: LongTensor, 形状为 (N,); 把每个图当作一个 Kabsch 对齐域.
                 domain_index = batch_node
-                # ``global_rot``：FloatTensor，形状为 (B, 3, 3)，把 ``pos_in`` 对齐到 ``node_pos`` 的逐图无反射旋转矩阵。
-                # ``global_trans``：FloatTensor，形状为 (B, 1, 3)，同一逐图刚体对齐的行向量平移，单位 Å。
+                # ``global_rot``: FloatTensor, 形状为 (B, 3, 3), 把 ``pos_in`` 对齐到 ``node_pos`` 的逐图无反射旋转矩阵.
+                # ``global_trans``: FloatTensor, 形状为 (B, 1, 3), 同一逐图刚体对齐的行向量平移, 单位 Å.
                 global_rot, global_trans = kabsch_flatten(pos_in, node_pos, domain_index)
         
-                # ``pos_corrected_expand``：FloatTensor，形状为 (N, 1, 3)；[N, 3] -> [N, 1, 3]，逐原子右乘所属图旋转矩阵并加平移。
+                # ``pos_corrected_expand``: FloatTensor, 形状为 (N, 1, 3); [N, 3] -> [N, 1, 3], 逐原子右乘所属图旋转矩阵并加平移.
                 pos_corrected_expand = torch.matmul(
                     pos_in[:, None, :],
                     global_rot.transpose(1, 2)[domain_index]
                 ) + global_trans[domain_index]
 
-                # ``pos_in``：FloatTensor，形状为 (N, 3)；移除 free 噪声相对真值的整体刚体旋转后，保留内部构象变化。
+                # ``pos_in``: FloatTensor, 形状为 (N, 3); 移除 free 噪声相对真值的整体刚体旋转后, 保留内部构象变化.
                 pos_in = pos_corrected_expand.squeeze(1)
                 
         
-        # ``in_dict.node``：LongTensor，形状为 (N,)，与输入 ``node_type`` 相同。
-        # ``in_dict.pos``：FloatTensor，形状为 (N, 3)，加噪并完成任务级预处理的配体坐标，单位 Å。
-        # ``in_dict.halfedge``：LongTensor，形状为 (H,)，与输入 ``halfedge_type`` 相同。
+        # ``in_dict.node``: LongTensor, 形状为 (N,), 与输入 ``node_type`` 相同.
+        # ``in_dict.pos``: FloatTensor, 形状为 (N, 3), 加噪并完成任务级预处理的配体坐标, 单位 Å.
+        # ``in_dict.halfedge``: LongTensor, 形状为 (H,), 与输入 ``halfedge_type`` 相同.
         in_dict = {
             'node': node_type,
             'pos': pos_in,

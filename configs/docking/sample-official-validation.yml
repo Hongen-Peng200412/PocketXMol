@@ -1,0 +1,37 @@
+# scripts/sample_docking.py生成候选, scripts/evaluate_docking.py读取同一配置评价; 本文件只用于完整候选验证.
+model_name: official
+train_config: /storage/penghongen/PocketXMol_official_test/extracted/data/trained_models/pxm/train_config/train.yml
+# 明确的只读官方权重; 不搜索或更换checkpoint.
+checkpoint: /storage/penghongen/PocketXMol_official_test/extracted/data/trained_models/pxm/checkpoints/pocketxmol.ckpt
+# str, OccurrenceDataset仅保留标准蛋白输入; 标准核酸仍参加独立评价的完整受体碰撞检查.
+receptor_branch: protein
+# bool, sample_docking关闭T1附加平移, 保留原官方高斯采样.
+center_translation: false
+dataset:
+  # str, 只读AdaLigand基础图、沉积坐标、受体、语言向量与地图资产根.
+  root: /storage/penghongen/AdaLigand/Ori_Data
+  # str, 共同CPU准备写入的共享对称排列和逐实例ligand-area索引根.
+  derived_root: /storage/penghongen/Adaligand_Build/Ori_Data/pocketxmol
+  # str, 共同CPU准备冻结的实例清单、中心偏移与测试视图根.
+  manifest_root: /storage/penghongen/PocketXMol/data
+  # int, OccurrenceDataset构造模型输入受体图的近邻上限.
+  knn: 32
+# C0为真实中心, C5读取冻结偏移, E为完整配体包络; 各协议独立生成, 共用冻结候选种子.
+protocols: [C0, C5, E]
+split: validation
+output_root: /storage/penghongen/PocketXMol/sampling/official
+# int, sample_occurrence每批候选数上限, 不改变单实例候选预算.
+batch_size: 25
+# int, 单实例固定候选预算, 失败候选仍进入统计分母.
+num_candidates: 50
+# int, 原sample_loop3对每个候选执行的循环步数.
+num_steps: 100
+device: cuda
+# 评价每个CPU任务明确申请8核; 验证只汇总ALL完整集合.
+# int, evaluate_docking的CPU进程数; CPU核数由提交命令申请.
+evaluation_workers: 8
+wandb:
+  entity: pencounkdual-111
+  project: PocketXmol_raw
+  name: official_validation
+  mode: online

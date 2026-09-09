@@ -1,11 +1,11 @@
 <#
 .SYNOPSIS
-    Safe sync Pocket_Plus to the remote server.
+    安全同步 PocketXMol 到已授权的项目目录.
 
 .DESCRIPTION
-    1. Keep the remote Pocket_Plus directory to avoid disturbing running jobs.
+    1. Keep the remote PocketXMol directory to avoid disturbing running jobs.
     2. Verify rsync exists on the remote server.
-    3. Remove any existing remote .git directory.
+    3. Preserve remote files, including any existing .git directory.
     4. Upload local files with rsync while excluding local-only files.
     5. Reset permissions and fix .sbatch / .sh line endings.
 #>
@@ -16,7 +16,7 @@ $RemoteUser = "penghongen"
 $RemoteIP = "10.102.33.220"
 $RemotePort = "10022"
 $RemoteBaseDir = "/home/penghongen/My_Project"
-$RemoteTargetDir = "Pocket_Plus"
+$RemoteTargetDir = "PocketXMol"
 
 function Resolve-MsysBin {
     $Candidates = @(
@@ -60,12 +60,13 @@ $CygpathExe = Join-Path $MsysBin "cygpath.exe"
 $SshPassExe = Join-Path $MsysBin "sshpass.exe"
 $SshExe = Join-Path $MsysBin "ssh.exe"
 $SshPassFile = Join-Path $env:USERPROFILE ".ssh\pocket_plus_sshpass.txt"
+$KnownHostsFile = Join-Path $env:USERPROFILE ".ssh\known_hosts"
 $RemoteFullDir = "$RemoteBaseDir/$RemoteTargetDir"
 $RemoteSpec = "${RemoteUser}@${RemoteIP}:${RemoteFullDir}/"
 
 function Invoke-RemoteCommand {
     param([string]$Command)
-    & $SshPassExe -f $SshPassFilePosix $SshExe -p $RemotePort -o StrictHostKeyChecking=accept-new -o WarnWeakCrypto=no -o PreferredAuthentications=password -o PubkeyAuthentication=no -o NumberOfPasswordPrompts=1 "$RemoteUser@$RemoteIP" $Command
+    & $SshPassExe -f $SshPassFilePosix $SshExe -p $RemotePort -o StrictHostKeyChecking=yes -o "UserKnownHostsFile=$KnownHostsFilePosix" -o WarnWeakCrypto=no -o PreferredAuthentications=password -o PubkeyAuthentication=no -o NumberOfPasswordPrompts=1 "$RemoteUser@$RemoteIP" $Command
 }
 
 Write-Host "==========================================================" -ForegroundColor Cyan
@@ -109,7 +110,8 @@ $env:Path = "$MsysBin;$env:Path"
 $env:MSYS2_ARG_CONV_EXCL = "*"
 $LocalPathPosix = (& $CygpathExe -u $LocalPath).Trim()
 $SshPassFilePosix = (& $CygpathExe -u $SshPassFile).Trim()
-$RemoteShell = "sshpass -f $SshPassFilePosix ssh -p $RemotePort -o StrictHostKeyChecking=accept-new -o WarnWeakCrypto=no -o PreferredAuthentications=password -o PubkeyAuthentication=no -o NumberOfPasswordPrompts=1"
+$KnownHostsFilePosix = (& $CygpathExe -u $KnownHostsFile).Trim()
+$RemoteShell = "sshpass -f $SshPassFilePosix ssh -p $RemotePort -o StrictHostKeyChecking=yes -o UserKnownHostsFile=$KnownHostsFilePosix -o WarnWeakCrypto=no -o PreferredAuthentications=password -o PubkeyAuthentication=no -o NumberOfPasswordPrompts=1"
 
 Write-Host "[1/6] Checking remote rsync..." -ForegroundColor Yellow
 $CheckRsyncCmd = "command -v rsync >/dev/null 2>&1"
@@ -129,14 +131,7 @@ if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
-Write-Host "[3/6] Removing remote .git directory if present..." -ForegroundColor Yellow
-$RemoveGitCmd = "if [ -e '$RemoteFullDir/.git' ] || [ -L '$RemoteFullDir/.git' ]; then rm -rf '$RemoteFullDir/.git'; fi"
-Invoke-RemoteCommand $RemoveGitCmd
-
-if ($LASTEXITCODE -ne 0) {
-    Write-Host "Warning: unable to remove remote .git directory. Continuing." -ForegroundColor Yellow
-}
-
+Write-Host "[3/6] Preserving remote files and Git metadata..." -ForegroundColor Yellow
 Write-Host "[4/6] Uploading local code with rsync..." -ForegroundColor Yellow
 & $RsyncExe -av `
     --exclude=".git" `
@@ -145,6 +140,11 @@ Write-Host "[4/6] Uploading local code with rsync..." -ForegroundColor Yellow
     --exclude="*.pyc" `
     --exclude=".pytest_cache/" `
     --exclude=".ruff_cache/" `
+    --exclude=".review/" `
+    --exclude=".claude/" `
+    --exclude="tmp/" `
+    --exclude="model_weights.tar.gz" `
+    --exclude="*.pdf" `
     -e $RemoteShell `
     "$LocalPathPosix/" `
     $RemoteSpec
@@ -158,8 +158,8 @@ Write-Host "==========================================================" -Foregro
 Write-Host " Upload Complete! Now setting permissions..." -ForegroundColor Green
 Write-Host "==========================================================" -ForegroundColor Green
 
-Write-Host "[5/6] Setting permissions (chmod 755)..." -ForegroundColor Yellow
-$ChmodCmd = "chmod -R 755 '$RemoteFullDir'"
+Write-Host "[5/6] Setting executable permissions for shell scripts..." -ForegroundColor Yellow
+$ChmodCmd = "find '$RemoteFullDir' -type f \( -name '*.sbatch' -o -name '*.sh' \) -exec chmod 755 {} +"
 Invoke-RemoteCommand $ChmodCmd
 
 if ($LASTEXITCODE -ne 0) {
