@@ -282,8 +282,10 @@ class PMAsymDenoiser(Module):
             h_pocket[is_nucleic] = self.nucleic_embedder(batch['pocket_nucleic_feature'][is_nucleic])
 
         if self.nucleic_branch == 'RB':
-            # (P, self.config.pocket_dim), 分别接收两类编码结果, dtype 与两种投影一致, 支持 bf16 自动混合精度.
-            h_pocket_encoded = torch.zeros_like(h_pocket)
+            # list[Tensor], 每项为(P_branch, pocket_dim), 保留编码器实际输出精度; AMP下投影可为bf16而编码结果为float32.
+            encoded_parts = []
+            # list[LongTensor], 每项为(P_branch,), 与对应编码结果对齐的共同口袋原子编号.
+            encoded_indices = []
             # int64, (2, E_p), Dataset 只提供蛋白内部边和核酸内部边; 两类端点均使用共同 pocket_pos 原子编号.
             pocket_edge_index = batch['pocket_knn_edge_index']
             # 两次独立编码始终保留各类原子在 pocket_pos 中的相对顺序; 任一类别为空时跳过该编码器.
@@ -300,16 +302,20 @@ class PMAsymDenoiser(Module):
                 # int64, (2, E_branch), E_branch 是本类内部有向边数; 两端编号压缩到本类坐标和隐藏特征的原子维.
                 branch_edge_index = branch_index[pocket_edge_index[:, edge_mask]]
                 # (P_branch, self.config.pocket_dim), 编码器只更新本类隐藏特征, 共同模型原点和原子坐标保持不变.
-                h_pocket_encoded[node_index] = encoder(
+                encoded_parts.append(encoder(
                     h_node=h_pocket[node_index],
                     pos_node=batch['pocket_pos'][node_index],
                     edge_index=branch_edge_index,
                     h_edge=None,
                     node_extra=None,
                     edge_extra=None,
-                )
-            # (P, self.config.pocket_dim), 两类编码已按共同口袋编号合并, 和 pocket_pos、pocket_pos_batch 逐原子对齐.
-            h_pocket = h_pocket_encoded
+                ))
+                encoded_indices.append(node_index)
+            if encoded_parts:
+                # int64, (P,), 把先蛋白后核酸的拼接顺序还原为原pocket_pos顺序, 不量化编码器输出.
+                original_order = torch.cat(encoded_indices).argsort()
+                h_pocket = torch.cat(encoded_parts, dim=0)[original_order]
+            # 全空口袋保留原空投影; 非空结果为(P, pocket_dim), 与pocket_pos和pocket_pos_batch逐原子对齐.
         else:
             # (P, self.config.pocket_dim), 官方只编码蛋白图; RA 沿 Dataset 给出的联合 kNN 图共享同一编码器.
             h_pocket = self.pocket_encoder(
