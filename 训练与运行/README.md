@@ -118,6 +118,15 @@ CPU构造验收使用 `ops/run_docking_checks.sh`。该入口运行pytest，为�
 bash 训练与运行/submit_task.sh --sh ops/run_docking_checks.sh --resource cpu --cpus 8 -- tests/test_docking_data.py tests/test_docking_model.py tests/test_docking_training.py tests/test_docking_sampling.py
 ```
 
-数据、模型、训练控制和后续采样评价各按实际改动完成必要验收。GPU smoke 必须使用非测试小样本，核对原权重加载、RA/RB/T1、bf16、梯度、有效批量、checkpoint与停止行为。通过后才接入正式训练；不因一次epoch或一次验证成功而宣称完整任务完成。
+数据、模型、训练控制和后续采样评价各按实际改动完成必要验收。在授权GPU的release／launch中，先检查构造资产与真实官方权重；共同清单冻结后再检查真实train／validation资产：
+
+```bash
+bash ops/run_docking_gpu_checks.sh -k official_weights
+bash ops/run_docking_gpu_checks.sh -k real_data
+```
+
+前者核对RA/RB/T1、bf16原loss、36×2=72、官方参数加载与已停止检查点恢复。后者用中心T1-RB和包络T0-RA作输入装配与资源验收，各运行2次更新、1个验证批，再为首条validation生成2个3步候选并完整评价；不设姿态质量阈值，不读取test划分。后者保持实际配置的batch与累积乘积为72，OOM会明确失败，便于在正式训练前按已批准的成对设置调整。两者均关闭W&B，产物只在每次launch独立的pytest临时目录，不能进入正式结果表。
+
+真实资产门控记录整个短fit的耗时和GPU峰值显存；该耗时包含初次读取及验证，不能当作稳定每步速度。全部必要验收通过后才接入正式训练；不因一次epoch或一次验证成功而宣称完整任务完成。
 
 实际正式命令、release、launch、job id、产物、测试结果和失败处理统一写入[总日志](../日志/总日志.md)及其链接的独立实验记录。W&B使用 `pencounkdual-111/PocketXmol_raw`，默认online；私密API key不写入配置或日志。密度实验仍等待无密度完整结果后的用户选择。
