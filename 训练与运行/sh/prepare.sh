@@ -9,6 +9,8 @@ export PYTHONDONTWRITEBYTECODE=1
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
+export TMPDIR=/storage/penghongen/tmp
+mkdir -p "$TMPDIR"
 stage="${1:?请指定 index、objects、samples 或 freeze}"
 shard_id="${SLURM_ARRAY_TASK_ID:-0}"
 shard_count="${2:-${SLURM_ARRAY_TASK_COUNT:-1}}"

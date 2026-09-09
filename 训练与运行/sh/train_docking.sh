@@ -9,6 +9,8 @@ export PYTHONDONTWRITEBYTECODE=1
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
+export TMPDIR=/storage/penghongen/tmp
+mkdir -p "$TMPDIR"
 experiment="${1:?请指定六模型之一, 如 B-C-T0-RA}"
 shift
 exec /storage/penghongen/PocketXMol/runtime/venv/bin/python scripts/train_pl.py "configs/docking/${experiment}.yml" --logdir "/storage/penghongen/PocketXMol/training/${experiment}" "$@"
