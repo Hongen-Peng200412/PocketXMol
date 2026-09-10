@@ -310,8 +310,10 @@ def sample_docking(config):
         if previous["science_config"] != science_config or previous["training_config"] != train_config:
             raise ValueError("sampling_output_contains_a_different_experiment")
     featurizer = FeaturizeMol(train_config.transforms.featurizer)
+
     model_config = deepcopy(train_config.model)
     model_config.nucleic_branch = None if config.receptor_branch == "protein" else config.receptor_branch
+
     model = PMAsymDenoiser(model_config, featurizer.num_node_types, featurizer.num_edge_types, pocket_in_dim=25).to(config.device)
     checkpoint = torch.load(config.checkpoint, map_location="cpu", weights_only=False)
     # 只加载 Lightning state_dict 中 model. 参数; loss、优化器和调度器状态不进入推理模型.
@@ -331,7 +333,9 @@ def sample_docking(config):
     for protocol in config.protocols:
         dataset_config = deepcopy(config.dataset)
         dataset_config.pocket_mode = "envelope" if protocol == "E" else "center"
+
         dataset = OccurrenceDataset(dataset_config, config.split, transforms, config.receptor_branch, protocol, shuffle=False)
+
         noise_config = deepcopy(sample_config.noise)
         noise_config.num_steps = config.num_steps
         noise_config.center_translation = bool(config.center_translation and protocol != "E")

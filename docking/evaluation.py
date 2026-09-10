@@ -30,8 +30,8 @@ STANDARD_RESIDUES = ("ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HI
 def summarize_occurrences(results):
     """汇总一个模型、定位协议和视图的逐实例评价, 不跨occurrence拼接候选.
 
-    输入 results 是list[dict], 每项为evaluate_occurrence的assessment, 可以为空.
-    返回summary为dict, 保存如下字段:
+    输入 results 是list[dict], 每项为 evaluate_occurrence 的 assessment, 可以为空.
+    返回 summary 为 dict, 保存如下字段:
         - occurrence_count: int, 全部冻结实例数, 包括失败实例.
         - pdb_count: int, 上述实例对应的不同PDB数.
         - candidate_count: int, 全部实例的候选预算之和.
@@ -160,6 +160,7 @@ def evaluate_occurrence(arguments):
             - errors: list[dict], 一个候选可有多个检查错误, 每项包含以下字段.
                 - stage: str, 出错阶段, 如clashes或rmsd.
                 - error: str, 异常类型与信息, 如ValueError: invalid coordinates.
+
         - assessment.json: dict, 与函数返回值相同; 字段如下.
             - pdb_id: str, 当前结构编号, 如9v7o.
             - occurrence_id: int, 原candidate_id, 如0.
