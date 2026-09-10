@@ -1,4 +1,4 @@
-"""用构造资产核对累计筛选、原子编号、口袋几何和测试视图, 不读取 held-out 科学样本."""
+"""用构造资产核对累计筛选、原子编号、口袋几何和测试视图; 另用明确训练实例核对源资产接线, 不读取held-out科学样本."""
 
 import json
 from copy import deepcopy
@@ -50,7 +50,7 @@ def write_pdb(config, pdb_id, object_keys, molecules):
         occurrences.append(dict(candidate_id=candidate_id, object_key=object_key, pdb_id=pdb_id, type_tag='small_molecule', kind='CCD', polymer_length=1, is_covalent=False, components=[dict(ccd_id=object_key.split(':')[1])]))
         normalized = Chem.MolToSmiles(molecule, isomericSmiles=False)
         languages.append(dict(pdb_id=pdb_id, candidate_id=candidate_id, status='encoded', error=None, prepared_smiles=normalized, model_smiles=normalized, diagnostics=dict(official_normalization_success=True, official_normalization_error=None, unsupported_tokens=[], token_diagnostic_error=None, all_finite=True)))
-        np.savez_compressed(language_dir / f'candidate_{candidate_id}.npz', pdb_id=pdb_id, candidate_id=candidate_id, object_key=object_key, model_name='smi_ted_light_289m', prepared_smiles=normalized, model_smiles=normalized, embedding=np.ones(768, dtype=np.float32))
+        np.savez_compressed(language_dir / f'candidate_{candidate_id}.npz', pdb_id=pdb_id, candidate_id=candidate_id, object_key=object_key, model_name='SMI-TED Light 289M', prepared_smiles=normalized, model_smiles=normalized, embedding=np.ones(768, dtype=np.float32))
     write_jsonl(parse_dir / 'occurrences.jsonl', occurrences)
     write_jsonl(language_dir / 'results.jsonl', languages)
     np.savez_compressed(parse_dir / 'ligand_coords.npz', **coordinates)
@@ -214,3 +214,22 @@ def test_output_write_failure_is_not_a_scientific_exclusion(prepared_data, monke
     monkeypatch.setattr(np, 'save', fail_write)
     with pytest.raises(OSError, match='quota'):
         prepare_pdb(root, derived, Path(config.language_root), records, objects)
+
+
+@pytest.mark.skipif(not Path('/storage/penghongen/AdaLigand/Ori_Data').is_dir(), reason='需要服务器只读Ori_Data资产')
+def test_real_source_preparation(tmp_path):
+    """检查已核对的训练候选5ftl/0/CCD:ADP, 防止构造夹具复刻了错误的语言资产字段约定.
+
+    读取真实模板、沉积坐标、语言向量、受体与两类地图; 仅把本实例派生标签写入pytest临时目录.
+    """
+    root = Path('/storage/penghongen/AdaLigand/Ori_Data')
+    language_root = root / 'stage1_preparation_box_pool_2/ligand_language_models/smi_ted_289m'
+    record = dict(split='train', pdb_id='5ftl', candidate_id=0, object_key='CCD:ADP')
+    for name in ('symmetries', 'ligand_area'):
+        (tmp_path / name).mkdir()
+    template = prepare_object(root, tmp_path, record['object_key'])
+    assert template['status'] == 'ok', template
+    kept, excluded = prepare_pdb(root, tmp_path, language_root, [record], {record['object_key']: template})
+    assert excluded == [], excluded
+    assert kept == [dict(record, n_heavy_atoms=template['atom_count'])]
+    assert (tmp_path / 'ligand_area/5ftl/0.npy').is_file()

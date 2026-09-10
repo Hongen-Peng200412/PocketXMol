@@ -199,7 +199,8 @@ def prepare_pdb(root, derived_root, language_root, records, object_results):
                 with np.load(language_root / pdb_id / f"candidate_{candidate_id}.npz", allow_pickle=False) as embedding:
                     # (768,), 冻结 SMI-TED 单实例向量; 只检查身份、形状和有限性, 不补算或写副本.
                     vector = embedding["embedding"]
-                    if language["pdb_id"] != pdb_id or str(embedding["pdb_id"].item()) != pdb_id or int(embedding["candidate_id"].item()) != candidate_id or str(embedding["object_key"].item()) != record["object_key"] or str(embedding["model_name"].item()) != "smi_ted_light_289m":
+                    # NPZ的model_name保存显示名称, 已核对为SMI-TED Light 289M; 它不是目录名smi_ted_289m.
+                    if language["pdb_id"] != pdb_id or str(embedding["pdb_id"].item()) != pdb_id or int(embedding["candidate_id"].item()) != candidate_id or str(embedding["object_key"].item()) != record["object_key"] or str(embedding["model_name"].item()) != "SMI-TED Light 289M":
                         raise ValueError("language_identity_mismatch")
                     if str(embedding["prepared_smiles"].item()) != language["prepared_smiles"] or str(embedding["model_smiles"].item()) != language["model_smiles"]:
                         raise ValueError("language_string_mismatch")

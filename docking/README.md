@@ -100,6 +100,8 @@
 
 每行一个模板，含 `object_key`、`status`、`reason`、`atom_count` 和 `canonical_smiles`。成功 `status="ok"`、`reason=""`；失败 `status="excluded"`、`reason` 给出异常，后两项为 `null`。`canonical_smiles` 是源字符串的无手性规范形式，仅用于核对已有语言输入身份，不改写源字符串或补算向量。
 
+逐实例语言身份检查读取原 `candidate_<id>.npz`，其中 `model_name` 是标量字符串 `SMI-TED Light 289M`；目录名则为 `smi_ted_289m`。同时核对PDB、实例编号、object_key、已存输入字符串和768维有限向量，不能把目录名当成NPZ中的模型名称。
+
 成功构造示例：`{"object_key":"CCD:ETH","status":"ok","reason":"","atom_count":3,"canonical_smiles":"CCO"}`。失败构造示例：`{"object_key":"CCD:BAD","status":"excluded","reason":"template: unsupported_ligand_bond","atom_count":null,"canonical_smiles":null}`。
 
 ### `excluded.jsonl` 与准备阶段的排除文件
