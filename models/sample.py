@@ -78,7 +78,6 @@ def add_info_to_dict(data_dict, data, mode):
                 this = data['pred_' + key]
         data_dict[key].append(this.detach().cpu())
 
-
 def sample_loop3(batch, model, noiser, device=None, is_ar='', off_tqdm=False, progress=None):
     """执行"重新加噪-直接去噪-任务投影"的迭代采样.
 
@@ -268,17 +267,6 @@ def sample_loop3(batch, model, noiser, device=None, is_ar='', off_tqdm=False, pr
     outputs['confidence_pos_traj'] = torch.stack(cfd_traj, dim=-1)
     return batch, outputs, trajs
 
-def pad_and_stack(tensor_list, dim):
-    size_list = [tensor.size(0) for tensor in tensor_list]
-    max_size = max(size_list)
-    if tensor_list[0].dim() == 1:
-        tensor_list = [F.pad(tensor, (0, max_size-size), mode='constant', value=-1)  # type = -1 means
-                    for tensor, size in zip(tensor_list, size_list)]
-    else:
-        tensor_list = [F.pad(tensor, (0, 0, 0, max_size-size), mode='constant', value=0)
-                    for tensor, size in zip(tensor_list, size_list)]
-    return torch.stack(tensor_list, dim=dim)
-
 def seperate_outputs2(batch, outputs, trajs, off_tqdm=False):
     """按 PyG 图归属把批级最终状态、模型输出和轨迹拆回单分子。
 
@@ -306,6 +294,7 @@ def seperate_outputs2(batch, outputs, trajs, off_tqdm=False):
         - generated_list[b].halfedge: ndarray，形状为 (H_b,)，图 b 的最终半边类别。
         - generated_list[b].halfedge_index: ndarray，形状为 (2, H_b)，图 b 的 0-based 半边端点索引。
         - generated_list[b].pocket_center: ndarray，形状为 (1, 3)，图 b 的口袋中心，单位 Å；缺失或为空时为零。
+
         - outputs_list: list[dict]，长度为 B，每项保存启发式判定可拆分的 CPU Tensor 输出叶。
         - outputs_list[b].pred_node: Tensor，可选，形状为 (N_b, C_n)，图 b 的原子类别 logits。
         - outputs_list[b].pred_pos: Tensor，可选，形状为 (N_b, 3)，图 b 的坐标预测，单位 Å。
@@ -316,6 +305,7 @@ def seperate_outputs2(batch, outputs, trajs, off_tqdm=False):
         - outputs_list[b].confidence_pos_traj: Tensor，可选，形状为 (N_b, T_total)，图 b 的坐标 confidence 轨迹。
         - outputs_list[b].halfedge_index: Tensor，形状为 (2, H_b)，图 b 的半边端点索引。
         - outputs_list[b].pocket_center: Tensor，通常形状为 (1, 3)，图 b 的口袋中心，单位 Å。
+
         - traj_list_dict: dict[str, list[dict]]|list，存在轨迹时顶层键为来源、每个列表长度为 B；``trajs is None`` 时为空列表。
         - traj_list_dict[source][b].node: ndarray，形状为 (S, N_b)，单图原子类别轨迹。
         - traj_list_dict[source][b].pos: ndarray，形状为 (S, N_b, 3)，单图坐标轨迹，单位 Å。
@@ -452,40 +442,64 @@ def seperate_outputs2(batch, outputs, trajs, off_tqdm=False):
     
     return generated_list, outputs_list, traj_list_dict
 
-
 def get_cfd_traj(cfd_pos_traj, atom_dim=0, steps=100):
-    """把逐原子逐步坐标置信度聚合为候选级轨迹分数。
+    """把单个候选配体的逐原子位置 confidence 原始输出汇总为一个标量.
+
+    形状符号:
+        - N_b: 当前候选配体的原子数.
+        - T_total: ``confidence_pos`` 写入轨迹的总次数.
+        - R: 把 T_total 个时间点按每段 steps 个时间点连续切分后得到的分段数.
 
     输入参数:
-        - cfd_pos_traj: Tensor，通常形状为 (N_b, T_total)，叶值是 ``confidence_pos`` 的原始单通道输出，本函数不做 sigmoid。
-        - atom_dim: int，原子轴；单分子默认第 0 维。
-        - steps: int，一轮采样的步数 T；总轨迹能被 T 整除且不等于 T 时按轮重排。
+        - cfd_pos_traj: Tensor, 通常形状为 (N_b, T_total); 数值是未经 sigmoid 的 ``confidence_pos`` 原始单通道输出, 不是概率.
+        - atom_dim: int, ``cfd_pos_traj`` 的原子轴; 沿该轴求均值后必须得到形状为 (T_total,) 的一维时间序列.
+        - steps: int, 正整数, 表示每个连续时间段包含的时间点数; 本函数不校验该前提.
 
     返回值:
-        - cfd: float，标准路径先在原子轴求均值，再对选中轨迹的后一半时间步求均值。
+        - cfd: float, 未经 sigmoid 的启发式轨迹分数; 先逐时间点平均 N_b 个原子, 再平均所用时间段末尾 ceil(L/2) 个值, 其中未分段时 L=T_total, 分段时 L=steps.
 
-    注意:
-        - 多轮 refine 路径把“标准差大于 0.01 的轮数减一”当作轮索引；只有满足条件的轮恰好构成前缀时，它才等于最后一个满足轮的真实索引。
-        - 没有任何轮满足标准差阈值时 ``last_round=-1``，因此选择末轮，而不是报告无有效轮。
+    分段规则:
+        - T_total 不等于 steps 且能被 steps 整除时, 时间序列按原顺序解释为 (R, steps); 该条件只检查长度, 不验证各段是否对应 refine 轮次.
+        - 设 K 为时间标准差大于 0.01 的分段数, 当前实现选择编号 K-1 的分段; 只有满足阈值的分段恰好构成从第 0 段开始的连续前缀时, K-1 才是最后一个满足阈值的分段编号.
+        - K=0 时分段编号为 -1, 因而选择最后一段; T_total 不能被 steps 整除时不分段, 而是直接使用完整时间序列.
     """
 
-    # ``cfd_atoms``：Tensor，形状为 (T_total,)，逐步对 N_b 个原子求均值后的原始置信度。
-    cfd_atoms = cfd_pos_traj.mean(dim=atom_dim)  # atom-wise mean
-    if (len(cfd_atoms) != steps) and (len(cfd_atoms) % steps == 0):  # refine-based sampling
-        # ``cfd_atoms_reshape``：Tensor，形状为 (R, T)，R 为采样/细化轮数。
+    # (T_total,), 每个时间点对 N_b 个原子的 ``confidence_pos`` 原始输出求均值.
+    cfd_atoms = cfd_pos_traj.mean(dim=atom_dim)
+    # 本项目当前100步单轮采样不触发; 其它轨迹长度满足下面条件时仍执行分段规则.
+    if (len(cfd_atoms) != steps) and (len(cfd_atoms) % steps == 0):
+        # (R, steps), 将时间轴连续切成 R 段, 不改变时间点的原有顺序.
         cfd_atoms_reshape = cfd_atoms.view(-1, steps)
-        # ``std_cfd``：Tensor，形状为 (R,)，每轮沿 T 步的置信度标准差。
+        # (R,), 每个时间段内 steps 个候选级原始输出的标准差.
         std_cfd = cfd_atoms_reshape.std(dim=1)
-        # ``last_round``：int，严格等于满足 std>0.01 的轮数减一，而非 argwhere 的末索引。
+        # int, 满足 std>0.01 的分段数减一; 该值不一定是最后一个满足阈值的真实分段编号.
         last_round = len(std_cfd[std_cfd > 0.01]) - 1
-        # ``cfd_atoms``：Tensor，形状为 (T,)，选中轮次的逐步候选级置信度。
+        # (steps,), 编号 last_round 的时间段; last_round=-1 时取最后一段.
         cfd_atoms = cfd_atoms_reshape[last_round]
-    # ``cfd``：标量 Tensor，仅平均选中轨迹的后半段，降低早期高噪声步骤影响。
+    # 标量 Tensor, 平均所用时间序列末尾 ceil(L/2) 个原始输出; L 为当前 cfd_atoms 的长度.
     cfd = cfd_atoms[-cfd_atoms.size(0)//2:].mean()
     if isinstance(cfd, torch.Tensor):
-        # ``cfd``：转为 Python float，便于写入 pandas/CSV。
+        # Python float, 作为普通标量返回并供 JSON、CSV 等格式序列化.
         cfd = cfd.item()
     return cfd
+
+def pad_and_stack(tensor_list, dim):
+    size_list = [tensor.size(0) for tensor in tensor_list]
+    max_size = max(size_list)
+    if tensor_list[0].dim() == 1:
+        tensor_list = [F.pad(tensor, (0, max_size-size), mode='constant', value=-1)  # type = -1 means
+                    for tensor, size in zip(tensor_list, size_list)]
+    else:
+        tensor_list = [F.pad(tensor, (0, 0, 0, max_size-size), mode='constant', value=0)
+                    for tensor, size in zip(tensor_list, size_list)]
+    return torch.stack(tensor_list, dim=dim)
+
+
+
+
+
+
+
 
 def post_process_generated(generated_list, outputs_list, traj_list_dict):
     mol_info_list = []
@@ -539,7 +553,6 @@ def post_process_generated(generated_list, outputs_list, traj_list_dict):
             mol_info['traj'] = mol_traj
         mol_info_list.append(mol_info)
 
-
 def get_mol_parts_linking(batch, device=None):
     parts = []
     for i_part in [1, 2]:
@@ -553,7 +566,6 @@ def get_mol_parts_linking(batch, device=None):
         }
         parts.append(part)
     return parts
-        
 
 def seperate_outputs_no_traj(outputs, n_graphs, batch_node, halfedge_index, batch_halfedge):
     outputs_pred = outputs
@@ -578,8 +590,6 @@ def seperate_outputs_no_traj(outputs, n_graphs, batch_node, halfedge_index, batc
             'halfedge_index': halfedge_index_this,
         })
     return new_outputs
-
-
 
 def get_atom_and_bond(pred_node, pred_pos, pred_halfedge):
     """
@@ -645,7 +655,6 @@ def get_atom_and_bond(pred_node, pred_pos, pred_halfedge):
     # # ele_prob = frag_atom_prob[is_atom]
     # pos = frag_pos[is_atom]
 
-
 def add_ligand_atom_to_data(data, element, pos, bond_types, bond_index, type_map=[6,7,8,9,15,16,17]):
     """
     """
@@ -682,7 +691,6 @@ def add_ligand_atom_to_data(data, element, pos, bond_types, bond_index, type_map
     ], dim=-1)
 
     return data
-
 
 def get_atom_and_bond(data, pred_atom_logits, pred_bond_logits, pos_pred):
     # get atoms

@@ -42,18 +42,18 @@ def sample_occurrence(dataset, index, model, noiser, featurizer, config, protoco
         - protocol: str, C0、C5 或 E, 决定定位条件和输出子目录.
 
     产物位于 <output_root>/<split>/<protocol>/<pdb_id>/<occurrence_id>/:
-        - poses.sdf: 多分子 SDF, 仅包含成功候选; 每个分子的 sample_index 属性保存原候选编号, 如3, 拓扑和原子顺序来自完整模板, 坐标为世界 XYZ、Å.
+        - poses.sdf: 多分子 SDF, 仅包含成功候选(跑通就算成功, 不是RMSD<2埃); 每个分子的 sample_index 属性保存原候选编号, 如3, 拓扑和原子顺序来自完整模板, 坐标为世界 XYZ、Å.
         - candidates.json: list[dict], 长度为 num_candidates, 包括每个失败候选; 各项字段如下.
             - pdb_id: str, 当前结构编号, 如9v7o.
             - occurrence_id: int, 原 candidate_id, 如0.
             - model_name: str, 当前模型的稳定名称, 如 B-C-T0-RA.
             - split: str, validation 或 test.
             - protocol: str, 当前 C0、C5 或 E.
-            - sample_index: int, 从0开始的候选编号, 与成功候选在 SDF 中的位置不同.
+            - sample_index: int, 从0开始的原候选构象编号, 正式50个候选时为0至49; 与成功候选在SDF中的位置不同.
             - status: str, success 或 failed; 失败不补生成新候选.
             - stage: str, 当前候选结束阶段; complete 表示完成, preprocess/batch/prepare_loop/noise/forward/prediction_to_batch/trajectory/synchronize/split/reconstruct/confidence 分别定位预处理、组批、循环准备、加噪、模型调用、预测写回、轨迹处理、CUDA同步、输出拆分、固定图重构及置信度聚合.
             - error: str|None, 失败的异常类型和消息; 成功为 None.
-            - sdf_index: int|None, 当前候选在 poses.sdf 中的从0开始位置; 失败为 None.
+            - sdf_index: int|None, 当前候选在poses.sdf中从0开始的位置; 失败为None. 如原候选0失败、1首先成功, 则该分子sample_index=1而sdf_index=0.
             - cfd_traj: float|None, 原 get_cfd_traj 分数; 正式100步先对全部配体原子取均值, 再平均后50步的原始位置置信度, 全程不做 sigmoid; 非有限分数使候选失败.
             - cfd_pos: float|None, 最后一步所有配体原子的原始位置置信度均值; 空数组或非有限均值写 None.
             - cfd_node: float|None, 最后一步原子类别置信度原始输出的原子均值; 空数组或非有限均值写 None.
@@ -64,6 +64,7 @@ def sample_occurrence(dataset, index, model, noiser, featurizer, config, protoco
             - confidence_pos: float32, (K,N,1), 最后一步原始位置置信度, 原子顺序与完整模板一致.
             - confidence_node: float32, (K,N,1), 最后一步原子类别置信度原始输出, 原子顺序与模板一致.
             - confidence_halfedge: float32, (K,H,1), 最后一步半边类别置信度原始输出, 半边按原完全图上三角顺序排列.
+
         - result.json: dict, 全部候选尝试和产物写入完成后保存, 返回值为同一字典.
             - pdb_id: str, 当前结构编号.
             - occurrence_id: int, 原 candidate_id.
@@ -85,6 +86,7 @@ def sample_occurrence(dataset, index, model, noiser, featurizer, config, protoco
             - pocket_nucleic_count: int|None, 同一口袋中的标准RNA/DNA原子数, 官方过滤前计数; 尚未取得时为None.
             - pocket_nucleic_fraction: float|None, 核酸原子数除以两类原子总数; 总数0或未取得时为None.
             - model_origin_world_xyz_A: list[list[float]]|None, 正常为(1,3)嵌套列表, 世界XYZ、Å; 官方空蛋白保留其空列表, 更早失败为None.
+
             - inference_seconds: float, 组批、原采样循环与输出拆分的累计秒数, 不含SDF重构和写盘.
             - sampling_batch_attempt_count: int, 实际进入原采样循环的候选批次数; 组批失败不计入.
             - sampling_batch_completed_count: int, 原循环完整返回且CUDA同步结束的批次数.
@@ -93,6 +95,7 @@ def sample_occurrence(dataset, index, model, noiser, featurizer, config, protoco
             - peak_memory_allocated_bytes: int|None, 本实例开始重置统计后的峰值张量显存, 含驻留模型; CPU为None, 单位字节.
             - peak_memory_reserved_bytes: int|None, 同一区间的峰值CUDA缓存分配量, 单位字节; CPU为None.
             - elapsed_seconds: float, 当前实例从预处理到写盘的总秒数.
+
             - candidate_file: str, 相对于当前实例目录的 candidates.json.
             - pose_file: str|None, 成功时为相对文件名 poses.sdf, 成功数0时为None.
             - confidence_file: str|None, 成功时为相对文件名 confidence.npz, 成功数0时为None.
@@ -126,6 +129,7 @@ def sample_occurrence(dataset, index, model, noiser, featurizer, config, protoco
     pocket_protein_count = pocket_nucleic_count = None
     pocket_center = None
     stage = "preprocess"
+
     try:
         data = dataset[index]
         pocket_protein_count = int(data.pocket_protein_count)
@@ -186,6 +190,7 @@ def sample_occurrence(dataset, index, model, noiser, featurizer, config, protoco
                     model_forward_attempt_count += progress["model_forward_attempt_count"]
                     model_forward_completed_count += progress["model_forward_completed_count"]
                     inference_seconds += time.perf_counter() - batch_started
+
                 for local_index, (generated_mol, output) in enumerate(zip(generated, individual_outputs)):
                     candidate = {**candidate_base, "sample_index": start + local_index, "stage": "reconstruct"}
                     try:
