@@ -9,6 +9,8 @@ export PYTHONDONTWRITEBYTECODE=1
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
+# 为DataLoader多worker预取的共享张量预留文件句柄, 仅调整本次子进程软上限.
+ulimit -Sn 65536
 # 多进程通信在TMPDIR创建UNIX socket, 必须用短路径; pytest产物仍按每次launch单独保存.
 export TMPDIR=/storage/penghongen/tmp
 pytest_root="$TMPDIR/pocketxmol_gpu_checks_${TASK_RUN_STAMP:?本检查入口须在授权Slurm的正式launch内运行}"

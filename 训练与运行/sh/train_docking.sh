@@ -9,6 +9,8 @@ export PYTHONDONTWRITEBYTECODE=1
 export OMP_NUM_THREADS=1
 export MKL_NUM_THREADS=1
 export OPENBLAS_NUM_THREADS=1
+# 为DataLoader多worker预取的共享张量预留文件句柄, 仅调整本次子进程软上限.
+ulimit -Sn 65536
 export TMPDIR=/storage/penghongen/tmp
 mkdir -p "$TMPDIR"
 experiment="${1:?请指定六模型之一, 如 B-C-T0-RA}"
