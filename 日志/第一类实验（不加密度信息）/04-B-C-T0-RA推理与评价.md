@@ -36,4 +36,10 @@ bash 训练与运行/submit_task.sh --sh evaluate_docking.sh --resource cpu --cp
 
 独立输出根为 `/storage/penghongen/PocketXMol/sampling/B-C-T0-RA-C0/`，validation／test、C0／C5分别建子目录。末尾C0标识正确C0训练来源，不限制推理条件。每实例保留poses.sdf、candidates.json、confidence.npz及result.json；评价增加candidate_metrics.json、assessment.json、各协议occurrences.json及summary.json。字段定义见 `docking/sampling.py` 和 `docking/evaluation.py` 的入口说明。
 
-W&B评价使用 `pencounkdual-111/PocketXmol_raw`，validation和test独立run。具体release、launch、CPU作业号、运行耗时、结果与核酸占比分层在实际完成后填写。本段落盘时，正式采样尚未启动；下一模型训练须等本文件完成结果收口。
+W&B评价使用 `pencounkdual-111/PocketXmol_raw`，validation和test独立run。采样阶段先保存本地逐实例产物；CPU评价完成后才创建对应W&B汇总。具体CPU作业号、完整运行耗时、结果与核酸占比分层在实际完成后填写。
+
+正式配置及最新执行顺序保存于d788edb，经原sync_code.ps1非删除同步后，已在371591启动validation采样。启动请求记录为master时间2026-09-11 02:05:52；实际gnode09 launch为 `/home/penghongen/Feedback/PocketXMol/launches/371591/sample_B-C-T0-RA_validation_job371591_20260911T020258`，release为 `/home/penghongen/Feedback/PocketXMol/releases/PocketXMol_b3b44f062a12/PocketXMol`。master与gnode09时钟约有3分钟差异，两者原始时间分别保留，耗时使用程序单调计时，不跨节点时间相减。
+
+启动元数据为 `/storage/penghongen/PocketXMol/control/371591/sample_B-C-T0-RA_validation_start.json`，实际动态命令留于同目录sample_B-C-T0-RA_validation_run_cmd.sh；本次out／err起始字节为56944267／73179。原控制器第12次执行，主进程19347；after_lock保留，try_lock已解除，kill_lock不存在。模型严格加载成功后已写入validation/run.json，冻结的科学配置明确RA、T0、C0／C5及21600步best。
+
+首次确认前两个完整实例为5irx/0和5irx/1，均50／50成功、100步、每批25，实际分别完成200次批量forward；总耗时30.40／24.24秒，峰值张量显存1067199488／762195968字节。它们是本次正式验证结果，尚未进行RMSD或排名评价；不能由生成成功推断姿态正确。当前继续完整validation，test及CPU评价尚未启动，下一模型训练须等本文件结果收口。
