@@ -59,6 +59,8 @@ bash 训练与运行/sh/train_docking.sh B-C-T1-RA --resume /storage/penghongen/
 
 每实例 50 个候选、100 步。中心模型评 C0/C5，包络评 E，官方评 C0/C5/E；validation 与 test 分目录，三个测试视图共用候选。正式采样配置及实际命令在训练结果确定后记录到对应实验日志，不能拿 smoke 配置代替。
 
+按用户最新执行顺序，每训练完一个模型，先完成其完整验证／测试采样、评价和结果记录，再启动下一模型。一个模型的验证CPU评价可与它自己的测试GPU采样并行；两集合结果都收口后才切换模型。
+
 官方对照已有两份明确配置 `sample-official-validation.yml` 与 `sample-official-test.yml`。共同数据和模型验收通过后，在获准GPU内按以下短命令生成完整验证候选；测试将后缀换成 `official-test`。随后另提交8核CPU评价任务：
 
 ```bash

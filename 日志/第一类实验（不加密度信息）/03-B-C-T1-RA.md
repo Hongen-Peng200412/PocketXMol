@@ -16,6 +16,6 @@
 bash 训练与运行/sh/train_docking.sh B-C-T1-RA
 ```
 
-产物目录为 `/storage/penghongen/PocketXMol/training/B-C-T1-RA/`，W&B账号／项目为 `pencounkdual-111/PocketXmol_raw`，新run独立创建。实际版本、release、launch和run id在确认启动后填写；本段落盘时尚未接入控制器。
+产物目录为 `/storage/penghongen/PocketXMol/training/B-C-T1-RA/`，W&B账号／项目为 `pencounkdual-111/PocketXmol_raw`，新run独立创建。实际版本、release、launch和run id在确认启动后填写；当前尚未接入控制器。按用户2026-09-11最新执行顺序，须先完成 [正确T0的配套推理与评价收口](04-B-C-T0-RA推理与评价.md)，才可启动本实验。
 
 运行沿用已通过自查、两轮独立审查及CPU／GPU验收的实现，不增加科学开关或重建共同资产。测试命令和验收结果见日志00及02，本文件上面的命令是正式训练命令。371591的after_lock保留，不申请额外GPU，不释放或删除旧T0产物。
