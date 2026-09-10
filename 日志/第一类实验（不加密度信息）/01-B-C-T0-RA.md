@@ -1,10 +1,12 @@
-# B-C-T0-RA 正式训练
+# B-C-T0-RA 旧错误条件训练（已停止）
+
+本记录的训练错误地把中心T0与C5定位绑定，训练每次偏移中心、val/loss使用冻结C5；用户明确的正确T0应使用C0训练和监督验证。已通过371591实际kill_lock协议停止，旧产物全部保留，不能作为正确T0基线，也不能用于新T0初始化或续训。[中心契约修复与重训记录](02-T0中心契约修复与重训.md)取代本记录的当前执行状态。
 
 本实验是六个无密度模型中的第一个：中心口袋，T0保持原位置噪声，RA使用独立核酸投影和共同受体编码器。依据 [科学契约](../../想法/方案草稿/9-8-科学契约.md) 和 [工程细节](../../想法/方案草稿/9-8-工程与实现细节.md)；共同数据、环境和前置验收见 [准备记录](00-实现与共同数据准备.md)。本记录只保存正式实验，不把前述短检查的权重或候选用作实验产物。
 
 ## 来源与配置
 
-- 配置：[B-C-T0-RA.yml](../../configs/docking/B-C-T0-RA.yml)。训练种子2023，中心训练使用每次重采样C5；原val/loss路径使用冻结C5和完整781个验证实例。
+- 实际旧配置：`/storage/penghongen/PocketXMol/training/B-C-T0-RA/train_config/B-C-T0-RA.yml`，以该副本和旧release源码为准，不能用修正后的同名工作区YAML解释旧运行。训练种子2023，错误地使用每次重采样C5训练、冻结C5和完整781个验证实例计算原val/loss。
 - 冻结清单：`/storage/penghongen/PocketXMol/data/`，有效freeze作业376632；训练65290、验证781，校准361与测试446均不进入训练或val/loss模型选择。
 - 初始权重：`/storage/penghongen/PocketXMol_official_test/extracted/data/trained_models/pxm/checkpoints/pocketxmol.ckpt`。只继承官方模型参数，新建优化器；全部主体和新增受体参数共同训练。
 - 环境：`/storage/penghongen/PocketXMol/runtime/venv/bin/python`，继承pxm_phase1的Torch2.6.0、Lightning2.6.0和RDKit2023.9.3，项目层补充W&B0.21.1。
@@ -34,4 +36,6 @@ bash 训练与运行/sh/train_docking.sh B-C-T0-RA
 
 ## 当前结果与后续
 
-共同数据、必要CPU／GPU验收及72×1真实资源检查均已通过，本实验正式训练中。完成训练后核实停止原因、实际优化器步、最低val/loss及其best路径，再为该best执行完整候选validation和test。中心模型分别评价C0与C5，各实例50候选、100步；当前不提前填写best路径或最终成绩。
+2026-09-10收到明确纠偏后，在gnode09核对Slurm371591、实际run_cmd、release、launch和主进程8895的命令及cgroup归属，确认正在运行本实验。通过 `/home/penghongen/Feedback/Pocket_Plus/allocations/371591/kill_lock_371591` 请求停止，控制器确认终止进程组8895，退出137，随后恢复try_lock；after_lock和RUNNING状态的A800 allocation保留，没有使用scancel。
+
+停止时累计日志最后进度为17901次更新，最后完成的定期验证为17600步，原始val/loss最低2.13159。这些数字只描述错误C5训练条件的历史，不能作为正确T0成绩。旧目录、源码、配置、所有检查点、W&B 9wkyn4qn和累计out／err均保留；停止证据为 `/storage/penghongen/PocketXMol/control/371591/invalid_T0_20260910_stop.json`。没有为该错误模型生成正式候选或测试成绩。

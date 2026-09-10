@@ -94,7 +94,7 @@ class DataModule(pl.LightningDataModule):
         - pocket_pos_batch: int64, (P,), 每个受体原子所属的批内样本编号.
         - task: list[str], 长度为批内样本数 B; adaligand 全部为 dock.
 
-    adaligand 的训练清单按 occurrence 均匀有放回抽样, 验证完整遍历 validation.jsonl; 中心验证使用已保存 C5 偏移, 包络验证使用 E. 数据集先完成受体编码与定位, 本类只接原 FeaturizeMol、任务变换与训练噪声器.
+    adaligand 的训练清单按 occurrence 均匀有放回抽样, 验证完整遍历 validation.jsonl. 已有 dock.center_translation 同时确定中心模型的训练与监督验证条件: False 的T0用C0, True 的T1用C5; 包络固定E. C5训练动态抽偏移, C5验证读取冻结向量. 数据集先完成受体编码与定位, 本类只接原 FeaturizeMol、任务变换与训练噪声器.
     """
 
     def __init__(self, config):
@@ -148,7 +148,11 @@ class DataModule(pl.LightningDataModule):
         train_cfg = self.config.train
         if self.is_docking:
             follow_batch = list(dict.fromkeys(follow_batch + ['pocket_pos']))
-            protocol = 'C5' if data_cfg.dataset.pocket_mode == 'center' else 'E'
+            protocol = 'E'
+            if data_cfg.dataset.pocket_mode == 'center':
+                # 已有dock噪声配置决定整套T0/T1科学条件, 不另设训练偏移开关; 正式采样仍独立接收C0/C5.
+                dock_noise = next(item for item in self.config.noise.individual if item.name == 'dock')
+                protocol = 'C5' if dock_noise.center_translation else 'C0'
             train_set = OccurrenceDataset(data_cfg.dataset, 'train', self.transforms, self.config.model.nucleic_branch, protocol, True)
             val_set = OccurrenceDataset(data_cfg.dataset, 'validation', self.transforms, self.config.model.nucleic_branch, protocol, False)
             batch_size = train_cfg.batch_size

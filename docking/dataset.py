@@ -40,8 +40,8 @@ class OccurrenceDataset(IterableDataset):
         - split: str, 如 train 或 validation, 选择同名 JSONL 文件.
         - transforms: callable, 接收 PocketMolData; 训练依次执行 FeaturizeMol、原任务变换和原噪声器.
         - receptor_branch: str, protein 走官方蛋白特征入口, RA 共享受体图, RB 分别构图和编码.
-        - protocol: str, C0、C5 或 E, 决定有限验证/采样的定位条件.
-        - shuffle: bool, True 为无限均匀有放回训练流且中心偏移每次重采样, False 为一次完整有限流.
+        - protocol: str, C0、C5 或 E, 决定训练及有限验证/采样的定位条件; C0 用真实配体几何中心, C5 用中心加偏移, E 用包络口袋.
+        - shuffle: bool, True 为无限均匀有放回训练流, 仅 protocol=C5 时每次重采样偏移; False 为一次完整有限流, C5 读取冻结偏移.
 
     清单每条记录:
         - pdb_id: str, 如 9v7o, 定位源 parse 和 density 子目录.
@@ -81,7 +81,8 @@ class OccurrenceDataset(IterableDataset):
     def __getitem__(self, index):
         """装配 records[index] 的口袋与完整配体图, 再执行调用方指定的原变换.
 
-        返回 PocketMolData, 核心字段见类说明. 缺失或损坏的冻结资产直接抛出源异常, 不在训练热路径重新筛选或修复.
+        返回 PocketMolData, 核心字段见类说明. 中心C0原点为完整配体几何中心g, 中心C5原点为g+delta; 同一份完整delta用于选袋和原点, 局部监督目标的质心相应为0或-delta. 本类不添加带噪坐标的整体平移.
+        缺失或损坏的冻结资产直接抛出源异常, 不在训练热路径重新筛选或修复.
         """
         record = self.records[index]
         pdb_id, candidate_id = record["pdb_id"], int(record["candidate_id"])
@@ -93,10 +94,10 @@ class OccurrenceDataset(IterableDataset):
 
         # (3,), occurrence 的沉积几何中心, 仅用于已批准的定位条件构造.
         ligand_center = ligand_coords.mean(axis=0)
-        if self.shuffle and self.config.pocket_mode == "center":
+        if self.shuffle and self.protocol == "C5":
             if self.rng is None:
                 self.rng = np.random.default_rng(torch.initial_seed())
-            # (3,), 均匀球面方向与独立均匀半径; 不使用球体积均匀采样的立方根半径.
+            # (3,), 仅C5训练抽取一次delta: 均匀球面方向乘独立Uniform(0, 5)半径, 单位Å; 选袋与原点共用, 不乘噪声强度.
             direction = self.rng.normal(size=3)
             offset = direction / np.linalg.norm(direction) * self.rng.uniform(0.0, 5.0)
         elif self.protocol == "C5":

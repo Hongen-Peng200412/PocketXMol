@@ -25,7 +25,7 @@ bash 训练与运行/submit_task.sh --sh prepare.sh --resource cpu --cpus 8 -- f
 
 ### 单模型训练
 
-六个实验名称分别为 `B-C-T0-RA`、`B-C-T1-RA`、`B-E-T0-RA`、`B-C-T0-RB`、`B-C-T1-RB`、`B-E-T0-RB`。C 为中心模式，E 为包络模式；T1 加整体平移，RA/RB 为两种核酸编码构造。每份配置从同一官方权重开始。
+六个实验名称分别为 `B-C-T0-RA`、`B-C-T1-RA`、`B-E-T0-RA`、`B-C-T0-RB`、`B-C-T1-RB`、`B-E-T0-RB`。C为中心模式，E为包络模式；中心T0训练及原val/loss使用C0真实中心，中心T1训练使用动态C5、原val/loss使用冻结C5并保留对应整体平移，包络T0使用E。该选择只读取已有center_translation，RA/RB为两种核酸编码构造。每份配置从同一官方权重开始，完整评价仍保留中心C0/C5和包络E。
 
 在已明确获准申请新 A800 时，可按以下形式提交；它是调用格式，不代表本项目自动拥有新增 GPU 申请权：
 
@@ -46,10 +46,12 @@ bash 训练与运行/sh/train_docking.sh B-C-T0-RA
 自己的中断检查点恢复示例：
 
 ```bash
-bash 训练与运行/sh/train_docking.sh B-C-T0-RA --resume /storage/penghongen/PocketXMol/training/B-C-T0-RA/checkpoints/last.ckpt
+bash 训练与运行/sh/train_docking.sh B-C-T1-RA --resume /storage/penghongen/PocketXMol/training/B-C-T1-RA/checkpoints/last.ckpt
 ```
 
 恢复沿用同一实验目录、W&B run id、优化器与调度状态。已因第三次下降或更新上限完成的 checkpoint 不能通过普通 resume 继续。多 worker 从相同均匀有放回分布继续，不宣称预取队列中断前后逐样本完全同序。
+
+科学条件错误后的重训须从官方初始参数开始，不传--resume；使用原入口已有的 `--logdir` 指定独立目录，例如 `/storage/penghongen/PocketXMol/training/B-C-T0-RA-C0`。新的W&B run id由原训练入口创建，旧产物保留并在逐实验日志标记无效。该目录如需正常续训，必须同时显式传相同--logdir和它自己的last.ckpt；不能使用旧错误训练的检查点。
 
 ### 完整候选验证与测试
 
@@ -125,7 +127,7 @@ bash ops/run_docking_gpu_checks.sh -k official_weights
 bash ops/run_docking_gpu_checks.sh -k real_data
 ```
 
-前者核对RA/RB/T1、bf16原loss、36×2=72、官方参数加载与已停止检查点恢复。后者用中心T1-RB和包络T0-RA作输入装配与资源验收，各运行2次更新、1个验证批，再为首条validation生成2个3步候选并完整评价；不设姿态质量阈值，不读取test划分。后者保持实际配置的batch与累积乘积为72，OOM会明确失败，便于在正式训练前按已批准的成对设置调整。两者均关闭W&B，产物只在每次launch独立的pytest临时目录，不能进入正式结果表。
+前者核对RA/RB/T1、bf16原loss、36×2=72、官方参数加载与已停止检查点恢复。后者覆盖中心T0-RA、中心T1-RB和包络T0-RA的输入装配与资源验收，各运行2次更新、1个验证批，再为首条validation生成2个3步候选并完整评价；不设姿态质量阈值，不读取test划分。后者保持实际配置的batch与累积乘积为72，OOM会明确失败，便于在正式训练前按已批准的成对设置调整。两者均关闭W&B，产物只在每次launch独立的pytest临时目录，不能进入正式结果表。
 
 真实资产门控记录整个短fit的耗时和GPU峰值显存；该耗时包含初次读取及验证，不能当作稳定每步速度。全部必要验收通过后才接入正式训练；不因一次epoch或一次验证成功而宣称完整任务完成。
 

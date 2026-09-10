@@ -78,9 +78,9 @@ def test_official_weights_native_bf16_training_and_stopped_restore(prepared_data
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason='需要实际授权的CUDA GPU')
-@pytest.mark.parametrize('experiment', ['B-C-T1-RB', 'B-E-T0-RA'])
+@pytest.mark.parametrize('experiment', ['B-C-T0-RA', 'B-C-T1-RB', 'B-E-T0-RA'])
 def test_real_data_training_and_sampling_budget(tmp_path, monkeypatch, experiment):
-    """用真实非test资产检查两种口袋的显存、原训练损失和采样评价, 不设姿态质量通过阈值."""
+    """用真实非test资产检查C0/T0、C5/T1和E训练的显存、原损失及采样评价, 不设姿态质量通过阈值."""
     root = Path(__file__).resolve().parents[1]
     config = make_config(str(root / f'configs/docking/{experiment}.yml'))
     pl.seed_everything(config.train.seed, workers=True)
@@ -104,6 +104,7 @@ def test_real_data_training_and_sampling_budget(tmp_path, monkeypatch, experimen
     assert trainer.global_step == 2 and torch.isfinite(trainer.callback_metrics['val/loss'])
     # 此耗时包含首次真实资产读取与1批验证, 不能当成稳定每步训练速度.
     report = dict(experiment=experiment, scope='gate_not_formal', global_batch=72, batch_size=config.train.batch_size, accumulation=config.train.accumulate_grad_batches, updates=2, fit_elapsed_seconds=elapsed, peak_memory_allocated_bytes=torch.cuda.max_memory_allocated(), peak_memory_reserved_bytes=torch.cuda.max_memory_reserved(), val_loss=float(trainer.callback_metrics['val/loss']))
+    report.update(training_protocol=data_module.train_dataloader().dataset.protocol, supervised_validation_protocol=data_module.val_dataloader().dataset.protocol)
     # Lightning训练退出可能把模型移回CPU; 采样前明确恢复到本次CUDA设备.
     model.model.to('cuda').eval()
     featurizer = FeaturizeMol(config.transforms.featurizer)
