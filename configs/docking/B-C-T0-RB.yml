@@ -88,8 +88,9 @@ noise:
       name: uniform
       min: 0.0
       max: 1.0
-    # bool, DataModule以False/True选择中心T0的C0或T1的C5训练/监督验证, 包络固定E且False.
-    # True还在dock/free非先验步追加(1-pos信息等级)*(给定局部中心-当前干净配体算术中心); 训练为s*delta, 推理为-s*mean(Z), 首次from_prior不追加.
+    # bool, DataModule以False/True选择中心T0的C0或T1的C5训练/监督验证; C5训练动态抽偏移、监督验证读冻结向量, 包络固定E且False.
+    # True还在dock/free非先验步追加s*(给定局部中心-当前干净配体算术中心); s=1-level_dict['pos']是实际噪声强度, delta是给定中心相对真实中心的XYZ偏移(Å), Z是当前干净局部预测(N, 3).
+    # 训练新增s*delta, 推理新增-s*mean(Z), N为当前分子重原子数; 首次from_prior不追加.
     center_translation: false
 # 原配体词表和任务变换; 本轮仅free, 不读取未使用的真实扭转几何.
 transforms:

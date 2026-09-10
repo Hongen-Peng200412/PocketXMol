@@ -84,9 +84,9 @@ def test_training_boundary_origin_and_noise(prepared_data, monkeypatch, translat
     with np.load(parse_dir / 'ligand_coords.npz') as archive:
         world_truth = archive['coords_0']
     center = world_truth.mean(0)
-    # 相对g: 一个跨边界的C/O残基以质量中心判断; 单原子残基覆盖左右边界和严格等号.
-    relative = np.array([[14., 0, 0], [16., 0, 0], [-14., 0, 0], [15., 0, 0], [17., 0, 0], [0., 0, 0]], dtype=np.float32)
-    np.savez_compressed(parse_dir / 'receptor_tokens.npz', coords=relative + center, element=np.array([6, 8, 6, 6, 6, 6]), res_type=np.zeros(6, dtype=np.uint8), res_index=np.array([0, 0, 1, 2, 3, 4]), is_backbone=np.ones(6, dtype=bool), atom_name=np.array(['CA', 'O', 'CA', 'CA', 'CA', 'CA'], dtype='S4'))
+    # 相对g: C/O残基质量中心>15而算术均值14.9<15; 16.6的残基区分完整delta=2与s*delta=1.3选袋, 另保留严格等号边界.
+    relative = np.array([[14., 0, 0], [15.8, 0, 0], [-14., 0, 0], [15., 0, 0], [17., 0, 0], [0., 0, 0], [16.6, 0, 0]], dtype=np.float32)
+    np.savez_compressed(parse_dir / 'receptor_tokens.npz', coords=relative + center, element=np.array([6, 8, 6, 6, 6, 6, 6]), res_type=np.zeros(7, dtype=np.uint8), res_index=np.array([0, 0, 1, 2, 3, 4, 5]), is_backbone=np.ones(7, dtype=bool), atom_name=np.array(['CA', 'O', 'CA', 'CA', 'CA', 'CA', 'CA'], dtype='S4'))
     read_receptor.cache_clear()
     module = DataModule(config)
     module.setup('fit')
@@ -101,7 +101,7 @@ def test_training_boundary_origin_and_noise(prepared_data, monkeypatch, translat
     torch.manual_seed(47)
     sample = dataset[0]
     delta = torch.tensor([2., 0, 0]) if translation else torch.zeros(3)
-    selected = [0, 1, 3, 5] if translation else [2, 5]
+    selected = [0, 1, 3, 5, 6] if translation else [2, 5]
     torch.testing.assert_close(sample.pocket_center[0], torch.tensor(center) + delta)
     torch.testing.assert_close(sample.pocket_pos, torch.tensor(relative[selected]) - delta)
     torch.testing.assert_close(sample.node_pos, torch.tensor(world_truth - center) - delta)
@@ -227,6 +227,5 @@ def test_real_training_centers_without_rebuilding_assets(monkeypatch):
         np.testing.assert_allclose(sample.node_pos.mean(0).numpy(), -delta, atol=3e-5, rtol=0)
         assert len(calls) == 1 and not calls[0]['from_prior']
         samples.append(sample)
-    # 两个实际输入中心不同, 边界附近残基选择随之变化; 严格边界的精确判定由上面的构造残基证明.
-    assert samples[0].pocket_pos.shape != samples[1].pocket_pos.shape
-    print('REAL_CENTER_CONTRACT train/5ftl/0 T0=C0 T1=dynamic_C5 original_noise=True')
+    # 真实口袋原子数仅作诊断: 中心改变不必导致数量改变; 严格选袋判据由构造残基精确检验.
+    print(f'REAL_CENTER_CONTRACT train/5ftl/0 T0=C0 T1=dynamic_C5 original_noise=True pocket_atoms={[len(sample.pocket_pos) for sample in samples]}')

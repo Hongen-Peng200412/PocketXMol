@@ -339,7 +339,7 @@ def prepare(config, stage, shard_id, shard_count):
         # ----- 处理测试集 -----
         summary = dict(source_paths={key: str(config[key]) for key in ("root", "split_root", "test_split", "language_root", "derived_root")}, freeze_seed=config.freeze_seed, sampling_seed=config.sampling_seed, splits={}, excluded_reasons=dict(Counter(record["reason"] for record in excluded)))
         for split in ("train", "validation", "calibration", "test"):
-            # 这个新列表仍然只是收集 kept 中的字典引用，并没有复制字典。因此前面已经写入的 views 仍然存在
+            # 这个新列表仍然只是收集 kept 中的字典引用, 并没有复制字典. 因此前面已经写入的 views 仍然存在.
             records = [record for record in kept if record["split"] == split]
             write_jsonl(output_root / f"{split}.jsonl", records)
             summary["splits"][split] = dict(occurrences=len(records), pdbs=len({record["pdb_id"] for record in records}), objects=len({record["object_key"] for record in records}), views=dict(Counter(view for record in records for view in record["views"])))
