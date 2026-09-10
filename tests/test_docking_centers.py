@@ -82,8 +82,13 @@ def test_training_boundary_origin_and_noise(prepared_data, monkeypatch, translat
     config = center_config('B-C-T1-RA' if translation else 'B-C-T0-RA', prepared_data)
     parse_dir = Path(config.data.dataset.root) / 'parse/train_demo'
     with np.load(parse_dir / 'ligand_coords.npz') as archive:
-        world_truth = archive['coords_0']
+        coordinates = {key: archive[key] for key in archive.files}
+    # 只平移本测试的三原子构造配体, 使g精确为0; 避免float32的g加法把15/17 Å等号边界推到阈值外.
+    world_truth = coordinates['coords_0'] - coordinates['coords_0'].mean(0)
+    coordinates['coords_0'] = world_truth
+    np.savez_compressed(parse_dir / 'ligand_coords.npz', **coordinates)
     center = world_truth.mean(0)
+    np.testing.assert_array_equal(center, np.zeros(3))
     # 相对g: C/O残基质量中心>15而算术均值14.9<15; 16.6的残基区分完整delta=2与s*delta=1.3选袋, 另保留严格等号边界.
     relative = np.array([[14., 0, 0], [15.8, 0, 0], [-14., 0, 0], [15., 0, 0], [17., 0, 0], [0., 0, 0], [16.6, 0, 0]], dtype=np.float32)
     np.savez_compressed(parse_dir / 'receptor_tokens.npz', coords=relative + center, element=np.array([6, 8, 6, 6, 6, 6, 6]), res_type=np.zeros(7, dtype=np.uint8), res_index=np.array([0, 0, 1, 2, 3, 4, 5]), is_backbone=np.ones(7, dtype=bool), atom_name=np.array(['CA', 'O', 'CA', 'CA', 'CA', 'CA', 'CA'], dtype='S4'))
