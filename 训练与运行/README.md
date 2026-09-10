@@ -39,7 +39,7 @@ bash 训练与运行/submit_task.sh --sh train_docking.sh --resource a800 --gpus
 bash 训练与运行/sh/train_docking.sh B-C-T0-RA
 ```
 
-一个 GPU 顺序执行实验，不在同一卡并行挤入六个训练。获得额外明确 GPU 授权时，不同卡各运行独立实验。每模型 nominal global batch 为 72，初始单卡 36、累积 2；必要时在该模型 YAML 中成对改为 24×3、18×4 或 12×6，并记录实际配置。保留原 loss 和偶发 OOM 的原 reduce_batch，不增加补样本机制。
+一个 GPU 顺序执行实验，不在同一卡并行挤入六个训练。获得额外明确 GPU 授权时，不同卡各运行独立实验。无密度正式训练优先使用单卡72、累积1，nominal global batch仍为72；必要时在该模型YAML中成对改为36×2、24×3、18×4或12×6，并记录实际配置。保留原loss和偶发OOM的原reduce_batch，不增加补样本机制。
 
 每 800 次优化器更新计算原 `val/loss`。原 ReduceLROnPlateau 使用 1% 相对改善阈值、patience=5；第三次实际下降立即停止，最多 40000 次更新。best 按最低原验证损失，last 保存恢复状态，定期 checkpoint 均保留。输出为 `/storage/penghongen/PocketXMol/training/<实验名称>/`，包含配置、源码副本、checkpoint、W&B 记录；不把训练退出一概当作科学停止条件完成。
 

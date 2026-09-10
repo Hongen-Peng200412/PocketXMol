@@ -134,10 +134,10 @@ data:
     pocket_mode: center
     # int, Dataset口袋图近邻上限; RA联合图, RB分蛋白/核酸图, 由本字段直接控制.
     knn: 32
-# 以下批量按单GPU写出: 36×2=72; 显存调整时batch与累积成对更改.
+# 以下批量按单GPU写出: 72×1=72, 优先不累积; 显存调整时batch与累积成对更改.
 train:
   seed: 2023
-  batch_size: 36
+  batch_size: 72
   num_workers: 15
   pin_memory: true
   max_steps: 40000
@@ -167,7 +167,7 @@ train:
       min_lr: 0
       eps: 1.0e-08
   global_batch_size: 72
-  accumulate_grad_batches: 2
+  accumulate_grad_batches: 1
   log_every_n_steps: 50
   # str, 新训练只加载此权重的model参数; --resume自家完整ckpt时跳过.
   initial_checkpoint: /storage/penghongen/PocketXMol_official_test/extracted/data/trained_models/pxm/checkpoints/pocketxmol.ckpt

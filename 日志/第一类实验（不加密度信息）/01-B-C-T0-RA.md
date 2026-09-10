@@ -8,7 +8,7 @@
 - 冻结清单：`/storage/penghongen/PocketXMol/data/`，有效freeze作业376632；训练65290、验证781，校准361与测试446均不进入训练或val/loss模型选择。
 - 初始权重：`/storage/penghongen/PocketXMol_official_test/extracted/data/trained_models/pxm/checkpoints/pocketxmol.ckpt`。只继承官方模型参数，新建优化器；全部主体和新增受体参数共同训练。
 - 环境：`/storage/penghongen/PocketXMol/runtime/venv/bin/python`，继承pxm_phase1的Torch2.6.0、Lightning2.6.0和RDKit2023.9.3，项目层补充W&B0.21.1。
-- 资源：已获准的371591，gnode09，一张A800、16核；单卡36、梯度累积2、有效全局72、bf16，15个DataLoader worker。训练子进程文件句柄软上限65536，TMPDIR为`/storage/penghongen/tmp`。
+- 资源：已获准的371591，gnode09，一张A800、16核；按用户最新要求优先单卡72、累积1、有效全局72、bf16，15个DataLoader worker。训练子进程文件句柄软上限65536，TMPDIR为`/storage/penghongen/tmp`。
 - AdamW，lr=1e-4、warmup=0，原loss和置信度目标。每800个优化器更新计算原val/loss，按1%相对改善、patience=5、factor=0.2的原Plateau下降；第三次实际下降停止，最多40000更新。best取原验证损失最低者，保留last及全部定期检查点。
 - W&B：`pencounkdual-111/PocketXmol_raw`，名称B-C-T0-RA，online。实际run id及链接在启动成功后补充，密钥不进入日志。
 
@@ -26,4 +26,4 @@ bash 训练与运行/sh/train_docking.sh B-C-T0-RA
 
 ## 当前结果与后续
 
-共同数据和必要CPU／GPU验收已通过，本实验准备启动；尚无正式训练指标或检查点。完成后核实停止原因、实际优化器步、最低val/loss及其best路径，再为该best执行完整候选validation和test。中心模型分别评价C0与C5，各实例50候选、100步；当前不提前填写best路径或最终成绩。
+共同数据和原36×2的必要CPU／GPU验收已通过。正式启动前，用户要求无密度优先72×1，六份配置已统一更新，须先完成这一资源设置的真实GPU验收；尚无正式训练指标或检查点。完成训练后核实停止原因、实际优化器步、最低val/loss及其best路径，再为该best执行完整候选validation和test。中心模型分别评价C0与C5，各实例50候选、100步；当前不提前填写best路径或最终成绩。
