@@ -33,7 +33,7 @@ def write_jsonl(path, records):
 
 
 def read_occurrences(root, split, pdb_id, candidate_ids):
-    """读取一个 PDB 的原身份表, 只保留当前划分授权的单残基非共价 small_molecule.
+    """读取一个 PDB 的原身份表, 保留当前划分授权的单残基、非共价 small_molecule.
 
     输入参数:
         - root: Path, 只读 Ori_Data 根路径.
@@ -74,7 +74,7 @@ def read_occurrences(root, split, pdb_id, candidate_ids):
 
 
 def prepare_object(root, derived_root, object_key):
-    """检查完整模板图与原字符串, 只落盘原 reassign_in 实际读取的手性自同构排列.
+    """检查完整模板图与原字符串, 只落盘原 reassign_in 实际读取的手性自同构排列. 同时过滤无碳原子的配体, 并排除配位键.
 
     输入参数:
         - root: Path, 只读 Ori_Data, 模板路径为 ligand_objects/{object_key 中冒号替换为下划线}.npz.
@@ -116,7 +116,7 @@ def prepare_object(root, derived_root, object_key):
 
 
 def prepare_pdb(root, derived_root, language_root, records, object_results):
-    """一次打开一个 PDB 的共同资产, 检查每个完整实例并拆出它的 ligand-area 标签.
+    """一次打开一个 PDB 的共同资产, 检查产物完整性, 并拆出它的 ligand-area 标签.
 
     输入参数:
         - root: Path, 只读 Ori_Data 根路径.
@@ -126,7 +126,7 @@ def prepare_pdb(root, derived_root, language_root, records, object_results):
         - object_results: dict[str, dict], object_key 到 prepare_object 返回记录, 失败模板直接排除所有相关实例.
 
     输出:
-        - kept: list[dict], 原候选字段加 n_heavy_atoms, 为完整模板重原子数; 后续 freeze 再添加固定偏移、种子和视图.
+        - kept: list[dict], 原候选(records)字段加 n_heavy_atoms(完整模板重原子数); 后续 freeze 时再添加固定偏移、种子和视图.
         - excluded: list[dict], 原候选字段加 reason, 如 incomplete_deposited_heavy_atoms 或 language_status:model_failed.
         - ligand_area/{pdb_id}/{candidate_id}.npy: int32, (K, 3), 原 mask_{id} 的 K 个源体素 ZYX 索引, 不复制其它实例或密度数组.
 
@@ -143,6 +143,7 @@ def prepare_pdb(root, derived_root, language_root, records, object_results):
             excluded.append(dict(record, reason=result["reason"]))
     if not eligible:
         return kept, excluded
+
     try:
         receptor = read_receptor(root / "parse" / pdb_id / "receptor_tokens.npz")
         if not len(receptor["coords"]) or not np.isfinite(receptor["coords"]).all():
@@ -172,6 +173,8 @@ def prepare_pdb(root, derived_root, language_root, records, object_results):
         excluded.extend(dict(record, reason=f"pdb_assets: {error}") for record in eligible)
         return kept, excluded
     (derived_root / "ligand_area" / pdb_id).mkdir(parents=True, exist_ok=True)
+
+
     with coord_archive, area_archive:
         for record in eligible:
             candidate_id = record["candidate_id"]
@@ -283,12 +286,14 @@ def prepare(config, stage, shard_id, shard_count):
         write_jsonl(work_root / "sources.jsonl", sources)
         write_jsonl(work_root / "index_excluded.jsonl", excluded)
         print(json.dumps(dict(stage=stage, candidates=len(sources), excluded=len(excluded))), flush=True)
+
     elif stage == "objects":
         sources = read_jsonl(work_root / "sources.jsonl")
         objects = sorted({record["object_key"] for record in sources})[shard_id::shard_count]
         results = Parallel(n_jobs=config.workers)(delayed(prepare_object)(root, derived_root, object_key) for object_key in objects)
         write_jsonl(work_root / f"objects_{shard_id}.jsonl", results)
         print(json.dumps(dict(stage=stage, shard=shard_id, status_counts=dict(Counter(record["status"] for record in results)))), flush=True)
+
     elif stage == "samples":
         # 所有 object 分片必须先结束; 每条模板状态是对应模板唯一的准备结果, 不在 occurrence 循环重新生成.
         object_results = {record["object_key"]: record for index in range(shard_count) for record in read_jsonl(work_root / f"objects_{index}.jsonl")}
@@ -302,6 +307,7 @@ def prepare(config, stage, shard_id, shard_count):
         write_jsonl(work_root / f"samples_{shard_id}.jsonl", kept)
         write_jsonl(work_root / f"excluded_{shard_id}.jsonl", excluded)
         print(json.dumps(dict(stage=stage, shard=shard_id, kept=len(kept), excluded=len(excluded))), flush=True)
+
     elif stage == "freeze":
         if shard_id != 0:
             raise ValueError("freeze requires shard_id=0")
@@ -314,6 +320,8 @@ def prepare(config, stage, shard_id, shard_count):
             # (3,), 方向均匀、半径均匀; 与训练动态偏移采用相同几何分布.
             offset = direction / np.linalg.norm(direction) * rng.uniform(0.0, 5.0)
             record.update(center_offset_xyz_A=offset.tolist(), sampling_seed=int(config.sampling_seed + index), views=[])
+
+        # ----- 处理测试集 -----
         by_object = defaultdict(list)
         for record in kept:
             if record["split"] == "test":
@@ -328,8 +336,10 @@ def prepare(config, stage, shard_id, shard_count):
                     records[index]["views"].append("CAP10")
                 if len(records) <= 10 or rank < 5:
                     records[index]["views"].append("HF10_TO5")
+        # ----- 处理测试集 -----
         summary = dict(source_paths={key: str(config[key]) for key in ("root", "split_root", "test_split", "language_root", "derived_root")}, freeze_seed=config.freeze_seed, sampling_seed=config.sampling_seed, splits={}, excluded_reasons=dict(Counter(record["reason"] for record in excluded)))
         for split in ("train", "validation", "calibration", "test"):
+            # 这个新列表仍然只是收集 kept 中的字典引用，并没有复制字典。因此前面已经写入的 views 仍然存在
             records = [record for record in kept if record["split"] == split]
             write_jsonl(output_root / f"{split}.jsonl", records)
             summary["splits"][split] = dict(occurrences=len(records), pdbs=len({record["pdb_id"] for record in records}), objects=len({record["object_key"] for record in records}), views=dict(Counter(view for record in records for view in record["views"])))

@@ -90,6 +90,7 @@ class OccurrenceDataset(IterableDataset):
         with np.load(self.root / "parse" / pdb_id / "ligand_coords.npz", allow_pickle=False) as archive:
             # float32, (N, 3), 已在准备阶段确认全部重原子存在且有限; 不再用 present 选子图.
             ligand_coords = archive[f"coords_{candidate_id}"]
+
         # (3,), occurrence 的沉积几何中心, 仅用于已批准的定位条件构造.
         ligand_center = ligand_coords.mean(axis=0)
         if self.shuffle and self.config.pocket_mode == "center":
@@ -103,6 +104,7 @@ class OccurrenceDataset(IterableDataset):
         else:
             offset = np.zeros(3, dtype=np.float32)
         given_center = (ligand_center + offset).astype(np.float32)
+
         receptor = read_receptor(self.root / "parse" / pdb_id / "receptor_tokens.npz")
         # bool, (P_full,), 依据完整标准受体的残基 COM 选择口袋, 不从旧兼容口袋二次截取.
         selected = select_pocket(receptor, ligand_coords, given_center, self.config.pocket_mode)
@@ -118,6 +120,7 @@ class OccurrenceDataset(IterableDataset):
         bond_types = np.array([1, 2, 3, 0, 4], dtype=np.int64)[bonds["type"].argmax(axis=1)]
         # int64, (2, M), 每条源化学键的原子端点; 后面复制反向得到原 FeaturizeMol 输入.
         bond_index = np.stack([bonds["atom_1"], bonds["atom_2"]]).astype(np.int64)
+
         with np.load(self.derived_root / "symmetries" / template_name, allow_pickle=False) as archive:
             matches_iso = archive["matches_iso"]
         data = PocketMolData(

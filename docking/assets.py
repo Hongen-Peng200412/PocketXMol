@@ -22,7 +22,7 @@ CHIRAL_TYPES = (Chem.ChiralType.CHI_OTHER, Chem.ChiralType.CHI_OCTAHEDRAL, Chem.
 
 @lru_cache(maxsize=256)
 def read_template(path):
-    """以源模板的原子和键顺序构建完整重原子分子, 不修电荷或键级.
+    """以源模板的原子和键顺序构建完整重原子分子, 不修电荷或键级, 过滤无碳原子的配体, 并排除配位键.
 
     输入参数:
         - path: Path, 如 ligand_objects/CCD_ATP.npz, 读取 atoms、bonds、atom_names 和 smiles; 不读取 object 类型的 blobs.
