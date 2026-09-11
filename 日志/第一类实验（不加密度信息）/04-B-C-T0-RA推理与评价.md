@@ -59,6 +59,12 @@ ec06dbd保存上述两份测试配置的批量修改。本地解析并与HEAD前
 
 完成核对记录为 `/storage/penghongen/PocketXMol/control/371591/sample_B-C-T0-RA_test_complete_20260911.json`。按冻结test.jsonl的(pdb_id, candidate_id)与结果中的(pdb_id, occurrence_id)对应，已核对实例集合完全相同、全部完成标记、50×100预算、batch50、冻结种子、C5向量、测试视图及三种候选文件存在；run.json确认使用21600步best、RA和T0。该只读产物核对及记录不重新采样，也不替代正式CPU评价。
 
+## CPU评价执行
+
+已按上面的正式评价命令提交Job 378916，申请单节点8核CPU、不申请GPU。作业已在cnode02运行；实际release复用 `/home/penghongen/Feedback/PocketXMol/releases/PocketXMol_fa0d957b2d3f/PocketXMol`，与采样相同。launch为 `/home/penghongen/Feedback/PocketXMol/launches/378916/evaluate_docking_job378916_20260911T215541_a1`，调度日志和实际命令保存在 `/home/penghongen/Feedback/PocketXMol/allocations/378916/`。
+
+本任务仅评价已完成的test候选，不生成新候选。逐实例CPU评价完成后汇总C0／C5下的ALL、CAP10、HF10_TO5，并将汇总上传到配置指定的W&B记录；当前尚未确认评价完成。371591的after_lock继续保留，B-C-T1-RA尚未启动。
+
 ## 工作区修改边界
 
 其他代理的工作区修改原样保留，不纳入本任务提交。本任务按自己的goal依次完成训练、测试与结果记录；此前额外安排的另一任务状态跟踪已按用户要求撤回。
