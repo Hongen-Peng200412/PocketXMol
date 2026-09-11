@@ -20,4 +20,12 @@ bash 训练与运行/sh/train_docking.sh B-C-T1-RA
 
 本次执行沿用已审查和实际运行的ec06dbd源码，使用既有不可变release `/home/penghongen/Feedback/PocketXMol/releases/PocketXMol_fa0d957b2d3f/PocketXMol` 中的B-C-T1-RA.yml与train_docking.sh。该配置明确center_translation=true、RA、72×1、原官方初始化和独立输出目录；本次不传--resume。运行来源由该release确定，不吸收其他代理的未提交工作区文件。
 
+## 实际启动
+
+2026-09-12，确认前一模型测试报告完成、371591处于try_lock等待、after_lock保留且目标训练目录不存在后，接入上述正式命令。master请求时间为00:42:12；gnode09时钟约慢3分钟。控制器第14次执行的PocketXMol launch为 `/home/penghongen/Feedback/PocketXMol/launches/371591/train_B-C-T1-RA_job371591_20260912T003912`，实际训练主进程为16005，cgroup确认属于371591。
+
+启动元数据为 `/storage/penghongen/PocketXMol/control/371591/train_B-C-T1-RA_start.json`，正式动态命令副本为同目录train_B-C-T1-RA_run_cmd.sh。该次out／err读取起点分别为57342372／73878；旧T0训练、已取消validation和已完成test日志不混入本次状态判断。after_lock保留，运行时try_lock和kill_lock均不存在。
+
+W&B训练run为 [nzkna4ow](https://wandb.ai/pencounkdual-111/PocketXmol_raw/runs/nzkna4ow)，名称B-C-T1-RA。输出明确从规定的官方pocketxmol.ckpt加载模型参数、使用bf16，约20.2M参数全部可训练；目标目录独立创建。启动检查时已完成62个训练批次（72×1对应62次优化器更新），约1.01步／秒，lr=1e-4，原loss及置信度损失正常记录，尚无OOM或Traceback。首次正式验证在800次更新时进行，当前不声称已产生best或完成训练。
+
 运行沿用已通过自查、两轮独立审查及CPU／GPU验收的实现，不增加科学开关或重建共同资产。测试命令和验收结果见日志00及02，本文件上面的命令是正式训练命令。371591的after_lock保留，不申请额外GPU，不释放或删除旧T0产物。
