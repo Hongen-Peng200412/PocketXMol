@@ -14,7 +14,7 @@
 bash 训练与运行/sh/sample_docking.sh B-C-T0-RA-test
 ```
 
-C0和C5的全部测试实例均尝试完毕后，再从服务器项目根提交8核CPU评价：
+C0和C5的全部测试实例均尝试完毕后，从本次采样release的PocketXMol根目录提交8核CPU评价；源码和配置沿用生成这些候选时的ec06dbd版本：
 
 ```bash
 bash 训练与运行/submit_task.sh --sh evaluate_docking.sh --resource cpu --cpus 8 -- B-C-T0-RA-test
@@ -44,7 +44,20 @@ ec06dbd保存上述两份测试配置的批量修改。本地解析并与HEAD前
 
 控制器第13次执行的实际release为 `/home/penghongen/Feedback/PocketXMol/releases/PocketXMol_fa0d957b2d3f/PocketXMol`，launch为 `/home/penghongen/Feedback/PocketXMol/launches/371591/sample_B-C-T0-RA_test_job371591_20260911T142022`。test/run.json在严格加载模型成功后写入，记录同一best及batch50。首三个实例11jb/0、1、2均50／50成功、100步，每实例实际完成100次批量forward；总耗时分别34.93、33.49、33.53秒，峰值张量显存约2.50 GB。与batch25时相比，组批次数由2变1；不同实例的耗时不能直接用来估算加速比例。after_lock保留，正式测试期间try_lock不存在、kill_lock不存在。
 
-必要代码验收及历史短GPU测试见日志00、02，不能作为正式测试成绩。本模型完整测试和CPU评价尚在执行范围内，下一模型未启动。
+必要代码验收及历史短GPU测试见日志00、02，不能作为正式测试成绩。完整测试采样已正常完成，CPU评价随后执行，下一模型未启动。
+
+## 完整测试采样结果
+
+2026-09-11，控制器第13次执行正常结束，采样进程42558退出，try_lock恢复、after_lock保留、kill_lock不存在。C0和C5分别覆盖完整446个测试实例，每个实例50个候选、100步，共44600个候选全部生成成功。此处“生成成功”仅指采样产物成功写出，姿态RMSD和self-ranking效果由后续CPU评价给出。
+
+| 协议 | 实例数 | 成功候选数 | 生成失败数 | 逐实例总耗时合计（秒） | 逐实例平均耗时（秒） | 峰值张量显存（GiB） |
+|---|---:|---:|---:|---:|---:|---:|
+| C0 | 446 | 22300 | 0 | 13341.13 | 29.91 | 2.99 |
+| C5 | 446 | 22300 | 0 | 13354.37 | 29.94 | 2.99 |
+
+两个协议各完成44600次批量forward，每个实例均为一批50个候选。逐实例总耗时合计约7小时25分钟，包括实例读取和落盘；不把两台主机的墙钟时间相减作为耗时。未增加候选或更改科学配置。
+
+完成核对记录为 `/storage/penghongen/PocketXMol/control/371591/sample_B-C-T0-RA_test_complete_20260911.json`。按冻结test.jsonl的(pdb_id, candidate_id)与结果中的(pdb_id, occurrence_id)对应，已核对实例集合完全相同、全部完成标记、50×100预算、batch50、冻结种子、C5向量、测试视图及三种候选文件存在；run.json确认使用21600步best、RA和T0。该只读产物核对及记录不重新采样，也不替代正式CPU评价。
 
 ## 工作区修改边界
 
