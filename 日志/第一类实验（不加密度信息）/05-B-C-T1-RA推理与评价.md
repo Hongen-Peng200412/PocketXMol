@@ -28,4 +28,14 @@ bash 训练与运行/submit_task.sh --sh evaluate_docking.sh --resource cpu --cp
 
 配置验收：本地yaml.safe_load解析通过；与已完成的T0测试配置比较，仅模型名、保存训练配置、checkpoint、T1开关、输出根及W&B名称发生预期变化，其余字段完全一致；C0/C5 test、RA、batch50、50候选、100步及8核评价断言通过。独立代理t1_test_config_review完成一次仅针对本配置及本文的窄范围只读核查，确认实际字段消费与科学注释一致，无阻断问题。此前代码链的两轮全面独立审查已结束，本次不重复扩大范围。
 
-本次release以已审查的ec06dbd运行副本为基础，只加入此测试配置；不从共享工作区复制其他代理的未提交文件。实际release、launch、启动元数据和完成情况随正式执行填写。
+本次release以已审查的ec06dbd运行副本为基础，只加入此测试配置；不从共享工作区复制其他代理的未提交文件。配置及训练完成记录提交为69a9507。服务器临时装配目录为 `/storage/penghongen/tmp/pocketxmol_t1_test_20260912/PocketXMol`；与原fa0d957b2d3f运行副本逐文件比较，唯一差异是新增sample-B-C-T1-RA-test.yml。本地和服务器该配置的SHA256均为ed5888a9b23addd68a6c169ef5d94dcece59de366223820d7bcb462e4c03b42f；这是部署核对，不引入新的科学数据登记机制。
+
+## 正式启动
+
+2026-09-12，确认371591运行于gnode09、前一训练正常完成、after_lock与try_lock存在、kill_lock不存在、测试输出根尚不存在后，接入上述正式推理命令。master请求时间06:58:52，gnode09时钟约慢3分钟；控制器第15次执行，实际采样主进程57606，cgroup确认属于371591。
+
+本次实际运行release为 `/home/penghongen/Feedback/PocketXMol/releases/PocketXMol_55258ac14af2/PocketXMol`，PocketXMol launch为 `/home/penghongen/Feedback/PocketXMol/launches/371591/sample_B-C-T1-RA_test_job371591_20260912T065551`。旧资源控制器外层的Pocket_Plus release只承载锁控制，本次科学代码与配置由上述PocketXMol release固定。
+
+启动元数据为 `/storage/penghongen/PocketXMol/control/371591/sample_B-C-T1-RA_test_start.json`，动态命令副本为同目录sample_B-C-T1-RA_test_run_cmd.sh。本次out／err读取起点83039931／82141；不把旧训练或前一测试日志混作本次证据。运行时after_lock保留，try_lock和kill_lock不存在。实际候选和完成情况在核对产物后记录。
+
+启动核对：模型严格加载成功后写入test/run.json，明确20800步best、T1、C0/C5、batch50及50×100预算。首两个C0实例11jb/0和11jb/1均完成50／50候选、100次批量forward，耗时34.98／33.48秒，峰值张量显存约2.50 GB；未发现Traceback或CUDA OOM。这里只确认正式候选生成正常，姿态质量由完整推理后的CPU评价确定。
