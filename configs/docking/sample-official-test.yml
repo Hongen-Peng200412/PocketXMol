@@ -21,7 +21,7 @@ protocols: [C0, C5, E]
 split: test
 output_root: /storage/penghongen/PocketXMol/sampling/official
 # int, sample_occurrence每批候选数上限, 不改变单实例候选预算.
-batch_size: 25
+batch_size: 50
 # int, 单实例固定候选预算, 失败候选仍进入统计分母.
 num_candidates: 50
 # int, 原sample_loop3对每个候选执行的循环步数.

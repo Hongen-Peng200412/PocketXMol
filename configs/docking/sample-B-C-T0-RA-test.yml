@@ -22,7 +22,7 @@ protocols: [C0, C5]
 split: test  # str, ALL完整446个实例; CAP10和HF10_TO5复用同一候选池.
 # str, 与验证共用模型产物根, 由test/validation子目录隔离两集合.
 output_root: /storage/penghongen/PocketXMol/sampling/B-C-T0-RA-C0
-batch_size: 25  # int, 同一实例每批候选数, 不改变总预算.
+batch_size: 50  # int, 同一实例的50个候选一次组批, 总预算仍为50.
 num_candidates: 50  # int, 每实例每协议固定预算, 失败仍进入分母.
 num_steps: 100  # int, 原sample_loop3的完整采样步数.
 device: cuda  # str, 在已获准GPU中执行采样.
