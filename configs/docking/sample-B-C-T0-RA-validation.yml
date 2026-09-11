@@ -1,4 +1,4 @@
-# scripts/sample_docking.py生成完整验证候选, scripts/evaluate_docking.py按同一配置评价.
+# 历史配置: 用户已取消训练后完整验证集采样和评价, 本文件仅留证, 不再提交.
 # 本模型已按C0正确训练; C0/C5仍分别作为推理给定中心条件, 两者都执行T0原采样.
 model_name: B-C-T0-RA
 # str, 本次正确T0训练保存的配置, 不读取旧错误训练目录或可变的当前训练YAML.

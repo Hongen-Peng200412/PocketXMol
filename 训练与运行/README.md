@@ -53,19 +53,19 @@ bash 训练与运行/sh/train_docking.sh B-C-T1-RA --resume /storage/penghongen/
 
 科学条件错误后的重训须从官方初始参数开始，不传--resume；使用原入口已有的 `--logdir` 指定独立目录，例如 `/storage/penghongen/PocketXMol/training/B-C-T0-RA-C0`。新的W&B run id由原训练入口创建，旧产物保留并在逐实验日志标记无效。该目录如需正常续训，必须同时显式传相同--logdir和它自己的last.ckpt；不能使用旧错误训练的检查点。
 
-### 完整候选验证与测试
+### 训练后直接完整测试
 
 采样和评价的 Python 入口分别为 `scripts/sample_docking.py`、`scripts/evaluate_docking.py`，每次读取一份明确配置。六模型的 best 路径必须在运行时根据实际训练产物写入配置；官方对照固定读取原 pxm 权重，不搜索多个 checkpoint 猜测选择。
 
-每实例 50 个候选、100 步。中心模型评 C0/C5，包络评 E，官方评 C0/C5/E；validation 与 test 分目录，三个测试视图共用候选。正式采样配置及实际命令在训练结果确定后记录到对应实验日志，不能拿 smoke 配置代替。
+每实例每协议50个候选、100步，推理batch_size优先50。中心模型评C0/C5，包络评E，官方评C0/C5/E；三个测试视图共用候选。更大的有效批量确能提速时可用100；当前单实例入口实际最多组批50个候选，单改为100不会增大有效批量。正式采样配置及实际命令在训练结果确定后记录到对应实验日志，不能拿smoke配置代替。
 
-按用户最新执行顺序，每训练完一个模型，先完成其完整验证／测试采样、评价和结果记录，再启动下一模型。一个模型的验证CPU评价可与它自己的测试GPU采样并行；两集合结果都收口后才切换模型。
+每训练完一个模型，立即用best完成其测试集全部规定协议的采样、CPU评价和结果记录，再启动下一模型。训练期间保留原val/loss验证、调度及best选择；训练后不再提交完整验证集采样或评价。旧validation候选及配置仅保留历史记录。
 
-官方对照已有两份明确配置 `sample-official-validation.yml` 与 `sample-official-test.yml`。共同数据和模型验收通过后，在获准GPU内按以下短命令生成完整验证候选；测试将后缀换成 `official-test`。随后另提交8核CPU评价任务：
+官方对照使用 `sample-official-test.yml`。在获准GPU内按以下短命令生成完整测试候选；所有协议采样完成后，另提交8核CPU评价任务：
 
 ```bash
-bash 训练与运行/sh/sample_docking.sh official-validation
-bash 训练与运行/submit_task.sh --sh evaluate_docking.sh --resource cpu --cpus 8 -- official-validation
+bash 训练与运行/sh/sample_docking.sh official-test
+bash 训练与运行/submit_task.sh --sh evaluate_docking.sh --resource cpu --cpus 8 -- official-test
 ```
 
 此处是正式调用方式，是否已经执行以及实际release和job id，以对应运行日志为准。

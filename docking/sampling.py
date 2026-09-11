@@ -81,7 +81,7 @@ def sample_occurrence(dataset, index, model, noiser, featurizer, config, protoco
             - success_count: int, 实际写入SDF的成功候选数.
             - failed_count: int, 候选预算减去成功数.
             - num_steps: int, 每轮原采样循环步数, 正式值100.
-            - batch_size: int, 每次同时采样的候选数上限, 正式初值25; 尾批可以更小.
+            - batch_size: int, 同一实例同时采样的候选数上限, 当前正式值50; 预算只有50时, 设置100仍只组一批50.
             - pocket_protein_count: int|None, 按当前定位协议选择、在官方蛋白过滤之前的标准蛋白原子数; 尚未取得时为None.
             - pocket_nucleic_count: int|None, 同一口袋中的标准RNA/DNA原子数, 官方过滤前计数; 尚未取得时为None.
             - pocket_nucleic_fraction: float|None, 核酸原子数除以两类原子总数; 总数0或未取得时为None.
@@ -284,7 +284,7 @@ def sample_docking(config):
         - protocols: list[str], 中心模型为[C0,C5], 包络为[E], 官方为[C0,C5,E].
         - split: str, validation或test, 两个划分分别保存完成标记.
         - output_root: str, 当前模型采样根目录.
-        - batch_size: int, 同一occurrence每批候选数上限, 正式初值25.
+        - batch_size: int, 同一occurrence每批候选数上限, 当前正式值50; 不跨实例组批.
         - num_candidates: int, 每实例候选预算, 正式值50.
         - num_steps: int, 每轮原采样步数, 正式值100.
         - device: str, 模型和原采样噪声所在设备, 如cuda.
