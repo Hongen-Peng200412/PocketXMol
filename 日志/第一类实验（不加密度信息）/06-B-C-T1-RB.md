@@ -20,7 +20,19 @@
 bash 训练与运行/sh/train_docking.sh B-C-T1-RB
 ```
 
-训练产物目录为 `/storage/penghongen/PocketXMol/training/B-C-T1-RB/`，接入前已确认不存在；W&B为 `pencounkdual-111/PocketXmol_raw`、名称B-C-T1-RB，实际run id在启动后填写。新的动态命令与启动元数据保存于 `/storage/penghongen/PocketXMol/control/378693/`；实际launch在确认后记录。
+训练产物目录为 `/storage/penghongen/PocketXMol/training/B-C-T1-RB/`，接入前已确认不存在；W&B为 `pencounkdual-111/PocketXmol_raw`、名称B-C-T1-RB，实际run为[wmgkgurr](https://wandb.ai/pencounkdual-111/PocketXmol_raw/runs/wmgkgurr)。新的动态命令与启动元数据保存于 `/storage/penghongen/PocketXMol/control/378693/`，实际launch见下文。
+
+## 实际接入
+
+首次启动前核对混用了本地LF归一化字节与服务器原CRLF字节，断言在创建控制记录及操作锁之前停止。重新核对原始字节，两端训练YAML完全相同，SHA256均为ef6aa7acef6ee88286abd65d4e9cc3afc66f899bfa273a22db4a12ef4692b325；没有修改训练配置或源码。
+
+2026-09-12 master时间11:20:47，保存原动态命令及新正式命令后，移除获准的pre_lock_378693开始第一次执行，after_lock保留，没有使用kill_lock或scancel。实际训练主进程50944，cgroup确认属于378693。PocketXMol launch为 `/home/penghongen/Feedback/PocketXMol/launches/378693/train_B-C-T1-RB_job378693_20260912T111926`；节点时钟与master有差异，保留各自记录。
+
+控制记录为 `/storage/penghongen/PocketXMol/control/378693/train_B-C-T1-RB_start.json`，命令副本train_B-C-T1-RB_run_cmd.sh，原命令副本original_run_cmd_before_B-C-T1-RB.sh。本次out／err起点136／0。实际源码来自上述fa0d957b2d3f的PocketXMol release，控制器外层Pocket_Plus release仅负责既有资源控制。运行时pre、try、kill锁均不存在，after_lock保留。
+
+实际启动输出确认从规定官方pocketxmol.ckpt加载，CUDA启用、bf16混合精度、约20.7M参数全部可训练；W&B正常在线创建wmgkgurr，本地记录位于训练根wandb/run-20260912_112017-wmgkgurr。未传--resume，不承接其它训练参数或优化器状态。
+
+启动验收时已进入80次优化器更新，约1.04步／秒，lr=1e-4，原loss和置信度损失正常记录；未发现Traceback、CUDA OOM、reduce_batch或NaN。此处仅确认正式训练正常进入更新，不代表训练完成或已选定best。
 
 ## 验收来源与后续步骤
 
