@@ -2,7 +2,7 @@
 
 本文件记录六个无密度模型中的第3个实验，依据 [科学契约](../../想法/方案草稿/9-8-科学契约.md)、[工程细节](../../想法/方案草稿/9-8-工程与实现细节.md) 和 [边界清单](../../想法/方案草稿/9-8-边界与核查清单.md)。按用户授权，在371591完成 [B-C-T1-RA测试报告](05-B-C-T1-RA推理与评价.md) 后，使用同一A800运行本模型训练、E测试、CPU评价与记录，再进入第4个B-C-T0-RB。
 
-首次正式训练因空E口袋导致NaN而停止，异常产物全部保留。用户已接受空E处理建议，最小修复及必要审查验收通过；2026-09-12已在371591从官方权重重新训练，独立目录B-E-T0-RA-nonemptyE，W&B为lukfzmf3，after_lock保留。尚无本模型有效best或正式E测试结果。
+首次正式训练因空E口袋导致NaN而停止，异常产物全部保留。用户已接受空E处理建议，最小修复及必要审查验收通过；在371591从官方权重重新训练的独立运行B-E-T0-RA-nonemptyE已完成，W&B为lukfzmf3。重训在26400次优化器更新后第三次学习率下降时正常停止，best为21600步、原E val/loss=1.629248，正在接入完整E测试；after_lock保留。
 
 ## 固定训练条件
 
@@ -109,6 +109,40 @@ bash 训练与运行/sh/train_docking.sh B-E-T0-RA --logdir /storage/penghongen/
 
 正式启动检查已观察到161次优化器更新，约1.09步／秒，lr=1e-4；原损失和置信度损失均有限，没有Traceback、OOM、reduce_batch或空均值警告。日志已明确记录6j40/273、6j3z/22等空E跳过，规则确实进入正式数据流。这里只确认重训正常开始，完整训练、best选择和E测试仍须继续。
 
+## 有效重训完成与best核对
+
+控制器第18次执行成功并恢复try_lock。正式训练完成26400次优化器更新，训练进度栏fit耗时6小时46分42秒，平均约1.08步／秒；全部33次原E验证与定期检查点正常保存，没有NaN、Traceback、OOM、reduce_batch或空数组求均值警告。正式警告日志记录的不同训练身份正好为前述46个空E实例，验证跳过数为0。旧异常目录仍保留。
+
+2026-09-13在371591.5的8核CPU内读取last与best，确认stop_reason=plateau、decline_count=3、最后验证步26400，优化器与调度器末次学习率均为8e-7，第三次下降后没有继续更新参数。best为 `checkpoints/step=21600.ckpt`，原E val/loss=1.6292482614517212，是全部33个定期检查点损失中的最小值；其1130个model参数键全部有限。33个定期检查点与last均保留，W&B id为lukfzmf3。
+
+完整摘要为 `/storage/penghongen/PocketXMol/training/B-E-T0-RA-nonemptyE/training_summary_20260913.json`，checkpoint_losses保存每个检查点的损失。只读核对脚本为 `/storage/penghongen/tmp/pocketxmol_checkpoint_20260913/inspect_e_ra.py`，以下是产物核对命令，不是正式训练或推理命令：
+
+```bash
+srun --jobid=371591 --overlap --nodes=1 --ntasks=1 --cpus-per-task=8 env CUDA_VISIBLE_DEVICES= OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 PYTHONDONTWRITEBYTECODE=1 /storage/penghongen/PocketXMol/runtime/venv/bin/python -B /storage/penghongen/tmp/pocketxmol_checkpoint_20260913/inspect_e_ra.py
+```
+
+## 完整E测试配置与正式命令
+
+`configs/docking/sample-B-E-T0-RA-test.yml`明确读取本次独立重训的训练配置与21600步best，RA、T0、protocols=[E]，始终关闭新增整体平移。源码必须包含c9cc4a1的空E处理，正式测试仍逐实例尝试构造输入，失败保留完整候选与实例分母。
+
+完整测试446个实例，每实例50候选、100步、batch50，三个视图共用候选。独立输出根为 `/storage/penghongen/PocketXMol/sampling/B-E-T0-RA-nonemptyE/test/`。在同一371591完成全部E推理后，再以该作业CPU执行8进程评价；两次操作分别保存launch和启动记录，不执行训练后完整验证集采样。
+
+正式采样命令：
+
+```bash
+bash 训练与运行/sh/sample_docking.sh B-E-T0-RA-test
+```
+
+全部推理完成后的正式评价命令：
+
+```bash
+bash 训练与运行/sh/evaluate_docking.sh B-E-T0-RA-test
+```
+
+评价W&B使用pencounkdual-111/PocketXmol_raw，名称B-E-T0-RA_test，实际run id在评价启动后记录。
+
+主代理按实际配置消费顺序及中文注释规范完成两遍自查，YAML解析核对正式E配置与预期字段完全一致；两轮独立配置核查均通过。训练保存的YAML由save_config重新序列化，因此最初采用字节比较的来源检查失败；随后使用项目环境解析确认保存配置与原release配置的全部字段完全一致。诊断时master基础Python缺少PyYAML，改用项目既有venv即可，未安装依赖或改变训练内容。输出根已确认不存在，正式测试不覆盖已有产物。
+
 ## 计划与实现差异
 
-已发现并经用户确认处理的实现缺口：部分冻结训练实例的E受体为空，原代码直接求均值并污染训练；此前两步GPU验收没有覆盖这些实例。当前已按批准口径实施最小修复，两遍自查、两轮三类独立审查、CPU回归及真实训练输入GPU验收已通过。E有效训练、best选择和测试评价均未完成，不把异常运行计作有效实验。
+已发现并经用户确认处理的实现缺口：部分冻结训练实例的E受体为空，原代码直接求均值并污染训练；此前两步GPU验收没有覆盖这些实例。当前已按批准口径实施最小修复，两遍自查、两轮三类独立审查、CPU回归及真实训练输入GPU验收已通过。E有效重训及best选择已完成，完整E测试与评价仍未完成；异常旧运行不计作有效实验。
