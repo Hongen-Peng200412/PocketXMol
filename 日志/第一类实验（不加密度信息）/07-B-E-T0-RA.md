@@ -153,6 +153,22 @@ bash 训练与运行/sh/evaluate_docking.sh B-E-T0-RA-test
 
 实际test/run.json已核对RA、E、T0关闭新增平移、21600步best、batch50和50×100预算。首两个实例11jb/0、11jb/1各完成50／50候选、100次批量forward，耗时32.86／32.02秒，峰值张量显存约2.18 GB；未见NaN、Traceback、OOM或reduce_batch。这是正式推理启动检查，姿态质量仍由全量推理后的CPU评价确定。
 
+## 完整E候选完成与CPU评价启动
+
+控制器第19次执行成功，采样进程52145退出，try_lock恢复且after_lock保留。E测试446个实例、22300个候选全部生成成功，没有输入构造失败或其他候选失败。逐实例与冻结test清单核对身份、模板、视图、候选种子和记录的C5向量一致；E不施加该C5向量。每实例仍为50候选、100步、一批50，累计44600次完成的批量forward。轨迹置信度均有限，候选编号、SDF编号及姿态／置信度文件存在性均通过核对。
+
+逐实例耗时合计12606.271秒，约3小时30分6秒；其中推理耗时合计12533.717秒，峰值分配显存3217041408字节。这些统计不含模型启动及少量协议装配开销。本次日志没有Traceback、OOM或reduce_batch。完整证据为 `/storage/penghongen/PocketXMol/control/371591/sample_B-E-T0-RA_test_complete_20260913.json`。
+
+以下仅为已保存候选的产物核对命令，不是正式推理或评价；脚本本地副本为 `tmp/pxm-20260913/inspect_e_ra_sampling.py`：
+
+```bash
+srun --jobid=371591 --overlap --nodes=1 --ntasks=1 --cpus-per-task=8 env CUDA_VISIBLE_DEVICES= OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 PYTHONDONTWRITEBYTECODE=1 /storage/penghongen/PocketXMol/runtime/venv/bin/python -B /storage/penghongen/tmp/pocketxmol_sampling_20260913/inspect_e_ra_sampling.py
+```
+
+2026-09-13 master时间05:02:17接入正式评价命令 `bash 训练与运行/sh/evaluate_docking.sh B-E-T0-RA-test`，代码和配置仍为同一1ce7d5426c18 release。控制器第20次执行，主进程37521及8个工作进程37595至37602均在371591内，CUDA_VISIBLE_DEVICES为空；利用已有16核CPU中的8个工作进程，没有另申请CPU作业。
+
+评价launch为 `/home/penghongen/Feedback/PocketXMol/launches/371591/evaluate_B-E-T0-RA_test_job371591_20260913T045916`，启动记录为 `/storage/penghongen/PocketXMol/control/371591/evaluate_B-E-T0-RA_test_start.json`。同目录保存evaluate_B-E-T0-RA_test_run_cmd.sh及修改前的evaluate_B-E-T0-RA_test_before_run_cmd.sh。累计out／err起点113848096／282173，after_lock保留。完整评价和报告尚待完成。
+
 ## 计划与实现差异
 
-已发现并经用户确认处理的实现缺口：部分冻结训练实例的E受体为空，原代码直接求均值并污染训练；此前两步GPU验收没有覆盖这些实例。当前已按批准口径实施最小修复，两遍自查、两轮三类独立审查、CPU回归及真实训练输入GPU验收已通过。E有效重训及best选择已完成，完整E测试已启动，测试与评价仍未完成；异常旧运行不计作有效实验。
+已发现并经用户确认处理的实现缺口：部分冻结训练实例的E受体为空，原代码直接求均值并污染训练；此前两步GPU验收没有覆盖这些实例。当前已按批准口径实施最小修复，两遍自查、两轮三类独立审查、CPU回归及真实训练输入GPU验收已通过。E有效重训及完整候选生成已经完成，同卡CPU评价已启动；异常旧运行不计作有效实验。
