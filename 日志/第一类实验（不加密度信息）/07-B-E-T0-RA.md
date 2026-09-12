@@ -2,7 +2,7 @@
 
 本文件记录六个无密度模型中的第3个实验，依据 [科学契约](../../想法/方案草稿/9-8-科学契约.md)、[工程细节](../../想法/方案草稿/9-8-工程与实现细节.md) 和 [边界清单](../../想法/方案草稿/9-8-边界与核查清单.md)。按用户授权，在371591完成 [B-C-T1-RA测试报告](05-B-C-T1-RA推理与评价.md) 后，使用同一A800运行本模型训练、E测试、CPU评价与记录，再进入第4个B-C-T0-RB。
 
-当前首次正式训练因空E口袋导致NaN而停止，尚无有效检查点或正式E测试结果。已保留异常运行的源码、配置、W&B及日志，371591的after_lock继续保留；用户已接受空E处理建议，正在完成最小修复及必要验收，见下文。
+首次正式训练因空E口袋导致NaN而停止，异常产物全部保留。用户已接受空E处理建议，最小修复及必要审查验收通过；2026-09-12已在371591从官方权重重新训练，独立目录B-E-T0-RA-nonemptyE，W&B为lukfzmf3，after_lock保留。尚无本模型有效best或正式E测试结果。
 
 ## 固定训练条件
 
@@ -99,7 +99,15 @@ RA、RB分别从官方权重执行8次真实优化器更新，均为72×1、bf16
 bash 训练与运行/sh/train_docking.sh B-E-T0-RA --logdir /storage/penghongen/PocketXMol/training/B-E-T0-RA-nonemptyE
 ```
 
-独立训练根为 `/storage/penghongen/PocketXMol/training/B-E-T0-RA-nonemptyE/`，接入前已核对不存在。仍读取原B-E-T0-RA.yml，从规定官方权重加载模型参数，不传--resume；优化器、调度状态和W&B run id均重新建立。旧B-E-T0-RA目录及so6e0mvy不覆盖、不续训。新的源码release、launch、实际进程及W&B id将在接入后记录。
+独立训练根为 `/storage/penghongen/PocketXMol/training/B-E-T0-RA-nonemptyE/`，接入前已核对不存在。仍读取原B-E-T0-RA.yml，从规定官方权重加载模型参数，不传--resume；优化器、调度状态和W&B run id均重新建立。旧B-E-T0-RA目录及so6e0mvy不覆盖、不续训。
+
+修复提交为c9cc4a1。正式源码release为 `/home/penghongen/Feedback/PocketXMol/releases/PocketXMol_43742cdf8166/PocketXMol`，由原ec06dbd运行副本加入本次Dataset、两份测试及对应文档构成，不吸收共享工作区外来文件。发布前确认Dataset与实际GPU验收副本字节一致，测试AST一致，训练配置仍与原配置字节相同。临时发布源位于 `/storage/penghongen/tmp/pocketxmol_empty_envelope_release_20260912/PocketXMol`。
+
+2026-09-12 master时间17:24:37保存独立启动记录与动态命令后，移除已获准try_lock，371591控制器第18次执行开始；after_lock保留，本次接入没有使用kill_lock。实际主进程39120，另有15个数据worker，均在job_371591；没有--resume，命令行末次--logdir明确指向新根。实际launch为 `/home/penghongen/Feedback/PocketXMol/launches/371591/train_B-E-T0-RA_nonemptyE_job371591_20260912T172127`，节点时钟约慢3分钟，不混用两个主机时间估算耗时。
+
+启动记录为 `/storage/penghongen/PocketXMol/control/371591/train_B-E-T0-RA_nonemptyE_start.json`，新动态命令副本为同目录train_B-E-T0-RA_nonemptyE_run_cmd.sh；修改前命令另存train_B-E-T0-RA_before_nonemptyE_run_cmd.sh。累计out／err起点为83348997／139462。W&B新运行是[lukfzmf3](https://wandb.ai/pencounkdual-111/PocketXmol_raw/runs/lukfzmf3)，名称仍为B-E-T0-RA，独立id与目录明确区别于异常so6e0mvy；本地记录为新训练根下wandb/run-20260912_172138-lukfzmf3。
+
+正式启动检查已观察到161次优化器更新，约1.09步／秒，lr=1e-4；原损失和置信度损失均有限，没有Traceback、OOM、reduce_batch或空均值警告。日志已明确记录6j40/273、6j3z/22等空E跳过，规则确实进入正式数据流。这里只确认重训正常开始，完整训练、best选择和E测试仍须继续。
 
 ## 计划与实现差异
 
