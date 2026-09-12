@@ -14,13 +14,13 @@
 bash 训练与运行/sh/sample_docking.sh B-C-T1-RA-test
 ```
 
-推理全部完成后，从同一release提交8核CPU正式评价：
+按用户2026-09-12新增安排，推理全部完成后，在同一371591作业中从同一release执行正式评价，使用自带CPU和现有8个评价进程：
 
 ```bash
-bash 训练与运行/submit_task.sh --sh evaluate_docking.sh --resource cpu --cpus 8 -- B-C-T1-RA-test
+bash 训练与运行/sh/evaluate_docking.sh B-C-T1-RA-test
 ```
 
-推理和评价产物为 `/storage/penghongen/PocketXMol/sampling/B-C-T1-RA/test/`；各协议的逐实例候选、姿态、评价文件与汇总均保留。W&B评价使用 `pencounkdual-111/PocketXmol_raw`，名称B-C-T1-RA_test，实际run id在评价启动后记录。GPU继续使用371591的A800，after_lock保留。
+推理和评价产物为 `/storage/penghongen/PocketXMol/sampling/B-C-T1-RA/test/`；各协议的逐实例候选、姿态、评价文件与汇总均保留。W&B评价使用 `pencounkdual-111/PocketXmol_raw`，名称B-C-T1-RA_test，实际run id在评价启动后记录。371591的A800和16核CPU继续保留；评价脚本关闭CUDA，仅使用分配内CPU，不另提交纯CPU作业，after_lock保留。
 
 ## 运行前核查
 

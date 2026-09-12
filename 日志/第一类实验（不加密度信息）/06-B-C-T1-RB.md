@@ -1,0 +1,29 @@
+# B-C-T1-RB训练与配套测试
+
+本文件记录六个无密度模型中的第5个实验。用户2026-09-12新增授权：378693负责第5个B-C-T1-RB、第6个B-E-T0-RB及各自完整测试与评价；371591继续当前B-C-T1-RA及第3、4个实验。每张卡独立按训练、测试、评价与记录的顺序串行推进，评价使用该A800作业已分配的CPU。
+
+## 固定训练条件
+
+配置为 `configs/docking/B-C-T1-RB.yml`，来源为已审查的ec06dbd运行副本 `/home/penghongen/Feedback/PocketXMol/releases/PocketXMol_fa0d957b2d3f/PocketXMol`。RB分别编码蛋白与核酸，初始化后把蛋白编码器参数复制给核酸编码器；保留原主体模型、loss、置信度头及训练目标。
+
+中心T1训练每次抽一份delta=r*u，r均匀取0–5 Å、u为均匀球面方向；完整g+delta选袋与定原点，原高斯后增加s*delta，s=1-level_dict['pos']，监督目标与受体不跟随新增平移。原val/loss使用冻结C5偏移。正式测试保留C0与C5，两种输入都执行T1采样。
+
+从规定官方pocketxmol.ckpt开始，不传--resume；独立建立AdamW与调度状态。batch_size=72、累积1、bf16、15个数据worker，名义全局批量72。lr=1e-4、warmup=0，每800次优化器更新验证；Plateau相对阈值1%、patience=5、factor=0.2，第三次实际下降立即停止，上限40000步。best按最低原验证损失选择，保留last和全部定期检查点。
+
+## 资源核对与正式命令
+
+378693的Slurm记录确认：RUNNING、gnode10、1张A800、16核CPU、--pre_hold及--after_hold。实际控制目录 `/home/penghongen/Feedback/Pocket_Plus/allocations/378693/`，pre_lock_378693在父目录。接入前节点只存在该作业等待pre_lock的控制器进程43832，无正在运行的计算任务，after_lock存在，try_lock与kill_lock不存在；无需终止旧计算。
+
+正式训练命令在上述冻结release中执行：
+
+```bash
+bash 训练与运行/sh/train_docking.sh B-C-T1-RB
+```
+
+训练产物目录为 `/storage/penghongen/PocketXMol/training/B-C-T1-RB/`，接入前已确认不存在；W&B为 `pencounkdual-111/PocketXmol_raw`、名称B-C-T1-RB，实际run id在启动后填写。新的动态命令与启动元数据保存于 `/storage/penghongen/PocketXMol/control/378693/`；实际launch在确认后记录。
+
+## 验收来源与后续步骤
+
+该RB／T1代码及72×1资源配置已经完成两遍主代理自查、两轮全面独立审查和真实非测试样本GPU验收，见 [共同准备日志](00-实现与共同数据准备.md)；T0纠偏之后T1机制保持，见 [中心纠偏日志](02-T0中心契约修复与重训.md)。本次仅接入新增授权资源，未修改生产函数或科学配置，不重复模型试训。
+
+训练正常结束后在Slurm内核实停止原因和实际best，再建立明确检查点的完整C0／C5 test配置，batch50、每实例50候选100步。推理完成后在同一378693执行既有evaluate_docking.sh，使用分配内CPU并保留after_lock，不另排纯CPU任务。完成本模型结果记录后再运行第6个B-E-T0-RB。不安排完整验证集采样或新增实验。

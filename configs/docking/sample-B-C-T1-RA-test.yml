@@ -27,7 +27,7 @@ batch_size: 50  # int, 同一实例的50个候选一次组批, 总预算仍为50
 num_candidates: 50  # int, 每实例每协议固定预算, 失败仍进入分母.
 num_steps: 100  # int, 原sample_loop3的完整采样步数.
 device: cuda  # str, 在已获准GPU中执行采样.
-evaluation_workers: 8  # int, 后续evaluate_docking的CPU进程数, 提交时另明确申请8核.
+evaluation_workers: 8  # int, 后续evaluate_docking使用本A800作业已分配CPU, 不另排纯CPU任务.
 # 仅评价阶段读取并上传汇总, 私密API key不进入配置.
 wandb:
   entity: pencounkdual-111

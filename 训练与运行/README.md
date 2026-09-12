@@ -59,13 +59,22 @@ bash 训练与运行/sh/train_docking.sh B-C-T1-RA --resume /storage/penghongen/
 
 每实例每协议50个候选、100步，推理batch_size优先50。中心模型评C0/C5，包络评E，官方评C0/C5/E；三个测试视图共用候选。更大的有效批量确能提速时可用100；当前单实例入口实际最多组批50个候选，单改为100不会增大有效批量。正式采样配置及实际命令在训练结果确定后记录到对应实验日志，不能拿smoke配置代替。
 
-每训练完一个模型，立即用best完成其测试集全部规定协议的采样、CPU评价和结果记录，再启动下一模型。训练期间保留原val/loss验证、调度及best选择；训练后不再提交完整验证集采样或评价。旧validation候选及配置仅保留历史记录。
+每张GPU上，训练完一个模型后立即用best完成其测试集全部规定协议的采样、CPU评价和结果记录，再启动该卡下一模型。用户2026-09-12指定371591继续当前B-C-T1-RA及第3个B-E-T0-RA、第4个B-C-T0-RB，378693负责第5个B-C-T1-RB、第6个B-E-T0-RB，两张A800独立推进。评价可直接使用各GPU作业已分配的16核CPU；现有配置启用8个评价进程，不另申请CPU。训练期间保留原val/loss验证、调度及best选择；训练后不再提交完整验证集采样或评价。旧validation候选及配置仅保留历史记录。
 
-官方对照使用 `sample-official-test.yml`。在获准GPU内按以下短命令生成完整测试候选；所有协议采样完成后，另提交8核CPU评价任务：
+在获准A800的同一冻结release中，先完成采样，再通过同一作业动态命令执行评价，例如：
+
+```bash
+bash 训练与运行/sh/sample_docking.sh B-C-T1-RA-test
+bash 训练与运行/sh/evaluate_docking.sh B-C-T1-RA-test
+```
+
+评价脚本关闭CUDA，使用该作业CPU配额，after_lock保持；两条命令各自保存launch与实际记录。
+
+官方对照使用 `sample-official-test.yml`。在获准GPU内按以下短命令生成完整测试候选；所有协议采样完成后，可在同一作业内运行评价：
 
 ```bash
 bash 训练与运行/sh/sample_docking.sh official-test
-bash 训练与运行/submit_task.sh --sh evaluate_docking.sh --resource cpu --cpus 8 -- official-test
+bash 训练与运行/sh/evaluate_docking.sh official-test
 ```
 
 此处是正式调用方式，是否已经执行以及实际release和job id，以对应运行日志为准。
