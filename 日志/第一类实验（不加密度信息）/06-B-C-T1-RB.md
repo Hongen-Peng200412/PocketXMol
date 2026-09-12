@@ -109,7 +109,7 @@ srun --jobid=378693 --overlap --nodes=1 --ntasks=1 --cpus-per-task=8 env CUDA_VI
 
 完成候选核对后，2026-09-13 master时间02:56:31接入正式命令 `bash 训练与运行/sh/evaluate_docking.sh B-C-T1-RB-test`。配置和源码继续使用同一c59a88a03678 release，不重新生成候选或改动科学设置；378693已分配16核CPU，正式评价使用8个工作进程，入口关闭CUDA，不另申请CPU作业。
 
-控制器第3次执行，实际评价主进程10865，cgroup属于378693，CUDA_VISIBLE_DEVICES为空。launch为 `/home/penghongen/Feedback/PocketXMol/launches/378693/evaluate_B-C-T1-RB_test_job378693_20260913T025524`。启动记录为 `/storage/penghongen/PocketXMol/control/378693/evaluate_B-C-T1-RB_test_start.json`，同目录保存新命令evaluate_B-C-T1-RB_test_run_cmd.sh及此前采样命令evaluate_B-C-T1-RB_test_before_run_cmd.sh；本次out／err起点25867448／8359。after_lock保留，完整评价和汇总仍在执行。
+控制器第3次执行，实际评价主进程10865，cgroup属于378693，CUDA_VISIBLE_DEVICES为空。launch为 `/home/penghongen/Feedback/PocketXMol/launches/378693/evaluate_B-C-T1-RB_test_job378693_20260913T025524`。启动记录为 `/storage/penghongen/PocketXMol/control/378693/evaluate_B-C-T1-RB_test_start.json`，同目录保存新命令evaluate_B-C-T1-RB_test_run_cmd.sh及此前采样命令evaluate_B-C-T1-RB_test_before_run_cmd.sh；本次out／err起点25867448／8359。启动时after_lock保留；完整评价和汇总的完成证据见下文。
 
 ## CPU评价完成与完整性核对
 
