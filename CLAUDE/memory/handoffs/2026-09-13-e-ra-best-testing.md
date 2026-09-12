@@ -1,4 +1,4 @@
-# Handoff: E-RA有效训练完成并开始完整测试
+# Handoff: E-RA完整测试与T1-RB CPU评价
 
 Date: 2026-09-13
 
@@ -7,7 +7,7 @@ Date: 2026-09-13
 继续当前goal，完成既定六个无密度模型的训练、完整测试、CPU评价与报告。不跟踪其他任务或官方模型测评，不增加实验。正确T0-RA和T1-RA的完整报告已经完成。每张卡按“一个模型训练→实际best规定测试→同卡CPU评价→报告→下一模型”执行。
 
 - 371591、gnode09、A800／16CPU：E-RA有效重训已经完成，正在用21600步best执行完整E测试，实际采样进程52145。完成评价报告后进入第4个B-C-T0-RB。
-- 378693、gnode10、A800／16CPU：T1-RB使用17600步best执行C0／C5测试，进程26403。master于2026-09-13 00:47核对C0已完成446实例、22300候选，C5已完成314实例、15700候选，已完成候选均成功。全部推理完成后用同卡8个CPU评价进程汇总，再运行第6个B-E-T0-RB。
+- 378693、gnode10、A800／16CPU：T1-RB的C0／C5各446实例、22300候选已全部生成成功，原采样进程26403已退出。2026-09-13 master 02:56:31启动同卡8进程CPU评价，主进程10865；完整报告完成后再运行第6个B-E-T0-RB。
 - 两项after_lock保留；运行中try_lock不存在。实际锁控制目录是 `/home/penghongen/Feedback/Pocket_Plus/allocations/<job>/`，try_lock位于其父目录。PocketXMol release／launch是科学代码来源，不是旧资源的锁控制根。不得用scancel或删除after_lock结束资源。
 
 ## E-RA训练完成证据
@@ -42,11 +42,13 @@ W&B名称B-E-T0-RA_test，实际评价run id启动后记录。不要把检查点
 
 ## T1-RB接续与待回复事项
 
-T1-RB测试release为 `/home/penghongen/Feedback/PocketXMol/releases/PocketXMol_c59a88a03678/PocketXMol`，训练W&B wmgkgurr，best17600、原C5 val/loss=2.8354082107543945。当前采样启动记录在 `/storage/penghongen/PocketXMol/control/378693/sample_B-C-T1-RB_test_start.json`；out／err起点25698979／8263。全部C0／C5完成后，用同卡CPU执行：
+T1-RB测试release为 `/home/penghongen/Feedback/PocketXMol/releases/PocketXMol_c59a88a03678/PocketXMol`，训练W&B wmgkgurr，best17600、原C5 val/loss=2.8354082107543945。完整候选核对已通过，记录在 `/storage/penghongen/PocketXMol/control/378693/sample_B-C-T1-RB_test_complete_20260913.json`；两协议逐实例耗时合计13279.412／17366.621秒，候选、冻结身份与预算一致，没有失败。当前同卡CPU正式命令：
 
 ```bash
 bash 训练与运行/sh/evaluate_docking.sh B-C-T1-RB-test
 ```
+
+评价控制器第3次执行，CUDA_VISIBLE_DEVICES为空。启动记录为 `/storage/penghongen/PocketXMol/control/378693/evaluate_B-C-T1-RB_test_start.json`，out／err起点25867448／8359；launch为 `/home/penghongen/Feedback/PocketXMol/launches/378693/evaluate_B-C-T1-RB_test_job378693_20260913T025524`。代码和配置继续使用同一c59a88a03678，不另申请CPU，不重复生成候选。
 
 2026-09-12约23:07已向用户提出可选资源问题，尚未收到答复：378693获配GPU出现本作业1个、作业外3个计算进程，部分近期C5实例较对应C0慢约3倍，可能存在并发竞争。没有GPU降频、I/O等待或采样失败证据；未查看其他任务内容或处理其进程。现有推理按原授权继续，不把用户未回复视为允许更改资源。具体数据及提问见[日志06](../../../日志/第一类实验（不加密度信息）/06-B-C-T1-RB.md)。
 
@@ -58,4 +60,4 @@ bash 训练与运行/sh/evaluate_docking.sh B-C-T1-RB-test
 
 Git仍在持续任务实现分支codex/pxm-receptor-baselines，Learn/CUMULATIVE共同基点0412824。仅提交本任务明确文件，保护并忽略外来未提交文件。六模型和报告完成后再整理学习线、核对端点等价并快进Learn/CUMULATIVE；不重新触发已通过的起点审批。
 
-状态索引见[总日志](../../../日志/总日志.md)和[计划执行映射](../../../日志/计划执行映射.md)。本handoff记录训练完成与新测试启动这一有意义事件，不随每次状态探查更新。
+状态索引见[总日志](../../../日志/总日志.md)和[计划执行映射](../../../日志/计划执行映射.md)。本handoff只在训练完成、测试或评价接续时更新，不随每次状态探查更新。

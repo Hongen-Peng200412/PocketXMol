@@ -2,7 +2,7 @@
 
 本文件记录六个无密度模型中的第5个实验。用户2026-09-12新增授权：378693负责第5个B-C-T1-RB、第6个B-E-T0-RB及各自完整测试与评价；371591继续当前B-C-T1-RA及第3、4个实验。每张卡独立按训练、测试、评价与记录的顺序串行推进，评价使用该A800作业已分配的CPU。
 
-依据为 [科学契约](../../想法/方案草稿/9-8-科学契约.md)、[工程细节](../../想法/方案草稿/9-8-工程与实现细节.md) 和 [边界清单](../../想法/方案草稿/9-8-边界与核查清单.md)。训练已在22400次优化器更新后因第三次实际学习率下降正常停止；原C5 val/loss最低检查点为17600步，损失2.835408，已在同卡启动完整C0/C5测试。
+依据为 [科学契约](../../想法/方案草稿/9-8-科学契约.md)、[工程细节](../../想法/方案草稿/9-8-工程与实现细节.md) 和 [边界清单](../../想法/方案草稿/9-8-边界与核查清单.md)。训练已在22400次优化器更新后因第三次实际学习率下降正常停止；原C5 val/loss最低检查点为17600步，损失2.835408。完整C0／C5各446实例、22300候选生成成功，已在同卡启动CPU评价。
 
 ## 固定训练条件
 
@@ -66,7 +66,7 @@ bash 训练与运行/sh/sample_docking.sh B-C-T1-RB-test
 bash 训练与运行/sh/evaluate_docking.sh B-C-T1-RB-test
 ```
 
-评价使用378693已分配CPU中的8个工作进程，W&B为pencounkdual-111/PocketXmol_raw，名称B-C-T1-RB_test；实际run id在评价启动后记录。当前只完成训练与best核对，尚无本模型完整测试结果。
+评价使用378693已分配CPU中的8个工作进程，W&B为pencounkdual-111/PocketXmol_raw，名称B-C-T1-RB_test；实际run id在评价汇总连接W&B后记录。候选生成已经完成，完整姿态评价结果尚未产生。
 
 主代理按配置读取顺序及注释规范完成两遍自查，使用本地项目环境的YAML解析核对：相对已运行的T1-RA测试配置，仅替换模型名、RB分支、实际best、对应训练配置和独立输出／W&B名称；其余字段完全一致。两轮独立配置审查均通过，没有修改采样器、评价器或科学预算。
 
@@ -86,6 +86,31 @@ bash 训练与运行/sh/evaluate_docking.sh B-C-T1-RB-test
 
 gnode10时间23:05的只读核查确认：378693分配的是GPU IDX:0，UUID为GPU-0e253751-cce3-c71d-c2df-a222fec3759b；本作业仅有采样进程26403使用它，同一GPU另有3个作业外计算进程。只核对同卡进程数量和是否属于378693，没有追踪这些进程的任务内容，也没有对它们执行操作。观测时GPU利用率100%、P0、SM频率1410 MHz、温度69°C，降频原因掩码为0；本进程3秒内使用3.02秒CPU，I/O计数不变，没有磁盘等待。并发使用可能影响耗时，现有观测没有隔离其因果贡献。已向用户报告资源情况并询问是否继续当前推理或由用户安排资源调整；现有推理继续按已授权的预算运行，不更改科学配置、停止进程或操作其他任务。
 
+## 全部候选生成完成与核对
+
+2026-09-13核对时，控制器第2次执行已成功、主进程26403已退出，try_lock恢复且after_lock保留。C0与C5均完成446个实例、22300个候选，没有生成失败；本次采样日志区间没有Traceback、CUDA OOM或reduce_batch。
+
+同一378693的8核CPU产物核对通过：实际配置与test/run.json一致，全部实例身份、object_key、视图、冻结种子和C5向量与test.jsonl相同；每实例50候选、100步、一批50、100次已完成批量forward。候选身份、编号、有限轨迹置信度、SDF编号和姿态／置信度文件存在性均通过核对。没有修改冻结清单或补生成候选。
+
+| 协议 | 实例／候选 | 实例耗时合计（秒） | 推理耗时合计（秒） | 已完成批量forward | 峰值分配显存（字节） |
+|---|---|---:|---:|---:|---:|
+| C0 | 446／22300 | 13279.412 | 13208.046 | 44600 | 3234062848 |
+| C5 | 446／22300 | 17366.621 | 17298.558 | 44600 | 3227094528 |
+
+逐实例耗时合计约8小时30分46秒，不含模型启动和协议切换等开销。C5期间的同卡并发观测见上一节；不能将两协议耗时差全部归因于T1公式或口袋变化。
+
+完成证据为 `/storage/penghongen/PocketXMol/control/378693/sample_B-C-T1-RB_test_complete_20260913.json`。只读核对脚本为 `/storage/penghongen/tmp/pocketxmol_sampling_20260913/inspect_t1_rb_sampling.py`，本地副本为 `tmp/pxm-20260913/inspect_t1_rb_sampling.py`。以下是产物核对命令，不是正式采样或评价命令：
+
+```bash
+srun --jobid=378693 --overlap --nodes=1 --ntasks=1 --cpus-per-task=8 env CUDA_VISIBLE_DEVICES= OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 PYTHONDONTWRITEBYTECODE=1 /storage/penghongen/PocketXMol/runtime/venv/bin/python -B /storage/penghongen/tmp/pocketxmol_sampling_20260913/inspect_t1_rb_sampling.py
+```
+
+## 同一作业内的CPU评价启动
+
+完成候选核对后，2026-09-13 master时间02:56:31接入正式命令 `bash 训练与运行/sh/evaluate_docking.sh B-C-T1-RB-test`。配置和源码继续使用同一c59a88a03678 release，不重新生成候选或改动科学设置；378693已分配16核CPU，正式评价使用8个工作进程，入口关闭CUDA，不另申请CPU作业。
+
+控制器第3次执行，实际评价主进程10865，cgroup属于378693，CUDA_VISIBLE_DEVICES为空。launch为 `/home/penghongen/Feedback/PocketXMol/launches/378693/evaluate_B-C-T1-RB_test_job378693_20260913T025524`。启动记录为 `/storage/penghongen/PocketXMol/control/378693/evaluate_B-C-T1-RB_test_start.json`，同目录保存新命令evaluate_B-C-T1-RB_test_run_cmd.sh及此前采样命令evaluate_B-C-T1-RB_test_before_run_cmd.sh；本次out／err起点25867448／8359。after_lock保留，完整评价和汇总仍在执行。
+
 ## 计划与实现差异
 
-未发现本次T1-RB训练与批准契约的实质差异；完整测试、CPU评价及报告仍未完成。
+未发现本次T1-RB训练与批准契约的实质差异；训练与完整候选生成已完成，CPU评价及最终报告仍未完成。
