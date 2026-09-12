@@ -2,6 +2,8 @@
 
 本文件记录六个无密度模型中的第5个实验。用户2026-09-12新增授权：378693负责第5个B-C-T1-RB、第6个B-E-T0-RB及各自完整测试与评价；371591继续当前B-C-T1-RA及第3、4个实验。每张卡独立按训练、测试、评价与记录的顺序串行推进，评价使用该A800作业已分配的CPU。
 
+依据为 [科学契约](../../想法/方案草稿/9-8-科学契约.md)、[工程细节](../../想法/方案草稿/9-8-工程与实现细节.md) 和 [边界清单](../../想法/方案草稿/9-8-边界与核查清单.md)。训练已在22400次优化器更新后因第三次实际学习率下降正常停止；原C5 val/loss最低检查点为17600步，损失2.835408，完整C0/C5测试正在接入。
+
 ## 固定训练条件
 
 配置为 `configs/docking/B-C-T1-RB.yml`，来源为已审查的ec06dbd运行副本 `/home/penghongen/Feedback/PocketXMol/releases/PocketXMol_fa0d957b2d3f/PocketXMol`。RB分别编码蛋白与核酸，初始化后把蛋白编码器参数复制给核酸编码器；保留原主体模型、loss、置信度头及训练目标。
@@ -39,3 +41,35 @@ bash 训练与运行/sh/train_docking.sh B-C-T1-RB
 该RB／T1代码及72×1资源配置已经完成两遍主代理自查、两轮全面独立审查和真实非测试样本GPU验收，见 [共同准备日志](00-实现与共同数据准备.md)；T0纠偏之后T1机制保持，见 [中心纠偏日志](02-T0中心契约修复与重训.md)。本次仅接入新增授权资源，未修改生产函数或科学配置，不重复模型试训。
 
 训练正常结束后在Slurm内核实停止原因和实际best，再建立明确检查点的完整C0／C5 test配置，batch50、每实例50候选100步。推理完成后在同一378693执行既有evaluate_docking.sh，使用分配内CPU并保留after_lock，不另排纯CPU任务。完成本模型结果记录后再运行第6个B-E-T0-RB。不安排完整验证集采样或新增实验。
+
+## 训练完成与best核对
+
+正式训练输出记录updates=22400、stop_reason=plateau及Training finished。2026-09-12节点时间17:16:22，在378693.0的8核CPU内读取last与best，确认下降次数3、最后验证步22400、28个定期检查点和last均保留；W&B id仍为wmgkgurr。调度器和优化器末次学习率均为8e-7，第三次下降后没有再更新参数。best为 `checkpoints/step=17600.ckpt`，原C5 val/loss=2.8354082107543945，是全部定期损失的最小值；best包含1236个model参数键，所有参数有限。
+
+只读核对脚本为 `/storage/penghongen/tmp/pocketxmol_checkpoint_20260912/inspect_t1_rb.py`，训练摘要保存为 `/storage/penghongen/PocketXMol/training/B-C-T1-RB/training_summary_20260912.json`，其中checkpoint_losses保存全部28个检查点及损失。以下为产物核对命令，不是正式训练或推理命令：
+
+```bash
+srun --jobid=378693 --overlap --nodes=1 --ntasks=1 --cpus-per-task=8 env CUDA_VISIBLE_DEVICES= OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 PYTHONDONTWRITEBYTECODE=1 /storage/penghongen/PocketXMol/runtime/venv/bin/python -B /storage/penghongen/tmp/pocketxmol_checkpoint_20260912/inspect_t1_rb.py
+```
+
+## 完整测试配置与正式命令
+
+`configs/docking/sample-B-C-T1-RB-test.yml`明确读取本次保存的RB训练配置及17600步best。输入为446个测试实例的C0、冻结C5；两种条件均启用T1后续中心相关重新加噪，首步纯高斯。每实例每协议50候选、100步，batch50；输出为 `/storage/penghongen/PocketXMol/sampling/B-C-T1-RB/test/`，三个视图共用候选池。
+
+正式采样命令如下；完成全部C0/C5推理后才执行下一条CPU评价命令，二者分别登记launch和进程。
+
+```bash
+bash 训练与运行/sh/sample_docking.sh B-C-T1-RB-test
+```
+
+```bash
+bash 训练与运行/sh/evaluate_docking.sh B-C-T1-RB-test
+```
+
+评价使用378693已分配CPU中的8个工作进程，W&B为pencounkdual-111/PocketXmol_raw，名称B-C-T1-RB_test；实际run id在评价启动后记录。当前只完成训练与best核对，尚无本模型完整测试结果。
+
+主代理按配置读取顺序及注释规范完成两遍自查，使用本地项目环境的YAML解析核对：相对已运行的T1-RA测试配置，仅替换模型名、RB分支、实际best、对应训练配置和独立输出／W&B名称；其余字段完全一致。两轮独立配置审查均通过，没有修改采样器、评价器或科学预算。
+
+## 计划与实现差异
+
+未发现本次T1-RB训练与批准契约的实质差异；完整测试、CPU评价及报告仍未完成。
