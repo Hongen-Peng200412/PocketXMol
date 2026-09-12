@@ -143,6 +143,16 @@ bash 训练与运行/sh/evaluate_docking.sh B-E-T0-RA-test
 
 主代理按实际配置消费顺序及中文注释规范完成两遍自查，YAML解析核对正式E配置与预期字段完全一致；两轮独立配置核查均通过。训练保存的YAML由save_config重新序列化，因此最初采用字节比较的来源检查失败；随后使用项目环境解析确认保存配置与原release配置的全部字段完全一致。诊断时master基础Python缺少PyYAML，改用项目既有venv即可，未安装依赖或改变训练内容。输出根已确认不存在，正式测试不覆盖已有产物。
 
+## E测试正式启动
+
+2026-09-13 master时间00:48:27，在确认训练进程已退出、try_lock与after_lock均存在、kill_lock不存在后，接入上述正式E测试命令。控制器第19次执行，实际采样主进程52145，cgroup确认属于371591；after_lock保留，没有使用kill_lock。
+
+实际release为 `/home/penghongen/Feedback/PocketXMol/releases/PocketXMol_1ce7d5426c18/PocketXMol`，以已修复的43742cdf8166为基线，仅加入aac0b89中的明确测试配置及本实验记录。Dataset与修复后训练release字节一致；没有从共享工作区复制其他任务文件。装配临时目录为 `/storage/penghongen/tmp/pocketxmol_e_ra_test_20260913/PocketXMol`。部署时配置SHA256为58852c3a24cf44ad1df884876277335ccfcc6fd1c7f695cf6632e3f12db2eba8。
+
+本次launch为 `/home/penghongen/Feedback/PocketXMol/launches/371591/sample_B-E-T0-RA_test_job371591_20260913T004527`。启动记录为 `/storage/penghongen/PocketXMol/control/371591/sample_B-E-T0-RA_test_start.json`；同目录保存sample_B-E-T0-RA_test_run_cmd.sh和修改前的sample_B-E-T0-RA_test_before_run_cmd.sh。累计out／err起点为113763414／282077。节点时钟约慢3分钟，不混用节点与master时间估算耗时。
+
+实际test/run.json已核对RA、E、T0关闭新增平移、21600步best、batch50和50×100预算。首两个实例11jb/0、11jb/1各完成50／50候选、100次批量forward，耗时32.86／32.02秒，峰值张量显存约2.18 GB；未见NaN、Traceback、OOM或reduce_batch。这是正式推理启动检查，姿态质量仍由全量推理后的CPU评价确定。
+
 ## 计划与实现差异
 
-已发现并经用户确认处理的实现缺口：部分冻结训练实例的E受体为空，原代码直接求均值并污染训练；此前两步GPU验收没有覆盖这些实例。当前已按批准口径实施最小修复，两遍自查、两轮三类独立审查、CPU回归及真实训练输入GPU验收已通过。E有效重训及best选择已完成，完整E测试与评价仍未完成；异常旧运行不计作有效实验。
+已发现并经用户确认处理的实现缺口：部分冻结训练实例的E受体为空，原代码直接求均值并污染训练；此前两步GPU验收没有覆盖这些实例。当前已按批准口径实施最小修复，两遍自查、两轮三类独立审查、CPU回归及真实训练输入GPU验收已通过。E有效重训及best选择已完成，完整E测试已启动，测试与评价仍未完成；异常旧运行不计作有效实验。
