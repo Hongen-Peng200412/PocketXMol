@@ -2,7 +2,7 @@
 
 本文件记录六个无密度模型中的第3个实验，依据 [科学契约](../../想法/方案草稿/9-8-科学契约.md)、[工程细节](../../想法/方案草稿/9-8-工程与实现细节.md) 和 [边界清单](../../想法/方案草稿/9-8-边界与核查清单.md)。按用户授权，在371591完成 [B-C-T1-RA测试报告](05-B-C-T1-RA推理与评价.md) 后，使用同一A800运行本模型训练、E测试、CPU评价与记录，再进入第4个B-C-T0-RB。
 
-首次正式训练因空E口袋导致NaN而停止，异常产物全部保留。用户已接受空E处理建议，最小修复及必要审查验收通过；在371591从官方权重重新训练的独立运行B-E-T0-RA-nonemptyE已完成，W&B为lukfzmf3。重训在26400次优化器更新后第三次学习率下降时正常停止，best为21600步、原E val/loss=1.629248，完整E测试候选已全部生成，同卡CPU评价正在执行；after_lock保留。
+首次正式训练因空E口袋导致NaN而停止，异常产物全部保留。用户接受空E处理建议后，最小修复及必要审查验收通过；独立重训B-E-T0-RA-nonemptyE于26400步第三次学习率下降时正常停止，best为21600步、原E val/loss=1.629248，训练W&B为lukfzmf3。完整E测试446实例、22300候选的生成和评价全部完成，无候选错误；ALL按实例等权Top-1为65.47%，[W&B评价ajpum4py](https://wandb.ai/pencounkdual-111/PocketXmol_raw/runs/ajpum4py)已上传。资源、有效产物和异常历史均保留。
 
 ## 固定训练条件
 
@@ -139,7 +139,7 @@ bash 训练与运行/sh/sample_docking.sh B-E-T0-RA-test
 bash 训练与运行/sh/evaluate_docking.sh B-E-T0-RA-test
 ```
 
-评价W&B使用pencounkdual-111/PocketXmol_raw，名称B-E-T0-RA_test，实际run id在评价启动后记录。
+评价W&B使用pencounkdual-111/PocketXmol_raw，名称B-E-T0-RA_test，实际run id为ajpum4py，已在线完成。
 
 主代理按实际配置消费顺序及中文注释规范完成两遍自查，YAML解析核对正式E配置与预期字段完全一致；两轮独立配置核查均通过。训练保存的YAML由save_config重新序列化，因此最初采用字节比较的来源检查失败；随后使用项目环境解析确认保存配置与原release配置的全部字段完全一致。诊断时master基础Python缺少PyYAML，改用项目既有venv即可，未安装依赖或改变训练内容。输出根已确认不存在，正式测试不覆盖已有产物。
 
@@ -167,8 +167,83 @@ srun --jobid=371591 --overlap --nodes=1 --ntasks=1 --cpus-per-task=8 env CUDA_VI
 
 2026-09-13 master时间05:02:17接入正式评价命令 `bash 训练与运行/sh/evaluate_docking.sh B-E-T0-RA-test`，代码和配置仍为同一1ce7d5426c18 release。控制器第20次执行，主进程37521及8个工作进程37595至37602均在371591内，CUDA_VISIBLE_DEVICES为空；利用已有16核CPU中的8个工作进程，没有另申请CPU作业。
 
-评价launch为 `/home/penghongen/Feedback/PocketXMol/launches/371591/evaluate_B-E-T0-RA_test_job371591_20260913T045916`，启动记录为 `/storage/penghongen/PocketXMol/control/371591/evaluate_B-E-T0-RA_test_start.json`。同目录保存evaluate_B-E-T0-RA_test_run_cmd.sh及修改前的evaluate_B-E-T0-RA_test_before_run_cmd.sh。累计out／err起点113848096／282173，after_lock保留。完整评价和报告尚待完成。
+评价launch为 `/home/penghongen/Feedback/PocketXMol/launches/371591/evaluate_B-E-T0-RA_test_job371591_20260913T045916`，启动记录为 `/storage/penghongen/PocketXMol/control/371591/evaluate_B-E-T0-RA_test_start.json`。同目录保存evaluate_B-E-T0-RA_test_run_cmd.sh及修改前的evaluate_B-E-T0-RA_test_before_run_cmd.sh。累计out／err起点113848096／282173，启动时after_lock保留；完整评价和报告的结果见下文。
+
+## CPU评价完成与核对
+
+控制器第20次执行成功，主进程37521退出，try_lock恢复，after_lock保留，kill_lock不存在。全部446实例、22300候选的RMSD和self-ranking均有限，资产错误、候选错误与按原子编号匹配的RMSD回退均为0。W&B ajpum4py状态为online_completed、error为空。
+
+已在371591自带CPU中逐一核对assessment.json与协议occurrences.json、冻结实例身份和视图、每实例50条candidate_metrics及原候选编号，Top-1排序与Top-1／Top-5／oracle汇总均一致。评价逐实例耗时合计23168.266秒，是8进程并行时各实例耗时之和，不等于墙钟时间；本次没有单独记录精确评价墙钟时长。
+
+完成证据为 `/storage/penghongen/PocketXMol/control/371591/evaluate_B-E-T0-RA_test_complete_20260913.json`。核对脚本本地副本为 `tmp/pxm-20260913/inspect_e_ra_evaluation.py`；以下仅核对已有评价文件，不重新计算RMSD：
+
+```bash
+srun --jobid=371591 --overlap --nodes=1 --ntasks=1 --cpus-per-task=8 env CUDA_VISIBLE_DEVICES= OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 PYTHONDONTWRITEBYTECODE=1 /storage/penghongen/PocketXMol/runtime/venv/bin/python -B /storage/penghongen/tmp/pocketxmol_evaluation_20260913/inspect_e_ra_evaluation.py
+```
+
+## E测试结果
+
+RMSD单位为Å，使用原CalcRMS，不移动或刚体对齐预测姿态，成功阈值严格小于2 Å。Top-1取原self-ranking最高的候选，Top-5取评分最高5个候选中的最低RMSD，oracle取全部50个候选中的最低RMSD；oracle反映候选池上限，不用于选择实际输出。三个视图复用同一候选池，实例集合重叠，不相加计数。
+
+下表按实例等权，括号内为成功实例数。ALL、CAP10、HF10_TO5分别包含77、67、65个PDB。
+
+| 视图 | 实例数 | Top-1成功率 | Top-5成功率 | Oracle成功率 | Top-1平均RMSD |
+|---|---:|---:|---:|---:|---:|
+| ALL | 446 | 65.47%（292） | 80.94%（361） | 90.36%（403） | 2.604 |
+| CAP10 | 272 | 57.72%（157） | 73.90%（201） | 86.76%（236） | 2.945 |
+| HF10_TO5 | 227 | 58.15%（132） | 73.57%（167） | 87.22%（198） | 2.938 |
+
+PDB等权先在每个PDB内平均实例成功指标，再对该视图的PDB平均。
+
+| 视图 | Top-1成功率 | Top-5成功率 | Oracle成功率 |
+|---|---:|---:|---:|
+| ALL | 64.98% | 79.59% | 90.96% |
+| CAP10 | 63.77% | 78.24% | 89.68% |
+| HF10_TO5 | 63.29% | 77.62% | 89.50% |
+
+### 评分与姿态误差的对应
+
+Spearman为每个实例的50个候选中self-ranking与负RMSD的相关系数，再按实例求均值或中位数。Pose AUC为逐实例的ROC曲线下面积，以RMSD<2 Å为正类；只有一种类别时AUC无定义，但该实例仍留在成功率分母中。所有Spearman均有效，AUC缺失均因单一类别。
+
+| 视图 | Spearman均值 | Spearman中位数 | Pose AUC均值 | AUC有效实例／全部实例 |
+|---|---:|---:|---:|---:|
+| ALL | 0.2466 | 0.2448 | 0.6857 | 362／446 |
+| CAP10 | 0.2562 | 0.2443 | 0.7009 | 215／272 |
+| HF10_TO5 | 0.2672 | 0.2649 | 0.7136 | 182／227 |
+
+ALL中111个实例的候选池包含成功姿态，但原self-ranking的Top-1没有选中。本次记录原评分的实际表现，未增加评分器或改变候选池。
+
+### 对接结果与口袋核酸占比
+
+核酸占比为E口袋中标准RNA／DNA重原子数除以标准蛋白与RNA／DNA重原子总数。测试含439个纯蛋白口袋、7个含核酸口袋，后者均在三个测试视图中。
+
+| 口袋分组 | 实例数 | Top-1成功数 | Top-5成功数 | Oracle成功数 |
+|---|---:|---:|---:|---:|
+| 核酸占比为0 | 439 | 287 | 355 | 396 |
+| 核酸占比大于0 | 7 | 5 | 6 | 7 |
+
+全部含核酸实例的occurrence编号均为0，逐实例结果如下，RMSD单位Å。
+
+| PDB | 核酸占比 | Top-1 RMSD | Top-5 RMSD | Oracle RMSD |
+|---|---:|---:|---:|---:|
+| 9q16 | 26.41% | 1.867 | 1.014 | 0.757 |
+| 9r3d | 5.21% | 6.865 | 1.680 | 1.467 |
+| 9shy | 24.58% | 1.116 | 1.116 | 1.057 |
+| 9v7o | 100.00% | 3.144 | 2.001 | 1.596 |
+| 9z2n | 26.12% | 0.819 | 0.693 | 0.693 |
+| 9z2u | 14.35% | 0.772 | 0.772 | 0.772 |
+| 9z3d | 13.25% | 0.883 | 0.764 | 0.715 |
+
+纯RNA实例9v7o/0完成全部50候选和评价并计入正式分母；仅oracle达到严格小于2 Å，Top-5仍高于阈值。7个含核酸实例均有成功候选，但样本少，不能据此确定核酸占比与成功率的稳定关系。当前E结果使用包络输入，不能与中心模型不同条件的val/loss直接比较，也不据本次测试改变已批准的模型或评价矩阵。
+
+## 结果保存与限制
+
+正式根 `/storage/penghongen/PocketXMol/sampling/B-E-T0-RA-nonemptyE/test/` 保存原候选、姿态、逐候选candidate_metrics.json、逐实例assessment.json，以及E/occurrences.json、E/summary.json和test/summary.json。W&B ajpum4py已上传规定汇总。
+
+本地整理副本 `tmp/pxm-20260913/B-E-T0-RA-test-results.json` 来自服务器汇总和全部逐实例文件，正式产物仍以服务器为准。成功数、实例及PDB等权成功率、RMSD均值、Spearman／AUC与核酸分组均已从副本核对；脚本 `tmp/pxm-20260913/report_e_ra.py` 输出REPORT_AGGREGATE_AUDIT_PASS。这些检查没有重新采样或评价。
+
+评价stderr有323条既有RDKit allene立体化学不支持提示，无Traceback，不代表323个独立异常实例。该类立体化学的区分受现有RDKit支持范围限制；本次不改图、不改变分母或原评价规则，所有RMSD均未使用按原子编号匹配的回退。
 
 ## 计划与实现差异
 
-已发现并经用户确认处理的实现缺口：部分冻结训练实例的E受体为空，原代码直接求均值并污染训练；此前两步GPU验收没有覆盖这些实例。当前已按批准口径实施最小修复，两遍自查、两轮三类独立审查、CPU回归及真实训练输入GPU验收已通过。E有效重训及完整候选生成已经完成，同卡CPU评价已启动；异常旧运行不计作有效实验。
+已发现并经用户确认的空E缺口已完成最小修复、两遍自查、两轮三类独立审查、CPU回归及真实训练输入GPU验收。有效重训、完整E测试、同卡CPU评价和报告均已完成；异常旧运行不计作有效实验，全部历史保留。371591继续按既定次序运行第4个B-C-T0-RB。
