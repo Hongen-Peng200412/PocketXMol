@@ -66,6 +66,36 @@ def test_real_loop_and_resume_from_completed_occurrence(prepared_data, branch, m
     assert (directory / 'poses.sdf').read_bytes() == before
 
 
+@pytest.mark.parametrize('branch', ['RA', 'RB'])
+def test_empty_envelope_sampling_keeps_failure_denominator(prepared_data, branch):
+    """构造验证资产模拟正式E输入失败, 不调用forward且完整保存候选失败与评价分母."""
+    _, dataset, featurizer, config, _ = sampling_context(prepared_data, branch, 'validation')
+    dataset.config.pocket_mode = 'envelope'
+    dataset.protocol = 'E'
+    receptor_path = Path(prepared_data.root) / 'parse/val_demo/receptor_tokens.npz'
+    with np.load(receptor_path) as archive:
+        receptor = {key: archive[key] for key in archive.files}
+    receptor['coords'] += 1000
+    np.savez_compressed(receptor_path, **receptor)
+    read_receptor.cache_clear()
+    frozen_manifest = (Path(prepared_data.manifest_root) / 'validation.jsonl').read_bytes()
+    result = sample_occurrence(dataset, 0, None, None, featurizer, config, 'E')
+    assert result['complete'] and result['status'] == 'failed'
+    assert result['success_count'] == 0 and result['failed_count'] == config.num_candidates
+    assert result['model_forward_attempt_count'] == 0
+    directory = Path(config.output_root) / 'validation/E/val_demo/0'
+    candidates = json.loads((directory / 'candidates.json').read_text())
+    assert len(candidates) == config.num_candidates
+    assert all(item['stage'] == 'preprocess' and 'empty_envelope_pocket: val_demo/0' in item['error'] for item in candidates)
+    assessment = evaluate_occurrence((config, 'E', dataset.records[0]))
+    summary = summarize_occurrences([assessment])
+    assert assessment['generated_count'] == assessment['rmsd_count'] == 0
+    assert assessment['candidate_error_counts'] == {'preprocess': config.num_candidates}
+    assert summary['occurrence_count'] == 1 and summary['candidate_count'] == config.num_candidates
+    assert summary['occurrence_equal']['top1_success_rate'] == 0
+    assert (Path(prepared_data.manifest_root) / 'validation.jsonl').read_bytes() == frozen_manifest
+
+
 def test_official_pure_rna_attempt_is_recorded(prepared_data):
     receptor_path = Path(prepared_data.root) / 'parse/val_demo/receptor_tokens.npz'
     with np.load(receptor_path) as archive:

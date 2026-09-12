@@ -13,7 +13,7 @@ from torch_geometric.loader import DataLoader
 from torch_geometric.transforms import Compose
 
 from docking.assets import BOND_TYPES, CHIRAL_TYPES, read_receptor, read_template, select_pocket
-from docking.dataset import OccurrenceDataset
+from docking.dataset import EmptyEnvelopePocketError, OccurrenceDataset
 from docking.preparation import prepare, prepare_object, prepare_pdb, read_jsonl, write_jsonl
 from utils.transforms import ConfTransform, FeaturizeMol
 
@@ -176,6 +176,52 @@ def test_original_transforms_and_worker_coverage(prepared_data, branch):
     loader = DataLoader(dataset, batch_size=4, num_workers=2, follow_batch=featurizer.follow_batch + ['pocket_pos'], exclude_keys=featurizer.exclude_keys + task.exclude_keys)
     visited = [data_id for batch in loader for data_id in batch.data_id]
     assert len(visited) == len(set(visited)) == 27
+
+
+@pytest.mark.parametrize('branch', ['RA', 'RB'])
+@pytest.mark.parametrize('split,shuffle', [('train', True), ('validation', False)])
+def test_empty_envelope_is_skipped_before_training_or_validation_batch(prepared_data, branch, split, shuffle):
+    """空E跳过后训练batch仍完整, 验证有限遍历其余实例, 原点与冻结清单保持正确."""
+    config = EasyDict(deepcopy(dict(prepared_data)))
+    config.update(pocket_mode='envelope', knn=32)
+    manifest = Path(config.manifest_root) / f'{split}.jsonl'
+    records = read_jsonl(manifest)
+    coordinate_path = Path(config.root) / 'parse' / records[0]['pdb_id'] / 'ligand_coords.npz'
+    with np.load(coordinate_path) as archive:
+        coords = {key: archive[key] for key in archive.files}
+    empty_id = max(int(key.split('_')[1]) for key in coords if key.startswith('coords_')) + 1
+    coords[f'coords_{empty_id}'] = coords['coords_0'] + 1000
+    coords[f'present_{empty_id}'] = np.ones(len(coords['coords_0']), dtype=bool)
+    np.savez_compressed(coordinate_path, **coords)
+    records.append(dict(records[0], candidate_id=empty_id))
+    write_jsonl(manifest, records)
+    frozen_manifest = manifest.read_bytes()
+    featurizer = FeaturizeMol(EasyDict(use_mask_node=True, use_mask_edge=True, chem=dict(atomic_numbers=[6, 7, 8, 9, 15, 16, 17, 5, 35, 53, 34], mol_bond_types=[1, 2, 3, 4])))
+    task = ConfTransform(EasyDict(settings=dict(free=1.0), free_no_geometry=True), mode='test')
+    dataset = OccurrenceDataset(config, split, Compose([featurizer, task]), branch, 'E', shuffle)
+    with pytest.raises(EmptyEnvelopePocketError, match=f'{records[0]["pdb_id"]}/{empty_id}'):
+        dataset[1]
+    dataset.rng = np.random.default_rng(0)  # 首次抽中空实例, 必须跳过后继续组批.
+    loader = DataLoader(dataset, batch_size=4, num_workers=0, follow_batch=featurizer.follow_batch + ['pocket_pos'], exclude_keys=featurizer.exclude_keys + task.exclude_keys)
+    with pytest.warns(RuntimeWarning, match='empty_envelope_pocket'):
+        batches = [next(iter(loader))] if shuffle else list(loader)
+    assert len(batches) == 1
+    batch = batches[0]
+    assert batch.num_graphs == (4 if shuffle else 1)
+    assert set(batch.candidate_id.tolist()) == {0}
+    assert torch.isfinite(batch.node_pos).all() and torch.isfinite(batch.pocket_center).all()
+    receptor = read_receptor(Path(config.root) / 'parse' / records[0]['pdb_id'] / 'receptor_tokens.npz')
+    expected_origin = torch.from_numpy(receptor['coords'].mean(axis=0))
+    torch.testing.assert_close(batch.pocket_center, expected_origin[None].expand(batch.num_graphs, -1))
+    assert manifest.read_bytes() == frozen_manifest and len(dataset.records) == 2
+
+    # 相同配体实例在C0下也选得空口袋, 但给定中心仍提供有限原点; E专属处理不改变该行为.
+    center_config = deepcopy(config)
+    center_config.pocket_mode = 'center'
+    center_dataset = OccurrenceDataset(center_config, split, Compose([featurizer, task]), branch, 'C0', False)
+    sample = center_dataset[1]
+    assert len(sample.pocket_pos) == 0 and torch.isfinite(sample.node_pos).all()
+    torch.testing.assert_close(sample.pocket_center[0], torch.from_numpy(coords[f'coords_{empty_id}'].mean(axis=0)))
 
 
 def test_bad_valence_is_rejected_without_repair(tmp_path):

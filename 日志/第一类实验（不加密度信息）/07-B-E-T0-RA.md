@@ -2,17 +2,17 @@
 
 本文件记录六个无密度模型中的第3个实验，依据 [科学契约](../../想法/方案草稿/9-8-科学契约.md)、[工程细节](../../想法/方案草稿/9-8-工程与实现细节.md) 和 [边界清单](../../想法/方案草稿/9-8-边界与核查清单.md)。按用户授权，在371591完成 [B-C-T1-RA测试报告](05-B-C-T1-RA推理与评价.md) 后，使用同一A800运行本模型训练、E测试、CPU评价与记录，再进入第4个B-C-T0-RB。
 
-当前首次正式训练因空E口袋导致NaN而停止，尚无有效检查点或正式E测试结果。已保留异常运行的源码、配置、W&B及日志，371591的after_lock继续保留；正在只读统计训练与验证中的具体空口袋实例，处理口径已提交用户决定，见下文。
+当前首次正式训练因空E口袋导致NaN而停止，尚无有效检查点或正式E测试结果。已保留异常运行的源码、配置、W&B及日志，371591的after_lock继续保留；用户已接受空E处理建议，正在完成最小修复及必要验收，见下文。
 
 ## 固定训练条件
 
-配置为 `configs/docking/B-E-T0-RA.yml`，源码和配置均复用已审查的ec06dbd运行副本 `/home/penghongen/Feedback/PocketXMol/releases/PocketXMol_fa0d957b2d3f/PocketXMol`。本次没有修改生产函数、训练配置或共同资产。
+配置为 `configs/docking/B-E-T0-RA.yml`，科学参数和共同资产保持不变。首次异常训练使用ec06dbd运行副本 `/home/penghongen/Feedback/PocketXMol/releases/PocketXMol_fa0d957b2d3f/PocketXMol`；重新训练使用该基线加下文经过审查验收的空E最小修复。
 
 包络口袋选择残基重原子质量中心到任一完整配体重原子距离严格小于10 Å的完整受体残基；模型原点为实际输入受体重原子世界坐标的算术均值，配体与受体共同减去该原点。RA在联合受体图中共享编码器，保留核酸特征投影；center_translation=false，始终使用原dock高斯噪声链。训练与原val/loss均使用E条件，不抽新增中心偏移。
 
 从规定官方pocketxmol.ckpt只加载模型参数，不传--resume；独立建立AdamW及调度状态，保留原loss、置信度头和训练目标。单卡batch_size=72、累积1、bf16、15个数据worker，全局名义批量72。初始lr=1e-4、warmup=0，每800次优化器更新计算原val/loss；Plateau采用相对阈值1%、patience=5、factor=0.2，第三次实际下降立即停止，最多40000步。best取最低原验证损失，保留last及全部定期检查点。
 
-## 正式命令与产物
+## 首次运行的命令与产物（已停止）
 
 正式训练在上述冻结release中执行：
 
@@ -52,10 +52,55 @@ B-C-T1-RA完整报告和本次运行登记已由2a1bed8提交。接入前，核�
 srun --jobid=371591 --overlap --nodes=1 --ntasks=1 --cpus-per-task=8 env CUDA_VISIBLE_DEVICES= OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 PYTHONDONTWRITEBYTECODE=1 /storage/penghongen/PocketXMol/runtime/venv/bin/python -B /storage/penghongen/tmp/pocketxmol_empty_envelope_20260912/audit_empty_envelope.py
 ```
 
-诊断输出为同目录audit.log与empty_envelope_audit.json；后者保存完整空口袋身份、标准受体数量、最小COM距离及C0／冻结C5选袋数量。首批真实实例包含6j3z/11、6j3z/22，其最近标准残基COM分别距配体12.726、16.348 Å，确实不满足E条件；原始受体最近原子距离分别2.610、2.714 Å，近处原子被标准残基过滤排除。完整计数待扫描完成后记录。
+诊断输出为同目录audit.log与empty_envelope_audit.json；后者保存完整空口袋身份、标准受体数量、最小COM距离及C0／冻结C5选袋数量。本地完整副本为 `tmp/pxm-20260912/empty_envelope_audit.json`。Slurm步骤371591.2于节点时间16:47:13至17:05:47扫描65290个训练实例与781个验证实例，共8092个PDB；空E为训练46个、验证0个，E有效训练实例数为65244，验证仍为781。没有读取测试集。
 
-已向用户提出处理口径：只在E的训练及val/loss流跳过空口袋并记录具体实例，冻结文件保持不变；完整测试若遇空口袋则记录输入构造失败并保留分母；随后从官方权重在独立目录重新训练E，保留已有中心模型结果。当前尚待答复，没有修改Dataset、阈值、残基范围、原点、loss或训练参数。
+全部46个空E训练实例如下，编号是原始candidate_id，也就是冻结清单中的配体occurrence编号；RA与RB共用同一标准受体范围和E选袋规则。
+
+| PDB | occurrence编号 | 实例数 |
+|---|---|---:|
+| 6j3z | 11、22、34、171、197 | 5 |
+| 6j40 | 31、151、189、226、238、256、273、384、403、421、472 | 11 |
+| 7vh5 | 2、3、4、5、6、7、8、9、11、21、22、23、24、25、26、37、38、39、40、41、42、43 | 22 |
+| 8dn2 | 7 | 1 |
+| 8dn5 | 25 | 1 |
+| 8j5k | 60、73、86、240、253、266 | 6 |
+
+6j3z/11、6j3z/22的最近标准残基COM分别距配体12.726、16.348 Å，确实不满足E条件；原始受体最近原子距离分别2.610、2.714 Å，近处原子被标准残基过滤排除。以上是数据流跳过规则的完整身份审计，不是新建或替换冻结筛选清单。
+
+用户已明确接受处理口径：只在E的训练及val/loss流跳过空口袋并记录具体实例，冻结文件保持不变；完整测试若遇空口袋则记录输入构造失败并保留分母；随后从官方权重在独立目录重新训练E，保留已有中心模型结果。三份契约及docking/README已按这项决定回填，原10 Å阈值、标准残基范围、有效E原点、loss和训练参数不变。
+
+最小实现只修改docking/dataset.py：明确的EmptyEnvelopePocketError在RA/RB空E求均值前抛出；迭代器仅在train／validation捕获该错误并记录警告，组批前跳过。警告保存划分及实例身份，不统计每次拒绝抽样次数；其他异常仍传播。正式采样继续直接索引records，由已有preprocess错误路径保存预算内候选失败，不修改采样器或评价器。新增非测试构造验收覆盖RA/RB、训练完整batch、有限验证、冻结文件不变、同一配体实例选得空中心口袋时的有限给定原点，以及正式采样失败与评价分母。
+
+提交独立核查前，主代理完成两遍自查。第一遍按dataset.py、test_docking_data.py、test_docking_sampling.py顺序核对异常类、__getitem__与__iter__职责及实际调用关系，确认没有新科学开关、嵌套包装或对其他异常的吞掉；训练索引随机流与有限worker分片保持原定义。第二遍按注释skill及示例核对空坐标、原点、实例索引、train／validation跳过边界、正式直接索引及失败分母的类／方法／代码说明，补齐当前契约文档。Python AST解析通过，正式模型、loss与采样噪声代码没有修改。
+
+CPU验收以原fa0d957b2d3f运行副本为基线，在隔离临时副本 `/storage/penghongen/tmp/pocketxmol_empty_envelope_fix_20260912/PocketXMol` 中仅覆盖本次修改的Dataset及两份测试文件；不吸收共享工作区其他改动。首次通过长命令参数传送文件时Windows在建立SSH进程前报“文件名或扩展名太长”，没有执行远端写入；随后使用统一helper已有的 `-InputFile` 将LF脚本通过stdin发送，未修改helper。验收命令与日志如下，均不属于正式实验：
+
+```bash
+srun --jobid=371591 --overlap --nodes=1 --ntasks=1 --cpus-per-task=8 bash /storage/penghongen/tmp/pocketxmol_empty_envelope_fix_20260912/PocketXMol/ops/run_docking_checks.sh tests/test_docking_data.py tests/test_docking_sampling.py
+```
+
+本次验收输出为 `/storage/penghongen/tmp/pocketxmol_empty_envelope_fix_20260912/cpu_checks.log`，结果为22 passed、9 warnings，用时33.58秒。完整空E扫描同时使用该作业另外8核CPU，两个CPU步骤合计不超过已分配的16核。
+
+完整扫描结束后，在371591.4使用同一隔离副本完成真实训练输入GPU验收。一次任务脚本为本地 `tmp/pxm-20260912/check_empty_envelope_gpu.py`，远端为 `/storage/penghongen/tmp/pocketxmol_empty_envelope_fix_20260912/check_empty_envelope_gpu.py`。只抽取冻结train中的空E实例6j3z/11与非空5ftl/0，放入两份临时验收清单，分别模拟无限训练与有限val/loss；不使用真实验证或测试样本，也不改写冻结文件。以下为验收命令，不属于正式训练：
+
+```bash
+srun --jobid=371591 --overlap --nodes=1 --ntasks=1 --cpus-per-task=16 bash -c 'ulimit -Sn 65536; cd /storage/penghongen/tmp/pocketxmol_empty_envelope_fix_20260912/PocketXMol; exec env OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 PYTHONDONTWRITEBYTECODE=1 TMPDIR=/storage/penghongen/tmp /storage/penghongen/PocketXMol/runtime/venv/bin/python -B /storage/penghongen/tmp/pocketxmol_empty_envelope_fix_20260912/check_empty_envelope_gpu.py'
+```
+
+RA、RB分别从官方权重执行8次真实优化器更新，均为72×1、bf16、15个worker；每批72个有效实例，全部为5ftl/0，空E实例在组批前被跳过。每次更新前的监督坐标、带噪坐标与原点均有限，每次反向后的梯度及最终参数均有限；末次原路径val/loss分别为1.163779、1.168035。fit耗时分别15.99、15.16秒，峰值已分配显存分别25660605952、25687365632字节。输出为同临时根gpu_checks.log与gpu_gate/results.json，均含EMPTY_E_GPU_GATE_PASS；未创建正式检查点或W&B运行。日志中的无logger提示来自验收明确关闭W&B，不属于数值错误。
+
+三类独立审查各完成两轮全面核查，均通过，布局审查已批准异常类和既有方法中的修改。第一轮将测试注释中的“空受体”改为“选得空口袋”，并消除本记录“已完成两遍自查”与“仍需自查”的矛盾；第二轮修正CPU验收副本的覆盖方向说明，随后仅对此句窄核通过。审查引起的修改仅涉及说明文字，没有扩大科学行为或生产代码范围。
+
+## 独立重训的正式命令与产物
+
+最小修复和必要验收通过后，371591继续使用1张A800与16核CPU，新的正式命令为：
+
+```bash
+bash 训练与运行/sh/train_docking.sh B-E-T0-RA --logdir /storage/penghongen/PocketXMol/training/B-E-T0-RA-nonemptyE
+```
+
+独立训练根为 `/storage/penghongen/PocketXMol/training/B-E-T0-RA-nonemptyE/`，接入前已核对不存在。仍读取原B-E-T0-RA.yml，从规定官方权重加载模型参数，不传--resume；优化器、调度状态和W&B run id均重新建立。旧B-E-T0-RA目录及so6e0mvy不覆盖、不续训。新的源码release、launch、实际进程及W&B id将在接入后记录。
 
 ## 计划与实现差异
 
-已发现实现缺口：部分冻结训练实例的E受体为空，代码直接求均值并污染训练；两步GPU验收没有覆盖这些实例。空E训练／监督验证的处理尚未在契约定义，等待用户决定后再作最小修改。E有效训练、best选择和测试评价均未完成，不把异常运行计作有效实验。
+已发现并经用户确认处理的实现缺口：部分冻结训练实例的E受体为空，原代码直接求均值并污染训练；此前两步GPU验收没有覆盖这些实例。当前已按批准口径实施最小修复，两遍自查、两轮三类独立审查、CPU回归及真实训练输入GPU验收已通过。E有效训练、best选择和测试评价均未完成，不把异常运行计作有效实验。

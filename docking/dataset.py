@@ -5,6 +5,8 @@
 """
 
 import json
+import warnings
+from itertools import count
 from pathlib import Path
 
 import numpy as np
@@ -23,6 +25,10 @@ PROTEIN_CLASS = np.array([0, 14, 11, 2, 1, 13, 3, 5, 6, 7, 9, 8, 10, 4, 12, 15, 
 # 组分 one-hot 的顺序是 base、sugar、phosphate; O3'/O5' 与其它糖环/糖连接氧归入 sugar.
 SUGAR_ATOMS = {"C1'", "C2'", "C3'", "C4'", "C5'", "O2'", "O3'", "O4'", "O5'"}
 PHOSPHATE_ATOMS = {"P", "OP1", "OP2", "OP3", "O1P", "O2P", "O3P"}
+
+
+class EmptyEnvelopePocketError(ValueError):
+    """RA/RB的E口袋没有标准受体原子, 无法按实际受体坐标均值定义原点."""
 
 
 # ================================================================================================
@@ -82,7 +88,7 @@ class OccurrenceDataset(IterableDataset):
         """装配 records[index] 的口袋与完整配体图, 再执行调用方指定的原变换.
 
         返回 PocketMolData, 核心字段见类说明. 中心C0原点为完整配体几何中心g, 中心C5原点为g+delta; 同一份完整delta用于选袋和原点, 局部监督目标的质心相应为0或-delta. 本类不添加带噪坐标的整体平移.
-        缺失或损坏的冻结资产直接抛出源异常, 不在训练热路径重新筛选或修复.
+        RA/RB空E在求均值前抛出EmptyEnvelopePocketError, 信息包含pdb_id/occurrence_id; __iter__仅在train/validation跳过, 正式采样直接索引并记录输入失败. 其它缺失或损坏资产直接抛出源异常, 不在训练热路径修复.
         """
         record = self.records[index]
         pdb_id, candidate_id = record["pdb_id"], int(record["candidate_id"])
@@ -115,6 +121,9 @@ class OccurrenceDataset(IterableDataset):
             selected &= receptor["res_type"] < 20
         # 逐原子数组沿相同掩码切分; P 是当前模型实际输入的口袋重原子数.
         pocket = {key: value[selected] for key, value in receptor.items()}
+        # 空E没有可定义的受体均值; 不用配体中心替代, 也不改变标准残基和10 Å选择规则.
+        if self.config.pocket_mode == "envelope" and self.receptor_branch in ("RA", "RB") and len(pocket["coords"]) == 0:
+            raise EmptyEnvelopePocketError(f"empty_envelope_pocket: {pdb_id}/{candidate_id}")
         pocket_pos = torch.from_numpy(pocket["coords"])
         pocket_is_nucleic = torch.from_numpy(pocket["res_type"] >= 20)
         # int64, (M,), 源五维键类别映到原模型1/2/3/4; 配位键已在准备阶段排除.
@@ -180,15 +189,24 @@ class OccurrenceDataset(IterableDataset):
         return self.transforms(data)
 
     def __iter__(self):
-        """训练无限均匀抽实例, 验证按 worker 编号跨步读取全部实例一次."""
+        """训练无限均匀抽实例, 有限流按worker跨步读取; 仅train/validation跳过并警告RA/RB空E.
+
+        跳过发生在组批前, 训练仍由有效实例组成完整batch; 验证只对有效E计算原val/loss. 警告记录划分和pdb_id/occurrence_id, 冻结清单不变. 其它异常直接传播; 正式采样按records索引, 不经过这里的跳过逻辑.
+        """
         worker = get_worker_info()
         worker_id, worker_count = (0, 1) if worker is None else (worker.id, worker.num_workers)
         # 独立 Generator 只用于实例和口袋偏移; 开关T1不改变原噪声器使用的基础随机序列.
         if self.rng is None:
             self.rng = np.random.default_rng(torch.initial_seed())
         if self.shuffle:
-            while True:
-                yield self[int(self.rng.integers(len(self.records)))]
+            # 无限整数流, 每次仍从原冻结清单独立均匀抽样; 仅空E被拒绝后重新抽取.
+            indices = (int(self.rng.integers(len(self.records))) for _ in count())
         else:
-            for index in range(worker_id, len(self.records), worker_count):
+            indices = range(worker_id, len(self.records), worker_count)
+        for index in indices:
+            try:
                 yield self[index]
+            except EmptyEnvelopePocketError as error:
+                if self.split not in ("train", "validation"):
+                    raise
+                warnings.warn(f"{self.split} 跳过 {error}", RuntimeWarning)
