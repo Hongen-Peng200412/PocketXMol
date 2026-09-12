@@ -2,7 +2,7 @@
 
 本记录对应既定六个无密度模型中的第4个实验。在371591、gnode09的A800及16核CPU完成[E-RA有效训练和完整测试报告](07-B-E-T0-RA.md)后，使用同一资源训练中心T0-RB，再完成实际best的C0／C5测试、同卡CPU评价和报告。378693独立推进第6个E-RB，本记录不涉及其他任务。
 
-依据为[科学契约](../../想法/方案草稿/9-8-科学契约.md)、[工程细节](../../想法/方案草稿/9-8-工程与实现细节.md)和[边界清单](../../想法/方案草稿/9-8-边界与核查清单.md)。本次登记明确配置和正式命令，后续按实际产物记录训练及测试结果。
+依据为[科学契约](../../想法/方案草稿/9-8-科学契约.md)、[工程细节](../../想法/方案草稿/9-8-工程与实现细节.md)和[边界清单](../../想法/方案草稿/9-8-边界与核查清单.md)。正式训练已经接入371591，主进程7586，独立训练及后续测试结果按实际产物记录。
 
 ## 中心T0与RB契约
 
@@ -28,12 +28,20 @@ RB分别构建和编码标准蛋白与核酸受体图，从官方权重初始化
 bash 训练与运行/sh/train_docking.sh B-C-T0-RB
 ```
 
-独立训练根为 `/storage/penghongen/PocketXMol/training/B-C-T0-RB/`，保存的训练配置及检查点分别位于train_config和checkpoints子目录。W&B使用pencounkdual-111/PocketXmol_raw、名称B-C-T0-RB，实际run id在启动后记录。
+独立训练根为 `/storage/penghongen/PocketXMol/training/B-C-T0-RB/`，保存的训练配置及检查点分别位于train_config和checkpoints子目录。W&B使用pencounkdual-111/PocketXmol_raw、名称B-C-T0-RB，实际run id为hthglbuy。
 
 371591控制目录仍为 `/home/penghongen/Feedback/Pocket_Plus/allocations/371591/`。前一E评价正常结束且try_lock恢复后，保存新旧动态命令与启动记录，再移除try_lock运行。after_lock和此前有效及异常产物全部保留，不使用scancel。
 
 训练完成后直接用实际best测试C0／C5，每实例每协议50候选、100步、batch优先50；之后用同一作业8个CPU评价进程完成三个视图和核酸比例分析。明确best的采样配置及短正式命令在训练结束后登记，不执行训练后完整验证集采样，不额外增加实验。
 
+## 正式接入
+
+2026-09-13 master时间06:14:42保存新旧动态命令及启动记录，移除try_lock后由371591控制器第21次执行启动。接入前再次确认目标训练根不存在、E-RA评价进程退出且W&B汇总成功，现有动态命令确为本任务E-RA评价入口。after_lock保留，没有使用kill_lock。
+
+实际源码release为43742cdf8166，登记提交3101cff；配置SHA256为19809af372ac4c127efd8dab8c3850992cbb1164211a258eaebf4a4b0d6f8279。launch为 `/home/penghongen/Feedback/PocketXMol/launches/371591/train_B-C-T0-RB_job371591_20260913T061132`。启动记录 `/storage/penghongen/PocketXMol/control/371591/train_B-C-T0-RB_start.json`，同目录保存train_B-C-T0-RB_run_cmd.sh和修改前的train_B-C-T0-RB_before_run_cmd.sh。累计out／err起点113849959／311189。
+
+实际主进程7586和15个数据worker均属于371591，命令行没有--resume，训练输出指向独立B-C-T0-RB根。日志确认从规定官方pocketxmol.ckpt加载模型，使用bf16，全部模型参数参与训练。W&B新运行是[hthglbuy](https://wandb.ai/pencounkdual-111/PocketXmol_raw/runs/hthglbuy)，本地记录为训练根wandb/run-20260913_061159-hthglbuy。启动检查28步时原损失及置信度损失均有限，没有NaN、Traceback、OOM或reduce_batch；完整训练和原C0验证继续执行。
+
 ## 计划与实现差异
 
-本实验沿用已纠正的中心T0契约和既定RB配置，没有新增科学开关、代码或资产重建。完整训练、规定测试与报告仍待完成。
+本实验沿用已纠正的中心T0契约和既定RB配置，没有新增科学开关、代码或资产重建。正式训练已接入，完整训练、规定测试与报告仍待完成。
