@@ -1,17 +1,17 @@
 # 6-B-E-T0-RB
 
-**A800上的正式训练中，测试尚未开始。** 378693／gnode10 的本次日志已到27467次更新，学习率4e-6；最近完成27200步验证，val/loss=1.79062，日志当前最低值为21600步的1.62285。它只是训练中观测，尚不是最终测试best。已保存34份定期检查点及last，未见Traceback、OOM或非有限损失记录。
+**A800上的正式训练已正常完成，E测试准备中。** 378693／gnode10 在30400次更新的原E验证后，因第三次学习率下降停止。实际best为21600步，原E val/loss=1.6228482723236084；已核对它是全部38个定期检查点的最低原验证损失，1236个模型参数键均有限。全部检查点、last及W&B记录保留，测试结果尚未产生。
 
-更新核查：2026-09-13 12:20（服务器 master，UTC+8）。依据 [科学契约](../../想法/方案草稿/9-8-科学契约.md)、[工程细节](../../想法/方案草稿/9-8-工程与实现细节.md) 和 [边界清单](../../想法/方案草稿/9-8-边界与核查清单.md)，本文件统一保存本模型的训练、测试、评价与尝试历史。共同准备见 [实现与共同数据准备](../实现与共同数据准备.md)，全实验进度见 [总日志](../总日志.md)。
+更新核查：2026-09-13 13:23（服务器 master，UTC+8；随后完成检查点核对）。依据 [科学契约](../../想法/方案草稿/9-8-科学契约.md)、[工程细节](../../想法/方案草稿/9-8-工程与实现细节.md) 和 [边界清单](../../想法/方案草稿/9-8-边界与核查清单.md)，本文件统一保存本模型的训练、测试、评价与尝试历史。共同准备见 [实现与共同数据准备](../实现与共同数据准备.md)，全实验进度见 [总日志](../总日志.md)。
 
 ## 当前有效运行与产物
 
 | 项目 | 当前事实 |
 |---|---|
 | 训练产物根 | `/storage/penghongen/PocketXMol/training/B-E-T0-RB/` |
-| 正式测试检查点 | 尚未确定；训练完成后核实全部原E验证损失及实际best |
+| 正式测试检查点 | `checkpoints/step=21600.ckpt`，相对于上述训练根；原E val/loss=1.6228482723236084 |
 | 训练 W&B | [423nfmpm](https://wandb.ai/pencounkdual-111/PocketXmol_raw/runs/423nfmpm) |
-| 测试与评价产物 | 尚未产生本模型的 `test/run.json`；正式输出目录以之后登记的测试配置为准 |
+| 测试与评价产物 | 预定 `/storage/penghongen/PocketXMol/sampling/B-E-T0-RB/test/`，尚未启动 |
 | 评价 W&B | 尚未创建 |
 
 训练保留原路径 `val/loss` 和最低损失检查点选择；训练结束后直接完整测试，不做训练后完整验证集采样。每实例每协议50候选、100步，原 self-ranking（原置信度及碰撞、立体化学项组成的候选排序）不变。完整结果优先放在下文，执行核查和失败尝试放在后部。
@@ -20,7 +20,27 @@ ALL为446个实例的完整测试集合。按完整模板身份object_key在ALL�
 
 ## 最近一次进度与下一步
 
-本次只读检查来自 `/home/penghongen/Feedback/Pocket_Plus/allocations/378693/out` 和 `err`，从启动记录指定的25869442／59362字节读取；after_lock存在，try_lock与kill_lock均不存在。平均约1.06次更新／秒，已完成两次学习率下降；空E训练实例继续按批准规则跳过。训练摘要尚未生成。继续原E训练及val/loss，停止后核实实际best，再进行446实例的E完整测试和同作业CPU评价。
+本次训练日志从 `/home/penghongen/Feedback/Pocket_Plus/allocations/378693/out` 和 `err` 的25869442／59362字节开始读取。控制器第4次执行成功，主进程57306已退出，W&B完成上传；after_lock及恢复的try_lock存在，kill_lock不存在。训练进度栏耗时7小时58分24秒，平均约1.06次更新／秒，无Traceback、OOM或非有限值记录；日志记录46个不同空E训练身份，验证跳过数为0。
+
+完整检查点摘要为 `/storage/penghongen/PocketXMol/training/B-E-T0-RB/training_summary_20260913.json`。下一步使用下列配置及明确best完成446实例的E测试，再在同一作业内用8个CPU进程评价；不安排完整验证集采样。
+
+## 正式测试配置与命令（待启动）
+
+`configs/docking/sample-B-E-T0-RB-test.yml`读取本次训练保存的配置和21600步best，receptor_branch=RB、center_translation=false、protocols=[E]、split=test。与已完成E-RA测试相比，仅替换核酸分支、模型名称及各自训练／产物身份，固定清单、50候选、100步、batch50和8进程评价保持。采样原点仍为实际受体重原子均值，空E测试输入失败保留候选及实例分母。
+
+本次没有新增或修改生产Python函数。主代理第一遍自查核对配置读取关系、模型与数据分支、检查点和输出身份，第二遍核对YAML注释及日志含义；随后独立代理在同一范围完成两轮只读核查，均通过。YAML解析比较确认只改变模型身份、RB分支及各自产物位置；核查未扩展已通过的空E生产代码范围。检查点摘要本地副本为 `tmp/pxm-20260913/B-E-T0-RB-training-summary.json`。
+
+以下为接续使用的正式命令，目前尚未执行；实际release、launch与启动记录将在接入后补齐。
+
+```bash
+bash 训练与运行/sh/sample_docking.sh B-E-T0-RB-test
+```
+
+全部候选完成后，在同一A800作业执行：
+
+```bash
+bash 训练与运行/sh/evaluate_docking.sh B-E-T0-RB-test
+```
 
 ## 固定科学与训练条件
 
@@ -62,7 +82,19 @@ bash 训练与运行/sh/train_docking.sh B-E-T0-RB
 
 ## 计划与实现差异
 
-本实验沿用已批准的E-T0-RB配置与空E规则，没有新增科学条件。正式训练已接入，完整训练、测试及评价仍待完成。
+本实验沿用已批准的E-T0-RB配置与空E规则，没有新增科学条件。正式训练及best核对已完成，完整E测试及评价仍待完成。
+
+## 训练完成与检查点只读核对
+
+在378693.3的8核CPU内加载last和实际best，确认stop_reason=plateau、decline_count=3、global_step=last_validation_step=30400，优化器和调度器末次学习率均为8.000000000000002e-7，第三次下降后没有继续更新。全部38个定期检查点存在，best21600的1236个model参数键均有限，训练W&B身份为423nfmpm。
+
+调度器的相对改善阈值是1%，其用于比较的最低值为1.6360849142074585；最终best按原始val/loss最低值独立选择，故使用1.6228482723236084对应的21600步。这两种比较用途不同，不用调度器的比较值替代best选择。
+
+以下是已执行的产物核对命令，不是正式训练、推理或评价命令；脚本只读取已有检查点并新写training_summary_20260913.json，未改写检查点。部署记录在本地 `tmp/pxm-20260913/check_e_rb_checkpoint.sh`。
+
+```bash
+srun --jobid=378693 --overlap --nodes=1 --ntasks=1 --cpus-per-task=8 env CUDA_VISIBLE_DEVICES= OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 PYTHONDONTWRITEBYTECODE=1 /storage/penghongen/PocketXMol/runtime/venv/bin/python -B /storage/penghongen/tmp/pocketxmol_checkpoint_20260913/inspect_e_rb.py
+```
 
 ## 实验过程与失败尝试
 

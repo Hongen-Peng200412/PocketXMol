@@ -1,0 +1,33 @@
+# scripts/sample_docking.py生成完整E测试候选, scripts/evaluate_docking.py按同一配置评价.
+# 包络T0按残基重原子质量中心到任一真值配体重原子<10 Å选袋, 原点为实际受体重原子均值.
+model_name: B-E-T0-RB
+# str, 本次独立训练保存的配置, 提供原模型、特征化和噪声参数.
+train_config: /storage/penghongen/PocketXMol/training/B-E-T0-RB/train_config/B-E-T0-RB.yml
+# str, 最低原E val/loss对应的21600步best; 已核对30400步停止及第三次学习率下降状态.
+checkpoint: /storage/penghongen/PocketXMol/training/B-E-T0-RB/checkpoints/step=21600.ckpt
+# str, 模型和OccurrenceDataset均使用RB分开的蛋白与核酸受体图及各自的口袋编码器.
+receptor_branch: RB
+center_translation: false  # bool, 包络T0始终保持原dock高斯噪声链, 不增加整分子平移.
+dataset:
+  # str, 原图、沉积坐标及标准受体资产根, 只读.
+  root: /storage/penghongen/AdaLigand/Ori_Data
+  # str, 已完成共同准备的共享对称排列和逐实例标签根.
+  derived_root: /storage/penghongen/Adaligand_Build/Ori_Data/pocketxmol
+  # str, 冻结实例清单、候选种子及测试视图根, 不重新生成.
+  manifest_root: /storage/penghongen/PocketXMol/data
+  knn: 32  # int, OccurrenceDataset构造受体图的近邻上限.
+protocols: [E]  # list[str], 本模型仅完成既定包络E测试.
+split: test  # str, ALL完整446个实例; CAP10和HF10_TO5复用同一候选池.
+# str, 本模型的独立采样根; 正式产物由采样器写入其test子目录.
+output_root: /storage/penghongen/PocketXMol/sampling/B-E-T0-RB
+batch_size: 50  # int, 同一实例的50个候选一次组批, 总预算仍为50.
+num_candidates: 50  # int, 每实例固定预算; 空E输入失败也保留全部候选和实例分母.
+num_steps: 100  # int, 原sample_loop3的完整采样步数.
+device: cuda  # str, 在已获准GPU中执行采样.
+evaluation_workers: 8  # int, 后续evaluate_docking使用本A800作业已分配CPU, 不另排纯CPU任务.
+# 仅评价阶段读取并上传汇总, 私密API key不进入配置.
+wandb:
+  entity: pencounkdual-111
+  project: PocketXmol_raw
+  name: B-E-T0-RB_test
+  mode: online
