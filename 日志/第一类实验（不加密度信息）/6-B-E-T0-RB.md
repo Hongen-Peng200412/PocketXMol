@@ -1,8 +1,8 @@
 # 6-B-E-T0-RB
 
-**A800上的正式训练已完成，E完整测试正在推理。** 截至16:39，已完成396／446实例，19800个候选全部成功；最终姿态指标须待完整推理及CPU评价。训练在30400次更新后因第三次学习率下降停止，实际best为21600步、原E val/loss=1.6228482723236084；它是全部38个定期检查点的最低原验证损失，1236个模型参数键均有限。全部检查点、last及训练W&B记录保留。
+**训练及E完整测试推理已完成，CPU评价已启动。** 全部446个实例、22300个候选生成成功并通过完整产物核对；17:45在原378693作业接入8进程CPU评价，截至17:48已确认8个评价子进程正在计算，首批逐实例评价文件尚未产生。最终姿态指标须待CPU评价完成。训练在30400次更新后因第三次学习率下降停止，实际best为21600步、原E val/loss=1.6228482723236084；它是全部38个定期检查点的最低原验证损失，1236个模型参数键均有限。全部检查点、last及训练W&B记录保留。
 
-更新核查：2026-09-13 16:39（服务器 master，UTC+8）。依据 [科学契约](../../想法/方案草稿/9-8-科学契约.md)、[工程细节](../../想法/方案草稿/9-8-工程与实现细节.md) 和 [边界清单](../../想法/方案草稿/9-8-边界与核查清单.md)，本文件统一保存本模型的训练、测试、评价与尝试历史。共同准备见 [实现与共同数据准备](../实现与共同数据准备.md)，全实验进度见 [总日志](../总日志.md)。
+更新核查：2026-09-13 17:48（服务器 master，UTC+8）。依据 [科学契约](../../想法/方案草稿/9-8-科学契约.md)、[工程细节](../../想法/方案草稿/9-8-工程与实现细节.md) 和 [边界清单](../../想法/方案草稿/9-8-边界与核查清单.md)，本文件统一保存本模型的训练、测试、评价与尝试历史。共同准备见 [实现与共同数据准备](../实现与共同数据准备.md)，全实验进度见 [总日志](../总日志.md)。
 
 ## 当前有效运行与产物
 
@@ -11,7 +11,7 @@
 | 训练产物根 | `/storage/penghongen/PocketXMol/training/B-E-T0-RB/` |
 | 正式测试检查点 | `checkpoints/step=21600.ckpt`，相对于上述训练根；原E val/loss=1.6228482723236084 |
 | 训练 W&B | [423nfmpm](https://wandb.ai/pencounkdual-111/PocketXmol_raw/runs/423nfmpm) |
-| 测试与评价产物 | `/storage/penghongen/PocketXMol/sampling/B-E-T0-RB/test/`；run.json及396个实例的完整候选已产生，评价尚未开始 |
+| 测试与评价产物 | `/storage/penghongen/PocketXMol/sampling/B-E-T0-RB/test/`；run.json及全部446个实例的完整候选已核对，正在CPU评价 |
 | 评价 W&B | 尚未创建 |
 
 训练保留原路径 `val/loss` 和最低损失检查点选择；训练结束后直接完整测试，不做训练后完整验证集采样。每实例每协议50候选、100步，原 self-ranking（原置信度及碰撞、立体化学项组成的候选排序）不变。完整结果优先放在下文，执行核查和失败尝试放在后部。
@@ -20,9 +20,9 @@ ALL为446个实例的完整测试集合。按完整模板身份object_key在ALL�
 
 ## 最近一次进度与下一步
 
-当前采样主进程33421仍在job_378693运行；after_lock存在，try_lock与kill_lock不存在。已完成396个实例、19800个候选，失败0；全部已有result.json均为complete，batch50、50候选和100步不变。已完成实例的采样耗时累计11080.44秒，此数不是整个作业墙钟时间。未见Traceback、OOM、非有限数值或降低batch的记录；姿态质量尚待完整CPU评价。
+控制器第5次采样执行成功，主进程33421已退出；随后第6次接入CPU评价，主进程29594属于job_378693，CUDA_VISIBLE_DEVICES为空，8个评价进程的配置不变。after_lock保留，try_lock与kill_lock不存在。446个实例、22300个候选均生成成功，全部result.json为complete，batch50、50候选和100步不变。逐实例采样耗时累计12638.16秒，此数不是整个作业墙钟时间。未见Traceback、OOM、非有限数值或降低batch的记录；姿态质量尚待CPU评价。
 
-完整检查点摘要为 `/storage/penghongen/PocketXMol/training/B-E-T0-RB/training_summary_20260913.json`。继续完成446实例的E测试，再在同一作业内用8个CPU进程评价；不安排完整验证集采样。
+完整检查点摘要为 `/storage/penghongen/PocketXMol/training/B-E-T0-RB/training_summary_20260913.json`。全部候选已与冻结清单身份核对一致，继续完成同作业内的8进程评价，再回填三视图和核酸占比报告；不安排完整验证集采样。
 
 ## 正式测试配置与命令
 
@@ -36,7 +36,7 @@ ALL为446个实例的完整测试集合。按完整模板身份object_key在ALL�
 bash 训练与运行/sh/sample_docking.sh B-E-T0-RB-test
 ```
 
-以下正式CPU评价命令尚未执行，待全部候选完成后在同一A800作业运行：
+以下正式CPU评价命令已于2026-09-13 17:45接入同一A800作业运行：
 
 ```bash
 bash 训练与运行/sh/evaluate_docking.sh B-E-T0-RB-test
@@ -82,7 +82,7 @@ bash 训练与运行/sh/train_docking.sh B-E-T0-RB
 
 ## 计划与实现差异
 
-本实验沿用已批准的E-T0-RB配置与空E规则，没有新增科学条件。正式训练及best核对已完成，E测试已接入，完整推理及评价仍待完成。
+本实验沿用已批准的E-T0-RB配置与空E规则，没有新增科学条件。正式训练及best核对、E完整推理及产物核对已完成，CPU评价正在执行，完整报告仍待完成。
 
 ## 正式E测试接入
 
@@ -105,6 +105,22 @@ bash 训练与运行/sh/train_docking.sh B-E-T0-RB
 ```bash
 srun --jobid=378693 --overlap --nodes=1 --ntasks=1 --cpus-per-task=8 env CUDA_VISIBLE_DEVICES= OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 PYTHONDONTWRITEBYTECODE=1 /storage/penghongen/PocketXMol/runtime/venv/bin/python -B /storage/penghongen/tmp/pocketxmol_checkpoint_20260913/inspect_e_rb.py
 ```
+
+## E完整推理核对与正式CPU评价接入
+
+采样控制器第5次执行正常结束，446个实例及22300个候选均成功。逐实例采样／模型推理耗时累计12638.163894／12564.934873秒，共44600次批量forward，峰值张量显存3250520064字节；累计耗时不是整个作业墙钟时间。没有Traceback、OOM或降低batch记录。
+
+只读核查逐一对照冻结test.jsonl的实例身份、object_key、视图、种子和C5向量，检查每实例50个唯一候选编号、候选身份、有限置信度及姿态／置信度文件。实际run.json与d3ffb62996bd release中的配置完全一致，采样PID33421退出，after_lock与恢复的try_lock存在。完成证据为 `/storage/penghongen/PocketXMol/control/378693/sample_B-E-T0-RB_test_complete_20260913.json`。
+
+以下仅为已生成产物的核对命令，不是正式采样或评价命令。脚本本地副本 `tmp/pxm-20260913/inspect_e_rb_sampling.py`，部署与执行入口 `check_e_rb_sampling.sh`；从已通过的E-RA检查脚本只替换模型身份、release、作业和原进程编号，没有修改生产代码或科学计算。
+
+```bash
+srun --jobid=378693 --overlap --nodes=1 --ntasks=1 --cpus-per-task=8 env CUDA_VISIBLE_DEVICES= OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 PYTHONDONTWRITEBYTECODE=1 /storage/penghongen/PocketXMol/runtime/venv/bin/python -B /storage/penghongen/tmp/pocketxmol_sampling_20260913/inspect_e_rb_sampling.py
+```
+
+2026-09-13 master时间17:45:24保存新旧动态命令及启动记录，核实前一命令确为本模型采样、完整产物核对通过、summary.json尚不存在，随后移除恢复的try_lock，控制器第6次接续正式评价。after_lock保留，没有使用kill_lock、删除候选或重跑采样。
+
+评价沿用d3ffb62996bd release及b666daa配置，实际launch为 `/home/penghongen/Feedback/PocketXMol/launches/378693/evaluate_B-E-T0-RB_test_job378693_20260913T174435`。启动记录 `/storage/penghongen/PocketXMol/control/378693/evaluate_B-E-T0-RB_test_start.json`，同目录保存evaluate_B-E-T0-RB_test_run_cmd.sh和修改前的evaluate_B-E-T0-RB_test_before_run_cmd.sh。评价out／err读取起点61072223／208397字节。主进程29594的cgroup及CUDA不可见、OMP／MKL／OpenBLAS线程各1均已确认；17:48确认8个评价子进程29710至29717均约100%单核CPU，无Traceback，首批逐实例文件尚未产生。
 
 ## 实验过程与失败尝试
 
