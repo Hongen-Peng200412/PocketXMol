@@ -664,51 +664,52 @@ class MixedTransform:
 @register_transforms('dock')
 class ConfTransform:
     """
-    为分子构象生成和小分子 docking 构造位置任务 prompt、刚体域与可旋转键注释。
+    为分子构象生成和小分子 docking 构造位置任务 prompt、刚体域与可旋转键注释.
 
     注册名称:
-        - ``conf``: 分子构象生成；训练 reduced 配置几乎总选 ``free``，少量选择 ``torsional``。
-        - ``dock``: 小分子 docking；训练 reduced 配置几乎总选 ``free``，少量选择 ``flexible``。
+        - ``conf``: 分子构象生成; 训练 reduced 配置几乎总选 ``free``, 少量选择 ``torsional``.
+        - ``dock``: 小分子 docking; 训练 reduced 配置几乎总选 ``free``, 少量选择 ``flexible``.
 
     配置字段:
-        - settings: dict[str, float], setting 名到采样概率；键只能来自 ``free``、``flexible``、``torsional``、``rigid``，概率原样传给 ``np.random.choice``。
-        - mode: 由构造 kwargs 提供；``train`` 不复制真值且排除 ``task_setting``，其他模式保留真值并补充 flexible 距离标记。
+        - settings: dict[str, float], setting 名到采样概率; 键只能来自 ``free``、``flexible``、``torsional``、``rigid``, 概率原样传给 ``np.random.choice``.
+        - mode: 由构造 kwargs 提供; ``train`` 不复制真值且排除 ``task_setting``, 其他模式保留真值并补充 flexible 距离标记.
+        - free_no_geometry: bool, 缺省 False 保持原路径; True 时当前 free 验证/采样也使用空刚体域和扭转注释, 不读取真实扭转资产或启用 flexible 修正.
 
     输入样本核心字段:
-        - node_type: int64, (N,), 真值原子类别。
-        - node_pos: (N, 3), 真值局部坐标，最后一维按 XYZ 排列，单位 Å。
-        - halfedge_index: int64, (2, H), 完全图上三角半边端点。
-        - halfedge_type: int64, (H,), 真值半边类别。
+        - node_type: int64, (N,), 真值原子类别.
+        - node_pos: (N, 3), 真值局部坐标, 最后一维按 XYZ 排列, 单位 Å.
+        - halfedge_index: int64, (2, H), 完全图上三角半边端点.
+        - halfedge_type: int64, (H,), 真值半边类别.
 
-        - fixed_dist_torsion: 0/1, (N, N), 1 表示该原子对距离在绕任意可旋转键变化时保持不变，0 表示可因扭转改变。
-        - path_mat: float, (N, N), RDKit 化学图最短路径长度矩阵。
-        - nbh_dict: dict[int, list[int]], 每个原子编号到一跳相邻原子编号列表的映射。
-        - tor_bond_mat: 0/1, (N, N), 对称可旋转键邻接矩阵；1 表示对应化学键可扭转。
-        - tor_twisted_pairs: dict[tuple[int,int], list[set[int],set[int]]], 断开规范化可旋转键后两侧除轴端点外的原子集合。
+        - fixed_dist_torsion: 0/1, (N, N), 1 表示该原子对距离在绕任意可旋转键变化时保持不变, 0 表示可因扭转改变.
+        - path_mat: float, (N, N), RDKit 化学图最短路径长度矩阵.
+        - nbh_dict: dict[int, list[int]], 每个原子编号到一跳相邻原子编号列表的映射.
+        - tor_bond_mat: 0/1, (N, N), 对称可旋转键邻接矩阵; 1 表示对应化学键可扭转.
+        - tor_twisted_pairs: dict[tuple[int,int], list[set[int],set[int]]], 断开规范化可旋转键后两侧除轴端点外的原子集合.
 
     通用输出字段:
-        - task_setting: str, 本样本采到的 ``free``/``flexible``/``torsional``/``rigid``。
-        - fixed_node: 0/1, (N,), 全 1；构象与 docking 均不改变元素类别。
-        - fixed_pos: 0/1, (N,), 默认全 0；坐标是两个目标任务的去噪变量。
-        - fixed_halfedge: 0/1, (H,), 全 1；构象与 docking 均不改变化学键类别。
-        - fixed_halfdist: 0/1, (H,), ``fixed_distmat`` 在半边端点处的取值；1 表示损失/修正器应保持该端点距离。
+        - task_setting: str, 本样本采到的 ``free``/``flexible``/``torsional``/``rigid``.
+        - fixed_node: 0/1, (N,), 全 1; 构象与 docking 均不改变元素类别.
+        - fixed_pos: 0/1, (N,), 默认全 0; 坐标是两个目标任务的去噪变量.
+        - fixed_halfedge: 0/1, (H,), 全 1; 构象与 docking 均不改变化学键类别.
+        - fixed_halfdist: 0/1, (H,), ``fixed_distmat`` 在半边端点处的取值; 1 表示损失/修正器应保持该端点距离.
 
-        - n_domain: int64 标量, 刚体域数量；当前非空分支把全部 N 个原子放入同一个域。
-        - domain_node_index: int64, (2, N_domain_nodes), 第一行是刚体域编号，第二行是原子编号。
-        - tor_bonds_anno: int64, (T, 3), 每行 ``[BFS 层级, 远离中心的轴端点, 靠近中心的轴端点]``。
-        - twisted_nodes_anno: int64, (W, 2), 每行 ``[tor_bonds_anno 行号, 随该键旋转的原子编号]``。
-        - dihedral_pairs_anno: int64, (Q, 3), 每行 ``[tor_bonds_anno 行号, 轴左端邻居, 轴右端邻居]``，用于构造四原子二面角。
+        - n_domain: int64 标量, 刚体域数量; 当前非空分支把全部 N 个原子放入同一个域.
+        - domain_node_index: int64, (2, N_domain_nodes), 第一行是刚体域编号, 第二行是原子编号.
+        - tor_bonds_anno: int64, (T, 3), 每行 ``[BFS 层级, 远离中心的轴端点, 靠近中心的轴端点]``.
+        - twisted_nodes_anno: int64, (W, 2), 每行 ``[tor_bonds_anno 行号, 随该键旋转的原子编号]``.
+        - dihedral_pairs_anno: int64, (Q, 3), 每行 ``[tor_bonds_anno 行号, 轴左端邻居, 轴右端邻居]``, 用于构造四原子二面角.
 
     推理额外字段:
-        - gt_node_type: int64, (N,), 变换时真值原子类别副本。
-        - gt_node_pos: (N, 3), 变换时真值局部坐标副本，单位 Å。
-        - gt_halfedge_type: int64, (H,), 变换时真值半边类别副本。
-        - fixed_halfdist_flex: 0/1, (H,), 始终由原始 ``fixed_dist_torsion`` 取半边值得到，供 flexible 修正器使用，不随当前 setting 改写。
+        - gt_node_type: int64, (N,), 变换时真值原子类别副本.
+        - gt_node_pos: (N, 3), 变换时真值局部坐标副本, 单位 Å.
+        - gt_halfedge_type: int64, (H,), 变换时真值半边类别副本.
+        - fixed_halfdist_flex: 0/1, (H,), 原路径从 fixed_dist_torsion 取半边值; 本项目 free_no_geometry=True 且 setting=free 时为兼容原接口的全0张量.
 
     setting 语义:
-        - free: ``fixed_halfdist`` 全 0，允许所有原子对距离变化；训练时扭转/刚体注释为空。
-        - flexible/torsional: ``fixed_halfdist`` 来自 ``fixed_dist_torsion``，只允许跨可旋转键两侧的距离变化。
-        - rigid: ``fixed_halfdist`` 全 1，所有分子内距离固定；扭转注释为空但刚体域覆盖全部原子。
+        - free: ``fixed_halfdist`` 全 0, 允许所有原子对距离变化; 训练时扭转/刚体注释为空.
+        - flexible/torsional: ``fixed_halfdist`` 来自 ``fixed_dist_torsion``, 只允许跨可旋转键两侧的距离变化.
+        - rigid: ``fixed_halfdist`` 全 1, 所有分子内距离固定; 扭转注释为空但刚体域覆盖全部原子.
     """
     def __init__(self, config, **kwargs):
         # ``config.settings.free``：float|缺省，逐原子自由坐标模式采样权重。
@@ -746,77 +747,81 @@ class ConfTransform:
         self.fix_some = config.get('fix_some', None)
     
     def __call__(self, data: PocketMolData):
-        """选择构象约束模式，并写入 fixed prompt、刚体域、扭转和推理真值叶。
+        """选择构象约束模式, 并写入 fixed prompt、刚体域、扭转和推理真值叶.
 
         输入字段:
-            - data.node_type: LongTensor，形状为 (N,)，干净原子类别。
-            - data.node_pos: FloatTensor，形状为 (N, 3)，干净配体局部坐标，单位 Å。
-            - data.halfedge_index: LongTensor，形状为 (2, H)，完全图半边端点。
-            - data.halfedge_type: LongTensor，形状为 (H,)，干净半边类别。
+            - data.node_type: LongTensor, 形状为 (N,), 干净原子类别.
+            - data.node_pos: FloatTensor, 形状为 (N, 3), 干净配体局部坐标, 单位 Å.
+            - data.halfedge_index: LongTensor, 形状为 (2, H), 完全图半边端点.
+            - data.halfedge_type: LongTensor, 形状为 (H,), 干净半边类别.
 
-            # see me: 下面的无用 
-            - data.fixed_dist_torsion: Tensor，形状为 (N, N)，扭转下保持距离的 0/1 矩阵。
-            - data.path_mat: Tensor，形状为 (N, N)，化学图最短路径(在分子的化学键连接图中，两个原子之间最少需要经过多少条键)。
-            - data.nbh_dict: dict[int, list[int]]，逐原子一跳邻居编号。
-            - data.tor_bond_mat: Tensor，形状为 (N, N)，逐原子对可旋转键标记。
-            - data.tor_twisted_pairs: dict[tuple[int, int], list[set[int], set[int]]], 表示 可旋转键两侧非轴原子集合。 单个key-value-pair是: (可旋转键端点原子A下标, 可旋转键端点原子B下表): [A这一侧的非轴原子集合, B这一侧的非轴原子集合]。
+            以下图几何字段只由真实扭转/刚体分支读取; free_no_geometry=True 的 free 路径不要求它们存在.
+            - data.fixed_dist_torsion: Tensor, 形状为 (N, N), 扭转下保持距离的 0/1 矩阵.
+            - data.path_mat: Tensor, 形状为 (N, N), 化学图最短路径(在分子的化学键连接图中, 两个原子之间最少需要经过多少条键).
+            - data.nbh_dict: dict[int, list[int]], 逐原子一跳邻居编号.
+            - data.tor_bond_mat: Tensor, 形状为 (N, N), 逐原子对可旋转键标记.
+            - data.tor_twisted_pairs: dict[tuple[int, int], list[set[int], set[int]]], 表示 可旋转键两侧非轴原子集合. 单个key-value-pair是: (可旋转键端点原子A下标, 可旋转键端点原子B下表): [A这一侧的非轴原子集合, B这一侧的非轴原子集合].
 
         输出字段:
-            - data.task_setting: str，采到的 ``free``、``flexible``、``torsional`` 或 ``rigid``。
-            - data.fixed_node: LongTensor，形状为 (N,)，原子类别条件掩码。
-            - data.fixed_pos: LongTensor，形状为 (N,)，坐标条件掩码。
-            - data.fixed_halfedge: LongTensor，形状为 (H,)，半边类别条件掩码。
-            - data.fixed_halfdist: LongTensor，形状为 (H,)，半边距离条件掩码。
+            - data.task_setting: str, 采到的 ``free``、``flexible``、``torsional`` 或 ``rigid``.
+            - data.fixed_node: LongTensor, 形状为 (N,), 原子类别条件掩码.
+            - data.fixed_pos: LongTensor, 形状为 (N,), 坐标条件掩码.
+            - data.fixed_halfedge: LongTensor, 形状为 (H,), 半边类别条件掩码.
+            - data.fixed_halfdist: LongTensor, 形状为 (H,), 半边距离条件掩码.
 
-            # see me: 下面的无用 
-            - data.n_domain: LongTensor 标量，刚体域数。在处理整体平移和旋转时，被视为同一个整体的一组原子, 即, 对这个刚体域施加刚体变换等于对内部每个原子施加变换。
-            - data.domain_node_index: LongTensor，形状为 (2, K)，刚体域—原子归属索引。这里的 K 是登记在刚体域中的“域—原子归属对”数量，不一定等于总原子数 N；但当前这个变换通常把全部配体原子都放进域 0，所以通常 K=N：
-            - data.tor_bonds_anno: LongTensor，形状为 (T, 3)，扭转执行层级、轴的内侧端点、轴的外侧端点, 一个原子可以出现多次。每条可旋转键只旋转远离分子图中心的那一侧，靠近中心的一侧保持不动。
-            - data.twisted_nodes_anno: LongTensor，形状为 (W, 2)，[tor_bonds_anno 的行号, 随该轴转动的某个原子编号], 一个原子可以出现多次。
-            - data.dihedral_pairs_anno: LongTensor，形状为 (Q, 3)，[tor_bonds_anno 的行号, 第一个外侧原子, 第二个外侧原子]。如果轴两侧分别有 P 和 R 个非轴邻居，代码会构造笛卡尔积，因此产生：PxR 个二面角实例。
+            本项目 free 路径的 n_domain 为标量0, 其余刚体/扭转索引为约定形状的空张量, 供原 loss、批处理和采样接口使用.
+            - data.n_domain: LongTensor 标量, 刚体域数.在处理整体平移和旋转时, 被视为同一个整体的一组原子, 即, 对这个刚体域施加刚体变换等于对内部每个原子施加变换.
+            - data.domain_node_index: LongTensor, (2, K), 第一行索引刚体域, 第二行索引配体原子; K 为登记的域—原子归属对数, 本项目 free 无几何分支 K=0, 真实整体刚体分支 K=N.
+            - data.tor_bonds_anno: LongTensor, 形状为 (T, 3), 扭转执行层级、轴的内侧端点、轴的外侧端点, 一个原子可以出现多次.每条可旋转键只旋转远离分子图中心的那一侧, 靠近中心的一侧保持不动.
+            - data.twisted_nodes_anno: LongTensor, 形状为 (W, 2), [tor_bonds_anno 的行号, 随该轴转动的某个原子编号], 一个原子可以出现多次.
+            - data.dihedral_pairs_anno: LongTensor, 形状为 (Q, 3), [tor_bonds_anno 的行号, 第一个外侧原子, 第二个外侧原子].如果轴两侧分别有 P 和 R 个非轴邻居, 代码会构造笛卡尔积, 因此产生: PxR 个二面角实例.
 
         推理额外字段:
-            - gt_node_type: int64, (N,), 变换时真值原子类别副本。
-            - gt_node_pos: (N, 3), 变换时真值局部坐标副本，单位 Å。
-            - gt_halfedge_type: int64, (H,), 变换时真值半边类别副本。
-            - fixed_halfdist_flex: 0/1, (H,), 始终由原始 ``fixed_dist_torsion`` 取半边值得到，供 flexible 修正器使用，不随当前 setting 改写。free 全 0，rigid 全 1，flexible/torsional 从 ``fixed_dist_torsion`` 按半边端点抽取。
+            - gt_node_type: int64, (N,), 变换时真值原子类别副本.
+            - gt_node_pos: (N, 3), 变换时真值局部坐标副本, 单位 Å.
+            - gt_halfedge_type: int64, (H,), 变换时真值半边类别副本.
+            - fixed_halfdist_flex: 0/1, (H,), 原路径从 fixed_dist_torsion 按半边端点抽取; 本项目显式 free_no_geometry 的 free 路径为全0, 不供 flexible 修正读取.
 
         setting 语义:
-            - free: ``fixed_halfdist`` 全 0，允许所有原子对距离变化；训练时扭转/刚体注释为空。
-            - flexible/torsional: ``fixed_halfdist`` 来自 ``fixed_dist_torsion``，只允许跨可旋转键两侧的距离变化。
-            - rigid: ``fixed_halfdist`` 全 1，所有分子内距离固定；扭转注释为空但刚体域覆盖全部原子。
+            - free: ``fixed_halfdist`` 全 0, 允许所有原子对距离变化; 训练时扭转/刚体注释为空.
+            - flexible/torsional: ``fixed_halfdist`` 来自 ``fixed_dist_torsion``, 只允许跨可旋转键两侧的距离变化.
+            - rigid: ``fixed_halfdist`` 全 1, 所有分子内距离固定; 扭转注释为空但刚体域覆盖全部原子.
         """
         # sample setting
-        # ``setting``：str，本样本唯一的构象约束模式；决定固定距离 prompt 和扭转注释分支。
+        # ``setting``: str, 本样本唯一的构象约束模式; 决定固定距离 prompt 和扭转注释分支.
         setting = self.sample_setting()
         if 'is_atom_remain'  in data:  # peptide is cut. only applicable for free setting
             raise ValueError('not supported anymore: is_atom_remain')
             setting = 'free'
         data.update({
-            # ``data.task_setting``：str，本样本采到的 ``free``、``flexible``、``torsional`` 或 ``rigid`` 运动模式。
+            # ``data.task_setting``: str, 本样本采到的 ``free``、``flexible``、``torsional`` 或 ``rigid`` 运动模式.
             'task_setting': setting,
         })
 
         # set fixed
-        # ``data``：PocketMolData，新增 ``fixed_node``、``fixed_pos``、``fixed_halfedge`` 与 ``fixed_halfdist`` 叶。
+        # ``data``: PocketMolData, 新增 ``fixed_node``、``fixed_pos``、``fixed_halfedge`` 与 ``fixed_halfdist`` 叶.
         data = self.set_fixed(data, setting)
         
         # torsional 
-        # ``data``：PocketMolData，新增 ``n_domain``、``domain_node_index`` 与三张扭转注释表。
+        # ``data``: PocketMolData, 新增 ``n_domain``、``domain_node_index`` 与三张扭转注释表.
         data = self.set_torsional_feat(data, setting)
         
         # for the sample mode, prepare init data
         if self.mode != 'train':
-            # ``data``：PocketMolData，非训练模式新增 ``gt_node_type``、``gt_node_pos`` 与 ``gt_halfedge_type`` 副本。
+            # ``data``: PocketMolData, 非训练模式新增 ``gt_node_type``、``gt_node_pos`` 与 ``gt_halfedge_type`` 副本.
             data = self.prepare_sample(data, setting)
             
         if self.mode != 'train':
-            # ``fixed_distmat_flex``：LongTensor，形状为 (N, N)；不考虑当前 setting 的原始扭转不变距离矩阵。
-            fixed_distmat_flex = torch.LongTensor(data['fixed_dist_torsion'])
-            # ``fixed_halfdist_flex``：LongTensor，形状为 (H,)；每条完全图半边在原始扭转约束下是否保持端点距离。
-            fixed_halfdist_flex = fixed_distmat_flex[data['halfedge_index'][0], data['halfedge_index'][1]]  # [N, N] + [2, H] -> [H]
+            if setting == 'free' and self.config.get('free_no_geometry', False):
+                # int64, (H,), 本项目 free 路径不执行 flexible 修正, 仅保留原接口要求的全0距离约束.
+                fixed_halfdist_flex = torch.zeros_like(data['halfedge_type'])
+            else:
+                # (N, N), 原路径的扭转不变距离矩阵; 旧配置和真实 flexible 任务继续读取原资产.
+                fixed_distmat_flex = torch.LongTensor(data['fixed_dist_torsion'])
+                # (H,), 每条完全图半边在原始扭转约束下是否保持端点距离.
+                fixed_halfdist_flex = fixed_distmat_flex[data['halfedge_index'][0], data['halfedge_index'][1]]
             data.update({
-                # ``data.fixed_halfdist_flex``：LongTensor，形状为 (H,)；供 flexible 修正器读取的原始扭转距离约束。
+                # (H,), 原入口为扭转距离约束; 本项目 free 无几何入口仅保存兼容全0张量.
                 'fixed_halfdist_flex': fixed_halfdist_flex,
             })
         
@@ -855,52 +860,50 @@ class ConfTransform:
     
     def set_torsional_feat(self, data: PocketMolData, setting):
         """
-        以化学图中心为根，对可旋转键排序并建立刚体/扭转索引字段。
+        以化学图中心为根, 对可旋转键排序并建立刚体/扭转索引字段.
 
         输入参数:
-            - data.node_type: LongTensor，形状为 (N,)，只用长度确定配体原子数。
-            - data.path_mat: Tensor，形状为 (N, N)，化学图最短路径矩阵，单位为键数。
-            - data.nbh_dict: dict[int, list[int]]，每个原子编号到一跳邻居编号列表的映射。
-            - data.tor_bond_mat: Tensor，形状为 (N, N)，1 表示对应原子对形成可旋转键。
-            - data.tor_twisted_pairs: dict[tuple[int, int], list[set[int], set[int]]]，规范方向可旋转键到断键两侧非轴原子的映射。
-            - setting: str, 当前约束模式。
+            - data.node_type: LongTensor, 形状为 (N,), 只用长度确定配体原子数.
+            - data.path_mat: Tensor, 形状为 (N, N), 化学图最短路径矩阵, 单位为键数.
+            - data.nbh_dict: dict[int, list[int]], 每个原子编号到一跳邻居编号列表的映射.
+            - data.tor_bond_mat: Tensor, 形状为 (N, N), 1 表示对应原子对形成可旋转键.
+            - data.tor_twisted_pairs: dict[tuple[int, int], list[set[int], set[int]]], 规范方向可旋转键到断键两侧非轴原子的映射.
+            - setting: str, 当前约束模式.
 
         返回字段:
-            - data.n_domain: LongTensor 标量，当前非空分支为 1；free 训练分支为 0。
-            - data.domain_node_index: LongTensor，形状为 (2, K)，第一行是域编号，第二行是原子编号；free 训练分支形状为 (2, 0)。
-            - data.tor_bonds_anno: LongTensor，形状为 (T, 3)，BFS 从图中心向外发现的层级、远端轴原子和近端轴原子。
-            - data.twisted_nodes_anno: LongTensor，形状为 (W, 2)，可旋转键行号到轴远端随动原子的映射。
-            - data.dihedral_pairs_anno: LongTensor，形状为 (Q, 3)，可旋转键行号到两侧一跳邻居笛卡尔积的映射。
+            - data.n_domain: LongTensor 标量, 当前非空分支为 1; free 无几何分支为 0.
+            - data.domain_node_index: LongTensor, 形状为 (2, K), 第一行是域编号, 第二行是原子编号; free 无几何分支形状为 (2, 0).
+            - data.tor_bonds_anno: LongTensor, 形状为 (T, 3), BFS 从图中心向外发现的层级、远端轴原子和近端轴原子.
+            - data.twisted_nodes_anno: LongTensor, 形状为 (W, 2), 可旋转键行号到轴远端随动原子的映射.
+            - data.dihedral_pairs_anno: LongTensor, 形状为 (Q, 3), 可旋转键行号到两侧一跳邻居笛卡尔积的映射.
 
         关键分支:
-            - ``setting == 'free' and mode == 'train'``: 返回全部空注释，训练 free 高斯噪声无需扭转几何。
-            - ``setting == 'rigid'``: 保留覆盖全部原子的单刚体域，但返回空扭转注释。
-            - 其他分支含 ``free`` 推理；仍构造扭转注释，供采样重分配/几何修正复用。
+            - setting=free 且 mode=train 或 free_no_geometry=True: 返回全部空注释, 本项目 free 训练、验证和采样都不需要真实扭转几何.
+            - ``setting == 'rigid'``: 保留覆盖全部原子的单刚体域, 但返回空扭转注释.
+            - 其他分支含未启用 free_no_geometry 的旧 free 推理; 仍构造扭转注释, 保留旧几何修正入口.
         """
-        if (setting == 'free' and self.mode == 'train'):
-        # if (setting == 'free'):
-        # if 'path_mat' not in data:
+        if setting == 'free' and (self.mode == 'train' or self.config.get('free_no_geometry', False)):
             data.update({
-                # ``data.n_domain``：int64 标量 0，free 训练样本不声明任何刚体域。
+                # ``data.n_domain``: int64 标量 0, free 无几何样本不声明任何刚体域.
                 'n_domain': torch.tensor(0, dtype=torch.long),
-                # ``data.domain_node_index``：LongTensor，形状为 (2, 0)，没有域—原子归属对。
+                # ``data.domain_node_index``: LongTensor, 形状为 (2, 0), 没有域—原子归属对.
                 'domain_node_index': torch.empty([2, 0], dtype=torch.long),
-                # ``data.tor_bonds_anno``：LongTensor，形状为 (0, 3)，free 训练不构造扭转键行。
+                # ``data.tor_bonds_anno``: LongTensor, 形状为 (0, 3), free 无几何分支不构造扭转键行.
                 'tor_bonds_anno': torch.empty([0, 3], dtype=torch.long),
-                # ``data.twisted_nodes_anno``：LongTensor，形状为 (0, 2)，free 训练不构造扭转键—随动原子对。
+                # ``data.twisted_nodes_anno``: LongTensor, 形状为 (0, 2), free 无几何分支不构造扭转键—随动原子对.
                 'twisted_nodes_anno': torch.empty([0, 2], dtype=torch.long),
-                # ``data.dihedral_pairs_anno``：LongTensor，形状为 (0, 3)，free 训练不构造扭转键—二面角端点行。
+                # ``data.dihedral_pairs_anno``: LongTensor, 形状为 (0, 3), free 无几何分支不构造扭转键—二面角端点行.
                 'dihedral_pairs_anno': torch.empty([0, 3], dtype=torch.long)
             })
             return data
         
         # # rigid domain
         # assert setting in ['flexible', 'torsional', 'rigid']
-        # ``n_node``：int，当前分子的配体原子数 N；对应 ``node_type`` 第一维长度。
+        # ``n_node``: int, 当前分子的配体原子数 N; 对应 ``node_type`` 第一维长度.
         n_node = data['node_type'].shape[0]
-        # ``n_domain``：LongTensor 标量，值为 1；当前实现把全部原子视为一个候选刚体域。
+        # ``n_domain``: LongTensor 标量, 值为 1; 当前实现把全部原子视为一个候选刚体域.
         n_domain = torch.tensor(1, dtype=torch.long)
-        # ``domain_node_index``：LongTensor，形状为 (2, N)；第一行全为域 0，第二行依次列出 ``node_type`` 第一维的原子编号。
+        # ``domain_node_index``: LongTensor, 形状为 (2, N); 第一行全为域 0, 第二行依次列出 ``node_type`` 第一维的原子编号.
         domain_node_index = torch.stack([
             torch.zeros(n_node, dtype=torch.long),
             torch.arange(n_node, dtype=torch.long)
@@ -908,14 +911,14 @@ class ConfTransform:
         
         
         # # center nodes
-        # ``path_mat``：Tensor，形状为 (N, N)；化学图最短路径长度，对角为 0，单位为键数。
+        # ``path_mat``: Tensor, 形状为 (N, N); 化学图最短路径长度, 对角为 0, 单位为键数.
         path_mat = data['path_mat']
-        # ``nbh_dict``：dict[int, list[int]]，键和值均索引 ``node_type`` 第一维；值只含一跳化学键邻居。
+        # ``nbh_dict``: dict[int, list[int]], 键和值均索引 ``node_type`` 第一维; 值只含一跳化学键邻居.
         nbh_dict = data['nbh_dict']
 
-        # ``margin``：np.ndarray|Tensor，形状为 (N,)；第 i 个值是原子 i 到最远原子的图距离，即图论离心率。
+        # ``margin``: np.ndarray|Tensor, 形状为 (N,); 第 i 个值是原子 i 到最远原子的图距离, 即图论离心率.
         margin = path_mat.max(0)
-        # ``node_c0``：int，离心率最小的图中心原子索引；并列中心中均匀随机选择一个。
+        # ``node_c0``: int, 离心率最小的图中心原子索引; 并列中心中均匀随机选择一个.
         node_c0 = np.random.choice(np.argwhere(margin == margin.min()).reshape(-1))
         # neigh_c0 = nbh_dict[node_c0]
         # if len(neigh_c0) >= 2:
@@ -928,68 +931,68 @@ class ConfTransform:
 
         if setting == 'rigid':
             data.update({
-                # ``data.n_domain``：int64 标量 1，整分子被视为一个刚体域。
+                # ``data.n_domain``: int64 标量 1, 整分子被视为一个刚体域.
                 'n_domain': torch.tensor(1, dtype=torch.long),
-                # ``data.domain_node_index``：LongTensor，形状为 (2, N)，第一行全 0，第二行是全部原子索引。
+                # ``data.domain_node_index``: LongTensor, 形状为 (2, N), 第一行全 0, 第二行是全部原子索引.
                 'domain_node_index': torch.stack([
                     torch.zeros(data.num_nodes, dtype=torch.long),
                     torch.arange(data.num_nodes, dtype=torch.long)
                 ], dim=0),
                 # 'domain_center_nodes': domain_center_nodes,
-                # ``data.tor_bonds_anno``：LongTensor，形状为 (0, 3)，rigid 模式不允许分子内扭转。
+                # ``data.tor_bonds_anno``: LongTensor, 形状为 (0, 3), rigid 模式不允许分子内扭转.
                 'tor_bonds_anno': torch.empty([0, 3], dtype=torch.long),
-                # ``data.twisted_nodes_anno``：LongTensor，形状为 (0, 2)，没有扭转键—随动原子对。
+                # ``data.twisted_nodes_anno``: LongTensor, 形状为 (0, 2), 没有扭转键—随动原子对.
                 'twisted_nodes_anno': torch.empty([0, 2], dtype=torch.long),
-                # ``data.dihedral_pairs_anno``：LongTensor，形状为 (0, 3)，没有扭转键—二面角端点行。
+                # ``data.dihedral_pairs_anno``: LongTensor, 形状为 (0, 3), 没有扭转键—二面角端点行.
                 'dihedral_pairs_anno': torch.empty([0, 3], dtype=torch.long)
             })
             return data
         
-        # ``tor_bond_mat``：Tensor，形状为 (N, N)；0/1 对称可旋转键邻接矩阵。
+        # ``tor_bond_mat``: Tensor, 形状为 (N, N); 0/1 对称可旋转键邻接矩阵.
         tor_bond_mat = data['tor_bond_mat']
-        # ``n_tor_bonds``：Tensor 标量，可旋转无向键数 T；对称矩阵求和后除以 2。
+        # ``n_tor_bonds``: Tensor 标量, 可旋转无向键数 T; 对称矩阵求和后除以 2.
         n_tor_bonds = tor_bond_mat.sum() / 2
         if n_tor_bonds == 0:
-            # ``tor_bonds_anno``：LongTensor，形状为 (0, 3)；无可旋转键时的空轴注释。
+            # ``tor_bonds_anno``: LongTensor, 形状为 (0, 3); 无可旋转键时的空轴注释.
             tor_bonds_anno = torch.empty([0, 3], dtype=torch.long)
-            # ``twisted_nodes_anno``：LongTensor，形状为 (0, 2)；无可旋转键时的空随动原子注释。
+            # ``twisted_nodes_anno``: LongTensor, 形状为 (0, 2); 无可旋转键时的空随动原子注释.
             twisted_nodes_anno = torch.empty([0, 2], dtype=torch.long)
-            # ``dihedral_pairs_anno``：LongTensor，形状为 (0, 3)；无可旋转键时的空二面角邻居注释。
+            # ``dihedral_pairs_anno``: LongTensor, 形状为 (0, 3); 无可旋转键时的空二面角邻居注释.
             dihedral_pairs_anno = torch.empty([0, 3], dtype=torch.long)
         else:
             # # torsional bonds
             # BFS+DFS to determine the order of the torsional bonds and the trees
-            # ``global_remain``：np.ndarray[bool]，形状为 (N,)；True 表示该原子尚未由 BFS 访问，度为 1 的叶原子随后预置 False。
+            # ``global_remain``: np.ndarray[bool], 形状为 (N,); True 表示该原子尚未由 BFS 访问, 度为 1 的叶原子随后预置 False.
             global_remain = np.ones(n_node, dtype=bool)
-            # ``node``：int，当前原子的 0-based 索引。
-            # ``nbh``：list[int]，当前原子的一跳化学键邻居索引。
+            # ``node``: int, 当前原子的 0-based 索引.
+            # ``nbh``: list[int], 当前原子的一跳化学键邻居索引.
             for node, nbh in nbh_dict.items():
                 if len(nbh) == 1:
-                    # ``global_remain[node]``：bool 标量；叶原子不作为 BFS 中间查询点，提前标为已访问。
+                    # ``global_remain[node]``: bool 标量; 叶原子不作为 BFS 中间查询点, 提前标为已访问.
                     global_remain[node] = False  # trick 1: frontier node no need to visit
-            # ``curr_order``：int，当前 BFS 层级；写入 ``tor_bonds_anno`` 第一列。
+            # ``curr_order``: int, 当前 BFS 层级; 写入 ``tor_bonds_anno`` 第一列.
             curr_order = 0
-            # ``query_pool``：list[int]，当前层待访问的原子编号；数值索引 ``node_type`` 第一维。
+            # ``query_pool``: list[int], 当前层待访问的原子编号; 数值索引 ``node_type`` 第一维.
             query_pool = [node_c0]
-            # ``tor_bonds_anno``：list[list[int, int, int]]，按发现顺序暂存 ``[层级, 远端轴原子, 近端轴原子]``。
+            # ``tor_bonds_anno``: list[list[int, int, int]], 按发现顺序暂存 ``[层级, 远端轴原子, 近端轴原子]``.
             tor_bonds_anno = []
-            # ``early_stop``：bool；找到矩阵统计的全部 T 条旋转键后终止嵌套 BFS。
+            # ``early_stop``: bool; 找到矩阵统计的全部 T 条旋转键后终止嵌套 BFS.
             early_stop = False  # trick 2: if all torsional bonds are found, stop
             while global_remain.any():
                 #print('in loop 523')
-                # ``next_query``：list[int]，跨当前层可旋转键后进入下一 BFS 层的远端轴原子编号。
+                # ``next_query``: list[int], 跨当前层可旋转键后进入下一 BFS 层的远端轴原子编号.
                 next_query = []
                 while len(query_pool) > 0:
                     #print('in loop 526')
                     # mark the node as visited
-                    # ``curr_node``：int，当前访问原子编号；数值索引 ``node_type`` 第一维。
+                    # ``curr_node``: int, 当前访问原子编号; 数值索引 ``node_type`` 第一维.
                     curr_node = query_pool.pop(0)
-                    # ``global_remain[curr_node]``：bool 标量；把当前原子标为已访问，避免再次加入 BFS。
+                    # ``global_remain[curr_node]``: bool 标量; 把当前原子标为已访问, 避免再次加入 BFS.
                     global_remain[curr_node] = False
                     # add neighbors to query pool
-                    # ``nbh``：list[int]，当前原子的一跳化学键邻居编号；每个值索引原子维。
+                    # ``nbh``: list[int], 当前原子的一跳化学键邻居编号; 每个值索引原子维.
                     nbh = nbh_dict[curr_node]
-                    # ``nb_node``：int，当前检查的一跳邻居原子索引，作用于 ``global_remain`` 与 ``tor_bond_mat`` 的原子维。
+                    # ``nb_node``: int, 当前检查的一跳邻居原子索引, 作用于 ``global_remain`` 与 ``tor_bond_mat`` 的原子维.
                     for nb_node in nbh:
                         if (not global_remain[nb_node]) or (nb_node in query_pool):
                             pass  # already visited or in query pool
@@ -997,7 +1000,7 @@ class ConfTransform:
                             tor_bonds_anno.append([curr_order, nb_node, curr_node])
                             next_query.append(nb_node)
                             if len(tor_bonds_anno) == n_tor_bonds:
-                                # ``early_stop``：bool，已发现矩阵统计的全部 T 条可旋转键，结束两层循环。
+                                # ``early_stop``: bool, 已发现矩阵统计的全部 T 条可旋转键, 结束两层循环.
                                 early_stop = True
                                 break
                         else:  # continue to search
@@ -1006,72 +1009,72 @@ class ConfTransform:
                         break
                 if early_stop:
                     break
-                # ``curr_order``：int，BFS 层级加一；后续发现的扭转键写入新的层级值。
+                # ``curr_order``: int, BFS 层级加一; 后续发现的扭转键写入新的层级值.
                 curr_order += 1
-                # ``query_pool``：list[int]，把跨当前层扭转键到达的远端轴原子作为下一层起点。
+                # ``query_pool``: list[int], 把跨当前层扭转键到达的远端轴原子作为下一层起点.
                 query_pool = next_query
 
             # # twisted nodes
-            # ``tor_twisted_pairs``：dict[tuple[int, int], list[set[int], set[int]]]；规范化轴端点到断键两侧非轴原子集合的映射。
+            # ``tor_twisted_pairs``: dict[tuple[int, int], list[set[int], set[int]]]; 规范化轴端点到断键两侧非轴原子集合的映射.
             tor_twisted_pairs = data['tor_twisted_pairs']
-            # ``twisted_nodes_anno``：list[list[int, int]]，暂存 ``[可旋转键行号, 随动原子编号]``。
+            # ``twisted_nodes_anno``: list[list[int, int]], 暂存 ``[可旋转键行号, 随动原子编号]``.
             twisted_nodes_anno = []
-            # ``index_tor``：int，当前扭转键在 ``tor_bonds_anno`` 中的行号。
-            # ``tor_left``：int，当前有向扭转轴远离中心的端点原子索引。
-            # ``tor_right``：int，当前有向扭转轴靠近中心的端点原子索引。
-            # ``_``：int，未使用的 BFS 层级；此循环只需两个轴端点。
+            # ``index_tor``: int, 当前扭转键在 ``tor_bonds_anno`` 中的行号.
+            # ``tor_left``: int, 当前有向扭转轴远离中心的端点原子索引.
+            # ``tor_right``: int, 当前有向扭转轴靠近中心的端点原子索引.
+            # ``_``: int, 未使用的 BFS 层级; 此循环只需两个轴端点.
             for index_tor, (_, tor_left, tor_right) in enumerate(tor_bonds_anno):
                 if tor_left < tor_right:
-                    # ``all_nodes_left``：set[int]，沿 ``tor_left`` 一侧且不含轴端点的原子；按构造方向应远离中心 ``node_c0``。
+                    # ``all_nodes_left``: set[int], 沿 ``tor_left`` 一侧且不含轴端点的原子; 按构造方向应远离中心 ``node_c0``.
                     all_nodes_left = tor_twisted_pairs[(tor_left, tor_right)][0]
                 else:
-                    # ``all_nodes_left``：set[int]，规范化字典以较小端点为键时，取反方向对应的断键侧集合。
+                    # ``all_nodes_left``: set[int], 规范化字典以较小端点为键时, 取反方向对应的断键侧集合.
                     all_nodes_left = tor_twisted_pairs[(tor_right, tor_left)][1]
                 assert (node_c0 not in all_nodes_left), 'center node c0 should not be in the twisted nodes'
                 # assert (node_c1 not in all_nodes_left), 'center node c1 should not be in the twisted nodes'
                 # assert (node_c2 not in all_nodes_left), 'center node c2 should not be in the twisted nodes'
                 
-                # ``node``：int，当前远端随动原子索引；写入二元组第二列。
+                # ``node``: int, 当前远端随动原子索引; 写入二元组第二列.
                 twisted_nodes_anno.extend([index_tor, node] for node in all_nodes_left)
-            # ``twisted_nodes_anno``：LongTensor，形状为 (W, 2)；第一列索引 ``tor_bonds_anno``，第二列索引 ``node_type`` 第一维。
+            # ``twisted_nodes_anno``: LongTensor, 形状为 (W, 2); 第一列索引 ``tor_bonds_anno``, 第二列索引 ``node_type`` 第一维.
             twisted_nodes_anno = torch.tensor(twisted_nodes_anno, dtype=torch.long)
             
             # # dihedral pairs
-            # ``dihedral_pairs_anno``：list[list[int, int, int]]，暂存 ``[可旋转键行号, 左侧邻居, 右侧邻居]``。
+            # ``dihedral_pairs_anno``: list[list[int, int, int]], 暂存 ``[可旋转键行号, 左侧邻居, 右侧邻居]``.
             dihedral_pairs_anno = []
-            # ``index_tor``：int，当前扭转键在 ``tor_bonds_anno`` 中的行号。
-            # ``tor_left``：int，当前有向扭转轴远离中心的端点原子索引。
-            # ``tor_right``：int，当前有向扭转轴靠近中心的端点原子索引。
-            # ``_``：int，未使用的 BFS 层级；此循环只需两个轴端点。
+            # ``index_tor``: int, 当前扭转键在 ``tor_bonds_anno`` 中的行号.
+            # ``tor_left``: int, 当前有向扭转轴远离中心的端点原子索引.
+            # ``tor_right``: int, 当前有向扭转轴靠近中心的端点原子索引.
+            # ``_``: int, 未使用的 BFS 层级; 此循环只需两个轴端点.
             for index_tor, (_, tor_left, tor_right) in enumerate(tor_bonds_anno):
-                # ``n``：int，当前左轴端的一跳邻居原子索引；等于右轴端时过滤。
-                # ``nbh_left``：list[int]，左轴端排除右轴端后的一跳邻居；数值索引原子维。
+                # ``n``: int, 当前左轴端的一跳邻居原子索引; 等于右轴端时过滤.
+                # ``nbh_left``: list[int], 左轴端排除右轴端后的一跳邻居; 数值索引原子维.
                 nbh_left = [n for n in nbh_dict[tor_left] if n != tor_right]
-                # ``n``：int，当前右轴端的一跳邻居原子索引；等于左轴端时过滤。
-                # ``nbh_right``：list[int]，右轴端排除左轴端后的一跳邻居；数值索引原子维。
+                # ``n``: int, 当前右轴端的一跳邻居原子索引; 等于左轴端时过滤.
+                # ``nbh_right``: list[int], 右轴端排除左轴端后的一跳邻居; 数值索引原子维.
                 nbh_right = [n for n in nbh_dict[tor_right] if n != tor_left]
-                # ``node_left``：int，当前左轴端的外侧邻居原子索引。
-                # ``node_right``：int，当前右轴端的外侧邻居原子索引。
+                # ``node_left``: int, 当前左轴端的外侧邻居原子索引.
+                # ``node_right``: int, 当前右轴端的外侧邻居原子索引.
                 dihedral_pairs_anno.extend([index_tor, node_left, node_right]
                                         for node_left, node_right in product(nbh_left, nbh_right))
-            # ``dihedral_pairs_anno``：LongTensor，形状为 (Q, 3)；第一列索引 ``tor_bonds_anno``，后两列索引原子维。
+            # ``dihedral_pairs_anno``: LongTensor, 形状为 (Q, 3); 第一列索引 ``tor_bonds_anno``, 后两列索引原子维.
             dihedral_pairs_anno = torch.tensor(dihedral_pairs_anno, dtype=torch.long)
 
-            # ``tor_bonds_anno``：LongTensor，形状为 (T, 3)；列表顺序成为可旋转键行号，供另外两张注释表引用。
+            # ``tor_bonds_anno``: LongTensor, 形状为 (T, 3); 列表顺序成为可旋转键行号, 供另外两张注释表引用.
             tor_bonds_anno = torch.tensor(tor_bonds_anno, dtype=torch.long)
             
         # # combine
         data.update({
-            # ``data.n_domain``：int64 标量，当前非 rigid 返回路径为覆盖全部 N 个原子的单域 1。
+            # ``data.n_domain``: int64 标量, 当前非 rigid 返回路径为覆盖全部 N 个原子的单域 1.
             'n_domain': n_domain,
-            # ``data.domain_node_index``：LongTensor，形状为 (2, N)，逐原子给出域 0 与原子索引。
+            # ``data.domain_node_index``: LongTensor, 形状为 (2, N), 逐原子给出域 0 与原子索引.
             'domain_node_index': domain_node_index,
             # 'domain_center_nodes': domain_center_nodes,
-            # ``data.tor_bonds_anno``：LongTensor，形状为 (T, 3)，逐扭转键保存 BFS 层级与有向轴端点。
+            # ``data.tor_bonds_anno``: LongTensor, 形状为 (T, 3), 逐扭转键保存 BFS 层级与有向轴端点.
             'tor_bonds_anno': tor_bonds_anno,
-            # ``data.twisted_nodes_anno``：LongTensor，形状为 (W, 2)，逐行关联扭转键行号与随动原子索引。
+            # ``data.twisted_nodes_anno``: LongTensor, 形状为 (W, 2), 逐行关联扭转键行号与随动原子索引.
             'twisted_nodes_anno': twisted_nodes_anno,
-            # ``data.dihedral_pairs_anno``：LongTensor，形状为 (Q, 3)，逐行关联扭转键行号与两个外侧原子索引。
+            # ``data.dihedral_pairs_anno``: LongTensor, 形状为 (Q, 3), 逐行关联扭转键行号与两个外侧原子索引.
             'dihedral_pairs_anno': dihedral_pairs_anno,
         })
             

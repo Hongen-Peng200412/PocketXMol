@@ -1,0 +1,212 @@
+"""把冻结 occurrence 清单装配为原 PocketMolData, 接入原 free docking 变换.
+
+主要入口是 OccurrenceDataset. 它读取源模板、沉积配体坐标和完整标准受体, 在内存选择口袋、编码蛋白/核酸、确定模型原点, 最后交给调用方提供的原配体特征、任务和噪声变换.
+本模块不落盘, 不重新构建科学资产. 训练对合法实例均匀有放回抽样; 有限验证按 worker 跨步分片, 不丢尾部.
+"""
+
+import json
+import warnings
+from itertools import count
+from pathlib import Path
+
+import numpy as np
+import torch
+from easydict import EasyDict
+from torch.utils.data import IterableDataset, get_worker_info
+from torch_geometric.nn import knn_graph
+
+from docking.assets import read_receptor, read_template, select_pocket
+from utils.data import PocketMolData
+from utils.transforms import FeaturizePocket
+
+
+# int64, (20,), AdaLigand 标准氨基酸编号映射到原 PDBProtein.AA_NAME_NUMBER 的类别顺序.
+PROTEIN_CLASS = np.array([0, 14, 11, 2, 1, 13, 3, 5, 6, 7, 9, 8, 10, 4, 12, 15, 16, 18, 19, 17], dtype=np.int64)
+# 组分 one-hot 的顺序是 base、sugar、phosphate; O3'/O5' 与其它糖环/糖连接氧归入 sugar.
+SUGAR_ATOMS = {"C1'", "C2'", "C3'", "C4'", "C5'", "O2'", "O3'", "O4'", "O5'"}
+PHOSPHATE_ATOMS = {"P", "OP1", "OP2", "OP3", "O1P", "O2P", "O3P"}
+
+
+class EmptyEnvelopePocketError(ValueError):
+    """RA/RB的E口袋没有标准受体原子, 无法按实际受体坐标均值定义原点."""
+
+
+# ================================================================================================
+class OccurrenceDataset(IterableDataset):
+    """读取一个划分的完整实例并产出单个分子图, 训练与采样使用同一装配规则.
+
+    N 为当前完整配体重原子数, P 为当前模型实际输入的口袋受体重原子数, M 为配体无向化学键数.
+
+    构造参数:
+        - dataset_config.root: str, AdaLigand 只读 Ori_Data 根路径.
+        - dataset_config.derived_root: str, 本项目共享 symmetries 和 ligand_area 的派生根路径.
+        - dataset_config.manifest_root: str, train.jsonl、validation.jsonl、calibration.jsonl、test.jsonl 的冻结清单根路径.
+        - dataset_config.pocket_mode: str, center 或 envelope, 决定残基选择和模型原点.
+        - dataset_config.knn: int, 口袋编码器的原近邻数, 当前为32.
+        - split: str, 如 train 或 validation, 选择同名 JSONL 文件.
+        - transforms: callable, 接收 PocketMolData; 训练依次执行 FeaturizeMol、原任务变换和原噪声器.
+        - receptor_branch: str, protein 走官方蛋白特征入口, RA 共享受体图, RB 分别构图和编码.
+        - protocol: str, C0、C5 或 E, 决定训练及有限验证/采样的定位条件; C0 用真实配体几何中心, C5 用中心加偏移, E 用包络口袋.
+        - shuffle: bool, True 为无限均匀有放回训练流, 仅 protocol=C5 时每次重采样偏移; False 为一次完整有限流, C5 读取冻结偏移.
+
+    清单每条记录:
+        - pdb_id: str, 如 9v7o, 定位源 parse 和 density 子目录.
+        - candidate_id: int, 如0, 即本项目 occurrence_id, 选择 coords_0 等源数组.
+        - object_key: str, 如 CCD:GMP, 定位共享 CCD_GMP.npz 模板与对称排列.
+        - center_offset_xyz_A: list[float], 长度3, 当前实例冻结的 C5 世界 XYZ 偏移, 单位 Å.
+        - sampling_seed: int, 当前实例正式候选池的固定种子; 此类不执行候选生成.
+        - views: list[str], 当前实例所属测试视图, 如 ["ALL", "CAP10", "HF10_TO5"].
+
+    新增内存字段:
+        - pocket_is_nucleic: bool, (P,), 与 pocket_pos 第一维对齐, True 为标准 RNA/DNA 原子.
+        - pocket_nucleic_feature: float32, (P, 15), 核酸的4元素+8核苷酸+3组分 one-hot; 蛋白位置为0.
+        - pocket_atom_feature: float32, (P, 25), 原蛋白4元素+20氨基酸+1主链特征; 核酸位置为0.
+        - given_center_local: float32, 通常为 (1, 3), 给定中心相对模型原点的 XYZ 向量, 单位 Å; 中心模式为0, T1只用于中心模式; 官方空蛋白沿原空 pocket_center 得到 (0, 3), 不填假原点.
+        - pocket_protein_count/pocket_nucleic_count: int, 当前协议选袋在官方蛋白过滤前的两类重原子数, 供报告核酸占比.
+        - pos_all_confs: float32, (1, N, 3), 源沉积世界坐标的单个构象; 原 FeaturizeMol 随后减去 pocket_center.
+
+    原字段 num_atoms、bond_index、bond_type 和 matches_iso 仍按模板顺序解释; 配体类别、fixed prompt、空刚体域和噪声叶由原变换生成.
+    """
+
+    def __init__(self, dataset_config, split, transforms, receptor_branch, protocol, shuffle):
+        """保存明确配置并读取唯一的冻结实例清单; 不枚举目录补回被排除的实例."""
+        super().__init__()
+        self.config = dataset_config
+        self.split = split
+        self.transforms = transforms
+        self.receptor_branch = receptor_branch
+        self.protocol = protocol
+        self.shuffle = shuffle
+        self.root = Path(dataset_config.root)
+        self.derived_root = Path(dataset_config.derived_root)
+        with (Path(dataset_config.manifest_root) / f"{split}.jsonl").open(encoding="utf-8") as stream:
+            # list[dict], 每个元素是一条已通过累计筛选的 occurrence 记录; 字段见类契约.
+            self.records = [json.loads(line) for line in stream if line.strip()]
+        self.rng = None
+
+    def __getitem__(self, index):
+        """装配 records[index] 的口袋与完整配体图, 再执行调用方指定的原变换.
+
+        返回 PocketMolData, 核心字段见类说明. 中心C0原点为完整配体几何中心g, 中心C5原点为g+delta; 同一份完整delta用于选袋和原点, 局部监督目标的质心相应为0或-delta. 本类不添加带噪坐标的整体平移.
+        RA/RB空E在求均值前抛出EmptyEnvelopePocketError, 信息包含pdb_id/occurrence_id; __iter__仅在train/validation跳过, 正式采样直接索引并记录输入失败. 其它缺失或损坏资产直接抛出源异常, 不在训练热路径修复.
+        """
+        record = self.records[index]
+        pdb_id, candidate_id = record["pdb_id"], int(record["candidate_id"])
+        template_name = record["object_key"].replace(":", "_") + ".npz"
+        atoms, bonds, _, _ = read_template(self.root / "ligand_objects" / template_name)
+        with np.load(self.root / "parse" / pdb_id / "ligand_coords.npz", allow_pickle=False) as archive:
+            # float32, (N, 3), 已在准备阶段确认全部重原子存在且有限; 不再用 present 选子图.
+            ligand_coords = archive[f"coords_{candidate_id}"]
+
+        # (3,), occurrence 的沉积几何中心, 仅用于已批准的定位条件构造.
+        ligand_center = ligand_coords.mean(axis=0)
+        if self.shuffle and self.protocol == "C5":
+            if self.rng is None:
+                self.rng = np.random.default_rng(torch.initial_seed())
+            # (3,), 仅C5训练抽取一次delta: 均匀球面方向乘独立Uniform(0, 5)半径, 单位Å; 选袋与原点共用, 不乘噪声强度.
+            direction = self.rng.normal(size=3)
+            offset = direction / np.linalg.norm(direction) * self.rng.uniform(0.0, 5.0)
+        elif self.protocol == "C5":
+            offset = np.asarray(record["center_offset_xyz_A"], dtype=np.float32)
+        else:
+            offset = np.zeros(3, dtype=np.float32)
+        given_center = (ligand_center + offset).astype(np.float32)
+
+        receptor = read_receptor(self.root / "parse" / pdb_id / "receptor_tokens.npz")
+        # bool, (P_full,), 依据完整标准受体的残基 COM 选择口袋, 不从旧兼容口袋二次截取.
+        selected = select_pocket(receptor, ligand_coords, given_center, self.config.pocket_mode)
+        protein_count = int(np.sum(selected & (receptor["res_type"] < 20)))
+        nucleic_count = int(np.sum(selected & (receptor["res_type"] >= 20)))
+        if self.receptor_branch == "protein":
+            selected &= receptor["res_type"] < 20
+        # 逐原子数组沿相同掩码切分; P 是当前模型实际输入的口袋重原子数.
+        pocket = {key: value[selected] for key, value in receptor.items()}
+        # 空E没有可定义的受体均值; 不用配体中心替代, 也不改变标准残基和10 Å选择规则.
+        if self.config.pocket_mode == "envelope" and self.receptor_branch in ("RA", "RB") and len(pocket["coords"]) == 0:
+            raise EmptyEnvelopePocketError(f"empty_envelope_pocket: {pdb_id}/{candidate_id}")
+        pocket_pos = torch.from_numpy(pocket["coords"])
+        pocket_is_nucleic = torch.from_numpy(pocket["res_type"] >= 20)
+        # int64, (M,), 源五维键类别映到原模型1/2/3/4; 配位键已在准备阶段排除.
+        bond_types = np.array([1, 2, 3, 0, 4], dtype=np.int64)[bonds["type"].argmax(axis=1)]
+        # int64, (2, M), 每条源化学键的原子端点; 后面复制反向得到原 FeaturizeMol 输入.
+        bond_index = np.stack([bonds["atom_1"], bonds["atom_2"]]).astype(np.int64)
+
+        with np.load(self.derived_root / "symmetries" / template_name, allow_pickle=False) as archive:
+            matches_iso = archive["matches_iso"]
+        data = PocketMolData(
+            data_id=f"{pdb_id}_{candidate_id}", pdbid=pdb_id, task="dock", db="adaligand",
+            candidate_id=candidate_id, object_key=record["object_key"],
+            element=torch.from_numpy(atoms["element"].astype(np.int64)),
+            pos_all_confs=torch.from_numpy(ligand_coords[None]), i_conf_list=[0], num_confs=1,
+            num_atoms=len(atoms), num_bonds=len(bonds),
+            bond_index=torch.from_numpy(np.concatenate([bond_index, bond_index[::-1]], axis=1)),
+            bond_type=torch.from_numpy(np.concatenate([bond_types, bond_types])),
+            matches_iso=matches_iso, pocket_pos=pocket_pos,
+            pocket_protein_count=protein_count, pocket_nucleic_count=nucleic_count,
+        )
+        if self.receptor_branch == "protein":
+            # 官方只读蛋白, 并保留原 FeaturizePocket 对空蛋白返回空 center 的真实行为.
+            data.pocket_element = torch.from_numpy(pocket["element"].astype(np.int64))
+            data.pocket_atom_to_aa_type = torch.from_numpy(PROTEIN_CLASS[pocket["res_type"]])
+            data.pocket_is_backbone = torch.from_numpy(pocket["is_backbone"])
+            pocket_config = EasyDict(knn=self.config.knn)
+            if self.config.pocket_mode == "center":
+                pocket_config.center = given_center.tolist()
+            data = FeaturizePocket(pocket_config)(data)
+        else:
+            # (1, 3), 原 PocketXMol 定位规则的世界原点; 包络包含实际选入的蛋白和核酸原子.
+            center = given_center[None] if self.config.pocket_mode == "center" else pocket["coords"].mean(axis=0, keepdims=True)
+            data.pocket_center = torch.from_numpy(center.astype(np.float32))
+            data.pocket_pos = pocket_pos - data.pocket_center
+            data.pocket_is_nucleic = pocket_is_nucleic
+            # (P, 25) 与 (P, 15), 两类输入投影在同一口袋原子顺序对齐; 另一类型位置保留0.
+            protein_features = torch.zeros((len(pocket_pos), 25))
+            nucleic_features = torch.zeros((len(pocket_pos), 15))
+            protein = ~pocket_is_nucleic
+            protein_elements = torch.from_numpy(pocket["element"][~pocket_is_nucleic.numpy()].astype(np.int64))
+            protein_features[protein, :4] = (protein_elements[:, None] == torch.tensor([6, 7, 8, 16])).float()
+            protein_features[protein, 4:24] = torch.nn.functional.one_hot(torch.from_numpy(PROTEIN_CLASS[pocket["res_type"][protein.numpy()]]), num_classes=20).float()
+            protein_features[protein, 24] = torch.from_numpy(pocket["is_backbone"][protein.numpy()].astype(np.float32))
+            nucleic_elements = torch.from_numpy(pocket["element"][pocket_is_nucleic.numpy()].astype(np.int64))
+            nucleic_features[pocket_is_nucleic, :4] = (nucleic_elements[:, None] == torch.tensor([6, 7, 8, 15])).float()
+            nucleic_features[pocket_is_nucleic, 4:12] = torch.nn.functional.one_hot(torch.from_numpy(pocket["res_type"][pocket_is_nucleic.numpy()].astype(np.int64) - 20), num_classes=8).float()
+            # int64, (P_na,), 组分编号0/1/2分别是碱基、糖、磷酸; 旧星号只规范为撇号.
+            names = [name.decode("ascii").strip().replace("*", "'") for name in pocket["atom_name"][pocket_is_nucleic.numpy()]]
+            components = torch.tensor([1 if name in SUGAR_ATOMS else 2 if name in PHOSPHATE_ATOMS else 0 for name in names], dtype=torch.long)
+            nucleic_features[pocket_is_nucleic, 12:15] = torch.nn.functional.one_hot(components, num_classes=3).float()
+            data.pocket_atom_feature = protein_features
+            data.pocket_nucleic_feature = nucleic_features
+            # RA 联合构图; RB 对两种原子分别构图, 再把边端点映回共同 pocket_pos 索引.
+            groups = [torch.arange(len(pocket_pos))] if self.receptor_branch == "RA" else [torch.where(protein)[0], torch.where(pocket_is_nucleic)[0]]
+            edges = []
+            for atom_index in groups:
+                if len(atom_index) > 1:
+                    local_edges = knn_graph(data.pocket_pos[atom_index], k=min(self.config.knn, len(atom_index) - 1), flow="target_to_source")
+                    edges.append(atom_index[local_edges])
+            data.pocket_knn_edge_index = torch.cat(edges, dim=1) if edges else torch.empty((2, 0), dtype=torch.long)
+        # 通常 (1, 3), 与原点同一模型坐标系中的给定中心; 官方空蛋白为 (0, 3), T1不读取世界GT偏移.
+        data.given_center_local = torch.from_numpy(given_center[None]) - data.pocket_center
+        return self.transforms(data)
+
+    def __iter__(self):
+        """训练无限均匀抽实例, 有限流按worker跨步读取; 仅train/validation跳过并警告RA/RB空E.
+
+        跳过发生在组批前, 训练仍由有效实例组成完整batch; 验证只对有效E计算原val/loss. 警告记录划分和pdb_id/occurrence_id, 冻结清单不变. 其它异常直接传播; 正式采样按records索引, 不经过这里的跳过逻辑.
+        """
+        worker = get_worker_info()
+        worker_id, worker_count = (0, 1) if worker is None else (worker.id, worker.num_workers)
+        # 独立 Generator 只用于实例和口袋偏移; 开关T1不改变原噪声器使用的基础随机序列.
+        if self.rng is None:
+            self.rng = np.random.default_rng(torch.initial_seed())
+        if self.shuffle:
+            # 无限整数流, 每次仍从原冻结清单独立均匀抽样; 仅空E被拒绝后重新抽取.
+            indices = (int(self.rng.integers(len(self.records))) for _ in count())
+        else:
+            indices = range(worker_id, len(self.records), worker_count)
+        for index in indices:
+            try:
+                yield self[index]
+            except EmptyEnvelopePocketError as error:
+                if self.split not in ("train", "validation"):
+                    raise
+                warnings.warn(f"{self.split} 跳过 {error}", RuntimeWarning)
