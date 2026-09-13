@@ -1,8 +1,8 @@
 # 4-B-C-T0-RB
 
-**正式训练已正常完成，C0／C5测试准备中。** 371591／gnode09 在31200次更新的原C0验证后，因第三次学习率下降停止。实际best为21600步，原C0 val/loss=1.8065478801727295；已核对它是全部39个定期检查点中的最低原验证损失，1236个模型参数键均有限。全部检查点、last及训练W&B记录保留，测试结果尚未产生。
+**正式训练已完成，C0／C5完整测试正在推理。** 截至15:01，C0已完成2／446实例、100个候选，全部成功；C5按既定顺序在C0之后执行，尚未开始。最终姿态指标须待完整推理及CPU评价。训练在31200次更新后因第三次学习率下降停止，实际best为21600步、原C0 val/loss=1.8065478801727295；它是全部39个定期检查点的最低原验证损失，1236个模型参数键均有限。全部检查点、last及训练W&B记录保留。
 
-更新核查：2026-09-13 14:45（服务器 master，UTC+8；随后完成检查点核对）。依据 [科学契约](../../想法/方案草稿/9-8-科学契约.md)、[工程细节](../../想法/方案草稿/9-8-工程与实现细节.md) 和 [边界清单](../../想法/方案草稿/9-8-边界与核查清单.md)，本文件统一保存本模型的训练、测试、评价与尝试历史。共同准备见 [实现与共同数据准备](../实现与共同数据准备.md)，全实验进度见 [总日志](../总日志.md)。
+更新核查：2026-09-13 15:01（服务器 master，UTC+8）。依据 [科学契约](../../想法/方案草稿/9-8-科学契约.md)、[工程细节](../../想法/方案草稿/9-8-工程与实现细节.md) 和 [边界清单](../../想法/方案草稿/9-8-边界与核查清单.md)，本文件统一保存本模型的训练、测试、评价与尝试历史。共同准备见 [实现与共同数据准备](../实现与共同数据准备.md)，全实验进度见 [总日志](../总日志.md)。
 
 ## 当前有效运行与产物
 
@@ -11,7 +11,7 @@
 | 训练产物根 | `/storage/penghongen/PocketXMol/training/B-C-T0-RB/` |
 | 正式测试检查点 | `checkpoints/step=21600.ckpt`，相对于上述训练根；原C0 val/loss=1.8065478801727295 |
 | 训练 W&B | [hthglbuy](https://wandb.ai/pencounkdual-111/PocketXmol_raw/runs/hthglbuy) |
-| 测试与评价产物 | 预定 `/storage/penghongen/PocketXMol/sampling/B-C-T0-RB/test/`，尚未启动 |
+| 测试与评价产物 | `/storage/penghongen/PocketXMol/sampling/B-C-T0-RB/test/`；run.json及C0前两个实例的完整候选已产生，评价尚未开始 |
 | 评价 W&B | 尚未创建 |
 
 训练保留原路径 `val/loss` 和最低损失检查点选择；训练结束后直接完整测试，不做训练后完整验证集采样。每实例每协议50候选、100步，原 self-ranking（原置信度及碰撞、立体化学项组成的候选排序）不变。完整结果优先放在下文，执行核查和失败尝试放在后部。
@@ -20,11 +20,11 @@ ALL为446个实例的完整测试集合。按完整模板身份object_key在ALL�
 
 ## 最近一次进度与下一步
 
-控制器第21次执行成功，训练主进程7586已退出并完成W&B上传。after_lock及恢复的try_lock存在，kill_lock不存在；没有使用终止协议或覆盖训练产物。训练进度栏耗时8小时13分35秒，平均约1.05次更新／秒；无Traceback、OOM或非有限损失记录。
+采样主进程39974属于job_371591，实际run.json与已审查的RB、T0、C0／C5及best21600配置一致。C0中的11jb/0、11jb/1各完成50个候选和100次批量forward，耗时34.03／33.38秒，峰值张量显存约2.54 GB；没有NaN、Traceback、OOM或降低batch记录。after_lock保留，try_lock不存在，训练产物未覆盖。
 
-完整摘要为 `/storage/penghongen/PocketXMol/training/B-C-T0-RB/training_summary_20260913.json`。下一步用明确best完成446实例的C0和C5完整测试，再用同作业8个CPU评价进程完成三个视图及核酸占比报告，不安排完整验证集采样。
+完整训练摘要为 `/storage/penghongen/PocketXMol/training/B-C-T0-RB/training_summary_20260913.json`。继续完成446实例的C0和C5测试，再用同作业8个CPU评价进程完成三个视图及核酸占比报告，不安排完整验证集采样。
 
-## 正式测试配置与命令（待启动）
+## 正式测试配置与命令
 
 `configs/docking/sample-B-C-T0-RB-test.yml`读取本次保存的训练配置及21600步best，receptor_branch=RB、center_translation=false、protocols=[C0,C5]、split=test。与正确T0-RA的测试配置相比，仅替换RB分支、模型名称及各自训练／产物身份；冻结C5偏移、种子、50候选、100步、batch50和8进程评价保持。
 
@@ -32,7 +32,7 @@ ALL为446个实例的完整测试集合。按完整模板身份object_key在ALL�
 
 本次没有新增或修改生产Python函数。主代理第一遍核对配置读取关系、模型与数据分支、检查点和输出身份，第二遍核对YAML注释及日志含义；独立代理随后在同一范围完成两轮只读核查，均通过。YAML解析比较确认相对正确T0-RA仅有六个模型身份、路径与分支字段变化，科学条件及预算保持；未扩大既有生产代码审查。
 
-以下是接续使用的正式命令，目前尚未执行；实际release、launch和启动记录将在接入后补齐。
+以下正式采样命令已于2026-09-13接入371591执行；release、launch和启动记录见下文。
 
 ```bash
 bash 训练与运行/sh/sample_docking.sh B-C-T0-RB-test
@@ -84,7 +84,15 @@ bash 训练与运行/sh/train_docking.sh B-C-T0-RB
 
 ## 计划与实现差异
 
-本实验沿用已纠正的中心T0契约和既定RB配置，没有新增科学开关、代码或资产重建。完整训练及best核对已完成，规定C0／C5测试与报告仍待完成。
+本实验沿用已纠正的中心T0契约和既定RB配置，没有新增科学开关、代码或资产重建。完整训练及best核对已完成，C0／C5测试已接入，完整推理及报告仍待完成。
+
+## 正式C0／C5测试接入
+
+2026-09-13 master时间14:58:53保存新旧动态命令及启动记录，移除恢复的try_lock，由371591控制器第22次执行接续测试。接入前确认训练主进程7586退出、前一动态命令仍为本模型训练入口、独立采样根不存在；after_lock保留，未使用kill_lock，没有覆盖训练产物。
+
+实际release为 `/home/penghongen/Feedback/PocketXMol/releases/PocketXMol_07ea8b8a2406/PocketXMol`，以已审查43742cdf8166源码副本增加本次测试配置，生产代码不变。配置提交933a49c，LF字节SHA256为5968646c8d56be437a0131df0110ab22bce611bd4d242d6a6b66b55478499650；创建release时再次核对保存的训练配置、实际best及全部测试预算。
+
+实际launch为 `/home/penghongen/Feedback/PocketXMol/launches/371591/sample_B-C-T0-RB_test_job371591_20260913T145551`，节点时钟比master慢约3分钟。启动记录 `/storage/penghongen/PocketXMol/control/371591/sample_B-C-T0-RB_test_start.json`，同目录保存sample_B-C-T0-RB_test_run_cmd.sh和修改前的sample_B-C-T0-RB_test_before_run_cmd.sh。当前采样out／err从149921972／321399字节读取，避免混入此前训练日志。采样主进程39974的Slurm cgroup已核对。
 
 ## 训练完成与检查点只读核对
 
