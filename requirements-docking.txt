@@ -1,0 +1,12 @@
+# 本项目venv继承pxm_phase1的科学依赖, 此处固定新增W&B依赖的实际安装版本.
+wandb==0.21.1
+protobuf==6.33.6
+pydantic==2.13.5
+pydantic-core==2.46.5
+gitpython==3.1.62
+gitdb==4.0.12
+smmap==5.0.3
+sentry-sdk==2.69.1
+click==8.5.0
+annotated-types==0.8.0
+typing-inspection==0.4.4
