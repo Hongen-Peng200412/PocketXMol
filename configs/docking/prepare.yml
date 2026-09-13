@@ -1,0 +1,14 @@
+# 共同准备入口 scripts/prepare_docking.py: 按 index、objects、samples、freeze 运行.
+# 所有路径显式给定; root 下只读, 派生根只保存原训练需要的对称排列和逐实例 ligand-area.
+root: /storage/penghongen/AdaLigand/Ori_Data
+split_root: /storage/penghongen/AdaLigand/Ori_Data/stage1_preparation_box_pool_3/split
+test_split: /storage/penghongen/AdaLigand/held_out/split/held_out_06_chain/test_0.json
+language_root: /storage/penghongen/AdaLigand/Ori_Data/stage1_preparation_box_pool_2/ligand_language_models/smi_ted_289m
+derived_root: /storage/penghongen/Adaligand_Build/Ori_Data/pocketxmol
+manifest_root: /storage/penghongen/PocketXMol/data
+# int, 单任务8进程, 对应 Slurm --cpus 8; array 最多12个任务并发, 总CPU不超过96.
+workers: 8
+# int, 固定 C5 半径/方向与测试每身份一次排序; 不用测试结果调整种子.
+freeze_seed: 3407
+# int, 每个实例的候选生成种子基值, 具体值写入冻结清单.
+sampling_seed: 10831
