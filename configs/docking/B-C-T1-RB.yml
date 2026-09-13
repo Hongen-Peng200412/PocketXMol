@@ -1,0 +1,181 @@
+# 读取入口: scripts/train_pl.py; 本文件完整定义一个已批准的无密度实验.
+# B-C-T1-RB: 明确选择口袋模式、T0/T1与RA/RB, 不自动增加实验.
+# 作者 pxm 的主干结构和置信度头; 新增核酸分支由 nucleic_branch 选择.
+model:
+  name: pm_asym_denoiser
+  pocket_dim: 128
+  node_dim: 320
+  addition_node_features:
+  - is_peptide
+  add_output:
+  - confidence
+  edge_dim: 96
+  pocket:
+    edge_dim: 32
+    hidden_dim: 128
+    num_blocks: 4
+    dist_cfg:
+      num_gaussians: 32
+  denoiser:
+    hidden_dim: 320
+    num_blocks: 6
+    dist_cfg:
+      stop: 15
+      num_gaussians: 64
+    gate_dim: 2
+    context_cfg:
+      edge_dim: 128
+      knn: 32
+      dist_cfg:
+        stop: 20
+        num_gaussians: 64
+        type_: linear
+# str, RA 联合图共享编码器; RB 各自构图编码, 官方初始化后复制蛋白编码器参数.
+  nucleic_branch: RB
+# 原完整 loss 配置; 实际数据仅dock, mixed/total 内保留confidence.
+loss:
+  name: individual_tasks
+  weights:
+    node: 1.5
+    pos: 2.5
+    edge: 1.5
+    dist: 0.0005
+    dih: 0.0005
+    fixed_node: 0.1
+    fixed_pos: 0.1
+    fixed_edge: 0.1
+    fixed_dist: 0.0005
+  tasks:
+  - denovo
+  - conf
+  - sbdd
+  - dock
+  - maskfill
+  - fbdd
+  - pepdesign
+  confidence:
+    # float, sigmoid(原始位置输出)拟合 prob_1A ** 原子坐标误差_Å; 0.2不是误差<1 Å的分类概率.
+    prob_1A: 0.2
+    weights:
+      node: 1
+      pos: 20
+      edge: 1
+# 原dock高斯先验、sqrt(N)尺度和重分配; T1只由显式center_translation控制.
+noise:
+  name: mixed
+  individual:
+  - name: dock
+    reassign_in: true
+    prior:
+      pos:
+        name: allpos
+        pos:
+          name: gaussian_simple
+          sigma_func: sqrt
+          sigma_max: 1.0
+        translation:
+          name: translation
+          ve: false
+          mean: 0
+          std: 1
+        rotation:
+          name: rotation
+          sigma_max: 0.0002
+        torsional:
+          name: torsional
+          sigma_max: 0.2
+    level:
+      name: uniform
+      min: 0.0
+      max: 1.0
+    # bool, DataModule以False/True选择中心T0的C0或T1的C5训练/监督验证; C5训练动态抽偏移、监督验证读冻结向量, 包络固定E且False.
+    # True还在dock/free非先验步追加s*(给定局部中心-当前干净配体算术中心); s=1-level_dict['pos']是实际噪声强度, delta是给定中心相对真实中心的XYZ偏移(Å), Z是当前干净局部预测(N, 3).
+    # 训练新增s*delta, 推理新增-s*mean(Z), N为当前分子重原子数; 首次from_prior不追加.
+    center_translation: true
+# 原配体词表和任务变换; 本轮仅free, 不读取未使用的真实扭转几何.
+transforms:
+  featurizer:
+    # bool, 配体11种元素后追加mask类别11; 元素列表中的位置即模型类别编号.
+    use_mask_node: true
+    # bool, 半边0为无键, 1/2/3/4为单/双/三/芳香, 最后追加mask类别5.
+    use_mask_edge: true
+    chem:
+      # list[int], 按原模型顺序C/N/O/F/P/S/Cl/B/Br/I/Se, 不能按原子序数重新排序.
+      atomic_numbers:
+      - 6
+      - 7
+      - 8
+      - 9
+      - 15
+      - 16
+      - 17
+      - 5
+      - 35
+      - 53
+      - 34
+      mol_bond_types:
+      - 1
+      - 2
+      - 3
+      - 4
+  task:
+    name: mixed
+    individual:
+    - name: dock
+      settings:
+        free: 1.0
+      free_no_geometry: true
+# 原资产只读; derived_root读共享对称排列, manifest_root读累计筛选后的四份清单.
+data:
+  dataset:
+    name: adaligand
+    root: /storage/penghongen/AdaLigand/Ori_Data
+    derived_root: /storage/penghongen/Adaligand_Build/Ori_Data/pocketxmol
+    manifest_root: /storage/penghongen/PocketXMol/data
+    # str, center选择完整残基质量中心到给定中心<15 Å; envelope选择残基质量中心到任一完整GT重原子<10 Å.
+    pocket_mode: center
+    # int, Dataset口袋图近邻上限; RA联合图, RB分蛋白/核酸图, 由本字段直接控制.
+    knn: 32
+# 以下批量按单GPU写出: 72×1=72, 优先不累积; 显存调整时batch与累积成对更改.
+train:
+  seed: 2023
+  batch_size: 72
+  num_workers: 15
+  pin_memory: true
+  max_steps: 40000
+  # int, 优化器更新间隔; 按global_step触发原验证循环; 更换单卡batch与累积后仍保持800次更新间隔.
+  val_check_interval: 800  # 同时是验证结束保存所有checkpoint的间隔, 无单独定期保存间隔.
+  precision: bf16-mixed
+  persistent_workers: true
+  optimizer:
+    type: adamw
+    lr: 0.0001
+    weight_decay: 0.001
+    beta1: 0.99
+    beta2: 0.999
+    eps: 1.0e-08
+  # 原ReduceLROnPlateau, 第3次实际下降后立即停止; 最多40000更新.
+  # 调度器由DockingCheckpoint.on_validation_end直接读取val/loss, 先step再保存; 不注册Lightning自动lr_scheduler.
+  scheduler:
+    warmup_step: 0
+    instance:
+      type: plateau
+      mode: min
+      threshold_mode: rel
+      threshold: 0.01
+      patience: 5
+      factor: 0.2
+      cooldown: 0
+      min_lr: 0
+      eps: 1.0e-08
+  global_batch_size: 72
+  accumulate_grad_batches: 1
+  log_every_n_steps: 50
+  # str, 新训练只加载此权重的model参数; --resume自家完整ckpt时跳过.
+  initial_checkpoint: /storage/penghongen/PocketXMol_official_test/extracted/data/trained_models/pxm/checkpoints/pocketxmol.ckpt
+  # 账号与项目名称可公开; API key只读服务器私有配置, 不写入YAML.
+  wandb:
+    entity: pencounkdual-111
+    project: PocketXmol_raw
+    name: B-C-T1-RB
+    mode: online

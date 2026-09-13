@@ -1,28 +1,30 @@
 """
-组织 PocketXMol 多任务训练的数据变换、PyG 批处理、去噪模型、损失和 Lightning 运行生命周期。
+沿原 PocketXMol 训练框架组织数据、自动优化、验证与检查点.
 
-正式入口是文件末尾的命令行主程序；核心跨模块边界是 :class:`DataModule` 与
-:class:`ModelLightning`。构象生成和小分子 docking 共用 ``PMAsymDenoiser``，任务差异先由
-``ConfTransform``/``DockTransform`` 写成 fixed prompt 与扭转注释，再由训练噪声器生成
-``node_in``、``pos_in`` 和 ``halfedge_in``。
+先读 DataModule、ModelLightning 与 DockingCheckpoint, 再读命令行装配. adaligand 分支使用完整 occurrence 数据集、蛋白/核酸受体和 W&B; 旧 LMDB 分支保留原训练入口.
 
-运行会在 ``TensorBoardLogger.log_dir`` 下落盘：
+adaligand 的 --logdir 直接指定单个实验目录, 主要产物如下:
+    - checkpoints/step=<更新步>.ckpt: Lightning 字典; state_dict 含 model.* 参数, optimizer_states 与 loops 保存优化器和更新进度, hyper_parameters.config/args 记录实际配置及 manifest_root 等资产来源.
+    - checkpoints/last.ckpt: 最近一次完成验证的完整检查点, 原版本保护可追加 vN 后缀; callbacks 中 DockingCheckpoint 的 pocketxmol 字段保存原调度器、下降次数、停止原因、W&B run_id 和主进程随机状态.
+    - src/ 与 train_config/<配置名>.yml: 首次运行的源码快照与实际配置; 续训另写 src_resume_<时间>/ 和 train_config_resume_<时间>/.
+    - wandb/: W&B 自身的运行记录; online 模式上传 train/val 损失、学习率与梯度范数, 凭据只从运行环境读取.
 
-- ``checkpoints/{step}.ckpt`` 与 ``checkpoints/last.ckpt``: Lightning checkpoint；顶层含 ``state_dict``，模型参数键以 ``model.`` 开头。
-- ``src/``: 当前仓库指定目录中的 ``.py``、``.sh``、``.ipynb`` 源码快照；路径由 ``copy_py_files`` 的 ``dst_dir`` 决定。
-- ``train_config/<config-name>.yml``: EasyDict 配置的序列化副本；路径由命令行 ``--config`` 文件名决定。
-- TensorBoard 事件文件: 训练/验证损失、学习率和梯度范数；根目录由 ``--logdir``、配置路径层级和 ``--tag`` 共同决定。
+旧 LMDB 分支的上述目录仍位于 TensorBoardLogger.log_dir, 并保留 TensorBoard 事件文件. 本文件不生成新科学数据、不改变 loss 或原 reduce_batch 行为.
 """
 
 # Standard library imports
 import argparse
 import gc
 import os
+import random
+from copy import deepcopy
+from datetime import datetime
 import shutil
 import sys
 from typing import Any, Callable, Optional, Union
 
 # Third-party imports
+import numpy as np
 import pytorch_lightning as pl
 import torch
 from pytorch_lightning.callbacks import ModelCheckpoint
@@ -36,6 +38,7 @@ from torch_geometric.loader import DataLoader
 
 # Local imports
 sys.path.append('.')
+from docking.dataset import OccurrenceDataset
 from models.loss import get_loss_func
 from models.maskfill import PMAsymDenoiser
 from utils.dataset import ForeverTaskDataset
@@ -48,355 +51,225 @@ torch.set_float32_matmul_precision('medium')
 
 
 def copy_py_files(src_dir, dst_dir, base=False):
-    """
-    递归复制可执行源码与 notebook，形成一次训练运行的代码快照。
+    """递归保存一次运行的 Python、Shell 和 notebook 源码快照.
 
-    输入参数:
-        - src_dir: str, 当前递归层的源目录；主程序传入仓库根目录 ``.``。
-        - dst_dir: str, 当前递归层的目标目录；主程序传入 ``<log_dir>/src``。
-        - base: bool, True 时只递归 ``scripts``、``models``、``notebooks``、``utils``、``process``、``evaluate`` 六类一级/任意同名目录；False 时递归全部目录。
-
-    落盘产物:
-        - ``<dst_dir>/**/*.py``: Python 源文件，目录层级相对 ``src_dir`` 保持不变。
-        - ``<dst_dir>/**/*.sh``: Shell 脚本，目录层级相对 ``src_dir`` 保持不变。
-        - ``<dst_dir>/**/*.ipynb``: Jupyter notebook，目录层级相对 ``src_dir`` 保持不变。
-
-    副作用与边界:
-        - 自动创建 ``dst_dir``；同名文件由 ``shutil.copy`` 覆盖。
-        - 不复制 YAML、模型权重、数据集或 Git 元数据；训练配置由主程序单独调用 ``save_config`` 保存。
+    src_dir、dst_dir 是当前递归层的源目录与目标目录. base=True 时仅进入 scripts、models、notebooks、utils、process、evaluate、docking 这些一级目录; 后续层保留全部子目录.
+    自动建立 dst_dir, 同名源文件由 shutil.copy 覆盖. YAML 配置由主程序单独保存, 本函数不复制权重、资产或 Git 元数据.
     """
     os.makedirs(dst_dir, exist_ok=True)
-    # ``item``：str，当前递归层 ``src_dir`` 下的文件或目录名。
     for item in os.listdir(src_dir):
-        # Get the absolute path of the item
         item_path = os.path.join(src_dir, item)
         if os.path.isdir(item_path):
-            if (not base) or (item in ['scripts', 'models', 'notebooks', 'utils', 'process', 'evaluate']):
-                # If the item is a directory, recursively call the function on it
+            if (not base) or item in ['scripts', 'models', 'notebooks', 'utils', 'process', 'evaluate', 'docking']:
                 copy_py_files(item_path, os.path.join(dst_dir, item))
-        elif (item.endswith('.py') or item.endswith('.sh') or item.endswith('.ipynb')):
-            # If the item is a file and ends with .py, copy it to the destination directory
+        elif item.endswith(('.py', '.sh', '.ipynb')):
             shutil.copy(item_path, dst_dir)
 
 
-# XXX
+# ================================================================================================
 class DataModule(pl.LightningDataModule):
-    """
-    把训练配置解析为逐样本变换链、无限任务数据集和 PyG 批次加载器。
+    """按数据来源建立原特征变换链和 PyG 训练/验证加载器.
 
     构造参数:
-        - config.model: 映射式模型配置；本类不构造模型，但 ``get_in_dims`` 为其推导类别数与口袋输入维度。
-        - config.transforms.featurizer: 配体特征配置；定义原子序数表、键类别表和是否添加 mask 类。
-        - config.transforms.featurizer_pocket: 可选口袋特征配置；存在时必须含 ``knn``，可选 ``center``。
-        - config.transforms.task: 任务变换配置；``name=mixed`` 时 ``individual`` 按任务名建立 ``ConfTransform`` 等实例。
-        - config.noise: 训练噪声配置；``name=mixed`` 时按样本 ``task`` 选择对应先验和信息等级。
-        - config.data.dataset: assembly、数据库根目录与子 LMDB 布局；传给 ``ForeverTaskDataset``。
-        - config.data.task_db_weights: 两级任务/数据库采样权重；传给训练与验证数据集。
-        - config.train: batch size、worker 数、pin memory 和 persistent worker 等加载器设置。
+        - config.data.dataset: Mapping; name=adaligand 时含 root、derived_root、manifest_root、pocket_mode、knn, 由 OccurrenceDataset 读取冻结实例清单和只读资产.
+        - config.model.nucleic_branch: str, adaligand 模型的 RA/RB 核酸分支.
+        - config.transforms: Mapping, 配体特征及 task 变换配置; 旧 LMDB 路径还可包含 featurizer_pocket 与 cut_peptide.
+        - config.noise: Mapping, 原任务噪声器配置; adaligand 仅选择 dock.
+        - config.train: Mapping, batch_size、num_workers、pin_memory、persistent_workers 决定加载器资源.
 
-    单样本变换顺序:
-        - ``FeaturizePocket``: 构造口袋 25 维原子特征、口袋 kNN 边和中心化坐标。
-        - ``FeaturizeMol``: 构造配体节点类别、中心化坐标、完全图半边类别。
-        - 任务变换: 为构象/docking 写入 ``task_setting``、fixed prompt、刚体域和可旋转键注释。
-        - 训练噪声器: 采样信息等级并写入 ``node_in``、``pos_in``、``halfedge_in``。
+    批次字段:
+        - node_type: int64, (N,), 拼接后N个配体原子的干净类别.
+        - node_in: int64, (N,), 噪声器写入的带噪原子类别.
+        - node_pos: float32, (N, 3), 配体干净局部XYZ坐标, 单位Å; 原点为该实例的给定中心或包络口袋均值.
+        - pos_in: float32, (N, 3), 噪声器写入的带噪局部XYZ坐标, 单位Å, 与node_pos使用同一原点.
+        - halfedge_type: int64, (H,), H条完全图半边的干净类别.
+        - halfedge_in: int64, (H,), 噪声器写入的带噪半边类别.
+        - halfedge_index: int64, (2, H), 每条半边两端的配体原子编号, 索引node_type第一维.
+        - node_type_batch: int64, (N,), 每个配体原子所属的批内样本编号.
+        - halfedge_type_batch: int64, (H,), 每条半边所属的批内样本编号.
+        - pocket_atom_feature: (P, 25), P 个受体原子的原蛋白特征; adaligand 的核酸原子对应全零.
+        - pocket_nucleic_feature: (P, 15), adaligand 标准 RNA/DNA 原子特征; 蛋白原子对应全零, 与 pocket_pos 第一维对齐.
+        - pocket_is_nucleic: bool, (P,), True 标识核酸原子; 仅 adaligand 分支提供.
+        - pocket_pos: float32, (P, 3), 受体局部XYZ坐标, 单位Å, 原点与对应配体一致.
+        - pocket_pos_batch: int64, (P,), 每个受体原子所属的批内样本编号.
+        - task: list[str], 长度为批内样本数 B; adaligand 全部为 dock.
 
-    PyG 批次核心字段:
-        - node_type: LongTensor，形状为 (N_all,)，所有分子的干净原子类别。
-        - node_in: LongTensor，形状为 (N_all,)，所有分子的带噪原子类别。
-        - node_pos: FloatTensor，形状为 (N_all, 3)，所有分子的干净局部坐标，单位 Å。
-        - pos_in: FloatTensor，形状为 (N_all, 3)，所有分子的带噪局部坐标，单位 Å。
-        - halfedge_index: int64, (2, H_all), 各分子完全图上三角半边端点；拼接后索引 ``node_type`` 第一维。
-        - halfedge_type: LongTensor，形状为 (H_all,)，干净半边类别；与 ``halfedge_index`` 第二维对齐。
-        - halfedge_in: LongTensor，形状为 (H_all,)，带噪半边类别；与 ``halfedge_index`` 第二维对齐。
-        - fixed_node: LongTensor|BoolTensor，形状为 (N_all,)，1 表示原子类别由任务条件固定。
-        - fixed_pos: LongTensor|BoolTensor，形状为 (N_all,)，1 表示坐标由任务条件固定。
-        - fixed_halfedge: LongTensor|BoolTensor，形状为 (H_all,)，1 表示半边类别由任务条件固定。
-        - fixed_halfdist: LongTensor|BoolTensor，形状为 (H_all,)，1 表示半边端点距离由任务条件固定。
-        - node_type_batch: int64, (N_all,), 每个配体原子所属图编号；由 ``follow_batch=['node_type']`` 生成。
-        - halfedge_type_batch: int64, (H_all,), 每条半边所属图编号；由 ``follow_batch=['halfedge_type']`` 生成。
-        - pocket_atom_feature: (P_all, D_p), 所有口袋原子的离散特征，默认 D_p=25。
-        - pocket_pos: (P_all, 3), 以各自 ``pocket_center`` 为原点的口袋坐标，单位 Å。
-        - pocket_pos_batch: int64, (P_all,), 每个口袋原子所属图编号；由 ``follow_batch=['pocket_pos']`` 生成。
-        - task: list[str]，长度 B；第 b 个字符串是图 b 的任务名。
-        - task_setting: 训练时被 ``exclude_keys`` 排除，不进入批次；任务差异已经编码进 fixed 与扭转字段。
-
-    公开输出:
-        - ``train_dataloader``: 无限 ``ForeverTaskDataset`` 的 PyG ``DataLoader``；训练步数由 Lightning ``max_steps`` 截断。
-        - ``val_dataloader``: 每次迭代有限的 ``ForeverTaskDataset``；worker 数在超大 world size 时除以 4。
+    adaligand 的训练清单按 occurrence 均匀有放回抽样, 验证完整遍历 validation.jsonl. 已有 dock.center_translation 同时确定中心模型的训练与监督验证条件: False 的T0用C0, True 的T1用C5; 包络固定E. C5训练动态抽偏移, C5验证读取冻结向量. 数据集先完成受体编码与定位, 本类只接原 FeaturizeMol、任务变换与训练噪声器.
     """
-    
+
     def __init__(self, config):
-        """保存数据、变换、噪声和加载器配置，实际对象延迟到 ``setup`` 构造。
-
-        输入参数:
-            - config.transforms.featurizer: Mapping，配体元素/键词表、mask 类与坐标中心化配置。
-            - config.transforms.featurizer_pocket: Mapping，可选，口袋 kNN 邻居数与中心化配置。
-            - config.transforms.task: Mapping，按任务名分派 fixed prompt 和运动注释的变换配置。
-            - config.noise: Mapping，按任务名分派先验、信息等级与噪声步数的训练配置。
-            - config.data.dataset: Mapping，assembly 文件和子 LMDB 数据库布局。
-            - config.data.task_db_weights: Mapping，任务到数据库的两级采样权重。
-            - config.train: Mapping，batch size、worker、pin memory 与 persistent worker 加载器配置。
-        """
+        """保存完整配置, 实际数据集在 Lightning 调用 setup 时建立."""
         super().__init__()
-        # ``self.config``：EasyDict，完整训练配置；setup 与 get_in_dims 从不同顶层组读取叶字段。
         self.config = config
-        
+        self.is_docking = getattr(config.data.dataset, 'name', '') == 'adaligand'
+
     def get_featurizers(self):
-        """
-        按坐标依赖顺序构造口袋与配体特征变换。
-
-        读取配置:
-            - self.config.transforms.featurizer: Mapping，传给 ``FeaturizeMol`` 的配体特征配置。
-            - self.config.transforms.featurizer_pocket: Mapping，可选，传给 ``FeaturizePocket`` 的口袋特征配置。
-
-        返回值:
-            - 仅配体配置: ``[FeaturizeMol]``。
-            - 含口袋配置: ``[FeaturizePocket, FeaturizeMol]``；口袋先计算 ``pocket_center``，配体随后减去同一中心。
-        """
-        # ``featurizer``：FeaturizeMol，配体词表、完全图半边和坐标中心化变换。
+        """返回按坐标依赖排序的特征变换; adaligand 已定位口袋, 只需 FeaturizeMol."""
         featurizer = FeaturizeMol(self.config.transforms.featurizer)
-        if 'featurizer_pocket' in self.config.transforms:
-            # ``feat_pocket``：FeaturizePocket，口袋 25 维特征、kNN 边和 pocket_center 变换。
-            feat_pocket = FeaturizePocket(self.config.transforms.featurizer_pocket)
-            return [feat_pocket, featurizer]  # pocket first because mol need to substract pocket center
-        else:
-            return [featurizer]
+        if not self.is_docking and 'featurizer_pocket' in self.config.transforms:
+            return [FeaturizePocket(self.config.transforms.featurizer_pocket), featurizer]
+        return [featurizer]
 
     def get_in_dims(self, featurizers=None):
-        """
-        从特征化器推导模型离散类别数和口袋连续特征宽度。
+        """返回模型输入宽度: num_node_types/num_edge_types 为配体词表大小, pocket_in_dim 为原蛋白特征宽度25.
 
-        输入参数:
-            - featurizers: list|None, ``get_featurizers`` 的返回值；None 时在函数内重新构造。
-
-        返回值:
-            - in_dims.num_node_types: int, 配体原子类别数；等于元素表长度加可选 node mask 类。
-            - in_dims.num_edge_types: int, 半边类别数；等于化学键类别数、非键类和可选 edge mask 类之和。
-            - in_dims.pocket_in_dim: int, 仅含口袋特征化器时存在；元素 4 类、氨基酸 20 类和主链标记共 25 维。
+        featurizers 是 get_featurizers 的有序列表; None 兼容主程序在 setup 之前查询模型维度. adaligand 的15维核酸特征由模型独立嵌入, 不改变 pocket_in_dim.
         """
         if featurizers is None:
-            # ``featurizers``：list[callable]，按口袋先、配体后的坐标依赖顺序重新构造。
             featurizers = self.get_featurizers()
-        # ``num_node_types``：int K_a，配体原子分类词表宽度；直接决定原子 Embedding 和分类头的类别维度。
-        num_node_types = featurizers[-1].num_node_types
-        # ``num_edge_types``：int K_e，非键+真实键+可选 mask 的半边分类宽度。
-        num_edge_types = featurizers[-1].num_edge_types
-        # ``in_dims``：dict[str, int]，模型构造所需的离散词表宽度；有口袋时再补口袋输入宽度。
         in_dims = {
-            # ``in_dims.num_node_types``：int，配体原子分类词表宽度。
-            'num_node_types': num_node_types,
-            # ``in_dims.num_edge_types``：int，完整半边分类词表宽度。
-            'num_edge_types': num_edge_types,
+            'num_node_types': featurizers[-1].num_node_types,
+            'num_edge_types': featurizers[-1].num_edge_types,
         }
-        if len(featurizers) == 2:
-            in_dims.update({
-                # ``in_dims.pocket_in_dim``：int，口袋原子的连续输入特征宽度。
-                'pocket_in_dim': featurizers[0].feature_dim,
-            })
+        if self.is_docking:
+            in_dims['pocket_in_dim'] = 25
+        elif len(featurizers) == 2:
+            in_dims['pocket_in_dim'] = featurizers[0].feature_dim
         return in_dims
-        
+
     def setup(self, stage=None):
+        """构造单样本变换链及无限训练、有限验证加载器.
+
+        stage 是 Lightning 生命周期参数, 当前两条来源都建立训练和验证对象. adaligand 使用单GPU独立实验, 每个 worker 的训练均匀有放回抽样与验证互斥分片均由 OccurrenceDataset 实现; task_db_weights 不参与其抽样.
+        self.transforms 按配体特征、任务、噪声排列; 旧来源在之前增加口袋特征及可选肽裁剪. follow_batch 让 PyG 生成原子、半边和口袋原子的样本归属向量, exclude_keys 去掉只适用于单样本的原始字段.
         """
-        为当前 Lightning rank 建立变换链、数据集和训练/验证加载器。
-
-        输入参数:
-            - stage: str|None, Lightning 生命周期参数；当前实现不按 stage 分支，每次调用都构造训练与验证对象。
-
-        读取配置:
-            - self.config.transforms.featurizer: Mapping，构造配体特征、完全图半边和坐标中心化变换。
-            - self.config.transforms.featurizer_pocket: Mapping，可选，构造口袋特征、kNN 边与中心化变换。
-            - self.config.transforms.task: Mapping，构造按 ``data.task`` 分派的任务 prompt 变换。
-            - self.config.noise: Mapping，构造按 ``data.task`` 分派的训练加噪器。
-            - self.config.data.dataset: Mapping，传给 ``ForeverTaskDataset`` 的 assembly 与 LMDB 布局。
-            - self.config.data.task_db_weights: Mapping，传给 ``ForeverTaskDataset`` 的任务—数据库采样权重。
-            - self.config.train.batch_size: int，训练和验证每批图数；VS Code 调试环境覆盖为 40。
-            - self.config.train.num_workers: int，每个 rank 的训练 DataLoader worker 数。
-            - self.config.train.pin_memory: bool，是否让 DataLoader 把 CPU Tensor 放入页锁定内存。
-            - self.config.train.persistent_workers: bool，是否跨 epoch 保留 DataLoader worker 进程。
-            - self.trainer.global_rank: int，当前 DDP 进程的全局编号。
-            - self.trainer.world_size: int，参与训练的 DDP 进程总数。
-
-        生成属性:
-            - transforms: PyG ``Compose``；元素顺序为可选 cut、口袋特征、配体特征、任务变换、训练噪声器。
-            - train_loader: PyG ``DataLoader``，批次大小为配置值；VS Code 调试环境强制为 40。
-            - val_loader: PyG ``DataLoader``，批次大小同训练；当 ``world_size > 100`` 时 worker 数为训练的四分之一整数商。
-        """
-
-        # ``featurizers``：list[callable]，最后一个始终是 ``FeaturizeMol``；若有口袋则第一个是 ``FeaturizePocket``。
         featurizers = self.get_featurizers()
-        # ``in_dims``：dict[str, int]，键集合是模型构造所需的类别数及可选口袋输入宽度。
         in_dims = self.get_in_dims(featurizers)
-
-        # [ ] --------------------------------------
-        # ``task_trans``：callable，训练时在单个样本上按 ``data['task']`` 构造 fixed prompt 与刚体/扭转注释。
-        task_trans = get_transforms(self.config.transforms.task, mode='train',
-                                    num_node_types=in_dims['num_node_types'],)
-        # ``noiser``：callable，训练时在单个样本上采样信息等级并生成三类带噪模型输入。
-        noiser = get_sample_noiser(self.config.noise, in_dims['num_node_types'], in_dims['num_edge_types'],
-                                   mode='train')
-        # ``transform_list``：list[callable]，严格按数据依赖排列；每项原地补充同一个样本容器。
+        task_trans = get_transforms(self.config.transforms.task, mode='train', num_node_types=in_dims['num_node_types'])
+        noiser = get_sample_noiser(self.config.noise, in_dims['num_node_types'], in_dims['num_edge_types'], mode='train')
         transform_list = featurizers + [task_trans, noiser]
-        if 'cut_peptide' in self.config.transforms:
+        if not self.is_docking and 'cut_peptide' in self.config.transforms:
             transform_list = [get_transforms(self.config.transforms.cut_peptide)] + transform_list
-        # ``self.transforms``：Compose，单样本变换按列表顺序串行执行并共享同一 Data 对象。
         self.transforms = Compose(transform_list)
-        # ``t``：callable，Compose 中当前变换；读取其声明的批归属跟踪字段。
-        # ``follow_batch``：list[str]，PyG 为每个字段 k 额外生成 ``k_batch``，记录拼接后第一维的图归属。
+        # list[str], 每个名字生成对应的 <字段>_batch, 指明拼接后实体所属的样本.
         follow_batch = sum([getattr(t, 'follow_batch', []) for t in self.transforms.transforms], [])
-        # ``t``：callable，Compose 中当前变换；读取其声明的不参与批拼接字段。
-        # ``exclude_keys``：list[str]，原始大数组、Python 映射和仅单样本有效字段不会进入 ``Batch``。
         exclude_keys = sum([getattr(t, 'exclude_keys', []) for t in self.transforms.transforms], [])
-        # self.num_node_types = in_dims['num_node_types']
-        # self.num_edge_types = in_dims['num_edge_types']
-
-        # # Datasets and sampler
-        # ``data_cfg``：EasyDict，包含 ``dataset`` 的 LMDB 布局和 ``task_db_weights`` 的两级采样概率。
         data_cfg = self.config.data
-        # ``num_samplers_args``：dict[str, int]，共同定义每个 DataLoader worker 在全局 DDP 采样器中的唯一编号。
-        num_samplers_args = {
-            # ``num_samplers_args.num_workers``：int，当前 rank 创建的训练数据 worker 数。
-            'num_workers': self.config.train.num_workers,
-            # ``num_samplers_args.global_rank``：int，当前 DDP 进程的全局编号。
-            'global_rank': self.trainer.global_rank,
-            # ``num_samplers_args.world_size``：int，参与训练的 DDP 进程总数。
-            'world_size': self.trainer.world_size,
-        }     
-        # [ ] --------------------------------------
-
-        # ``train_set``：IterableDataset，变换发生在批处理前，因此每次 noiser 只处理一个确定任务的样本。
-        train_set = ForeverTaskDataset(data_cfg.dataset, data_cfg.task_db_weights,'train',
-                                       transforms=self.transforms, shuffle=True, **num_samplers_args)
-        if num_samplers_args['world_size'] > 100:
-            # ``divider``：int 4，超大 DDP 规模下验证 worker 数降为四分之一。
-            divider = 4
-        else:
-            # ``divider``：int 1，常规规模下验证与训练使用相同 worker 数。
-            divider = 1
-        # ``num_samplers_args.num_workers``：int，把实际验证 worker 数同步传给 ForeverTaskDataset 的区间分片逻辑。
-        num_samplers_args['num_workers'] = self.config.train.num_workers//divider
-        # ``val_set``：IterableDataset，使用同一任务分布但 ``shuffle=False`` 且一轮后停止。
-        val_set = ForeverTaskDataset(data_cfg.dataset, data_cfg.task_db_weights, 'val',
-                                     transforms=self.transforms, shuffle=False, **num_samplers_args)
-
-        # # Dataloaders
         train_cfg = self.config.train
-        # ``self.train_loader``：PyG DataLoader，拼接无限训练单样本流并生成 follow_batch 图归属向量。
-        self.train_loader = DataLoader(train_set, batch_size=train_cfg.batch_size if not is_vscode else 40,
-                                       num_workers=train_cfg.num_workers, pin_memory=train_cfg.pin_memory,
-                                       follow_batch=follow_batch, exclude_keys=exclude_keys,
-                                       persistent_workers=train_cfg.persistent_workers,
-        )
-        # ``self.val_loader``：PyG DataLoader，拼接一次有限验证流；worker 数可能按 divider 缩减。
-        self.val_loader = DataLoader(val_set, batch_size=train_cfg.batch_size if not is_vscode else 40,
-                                     num_workers=train_cfg.num_workers//divider, pin_memory=train_cfg.pin_memory,
-                                     follow_batch=follow_batch, exclude_keys=exclude_keys,
-                                     persistent_workers=train_cfg.persistent_workers,
-        )
+        if self.is_docking:
+            follow_batch = list(dict.fromkeys(follow_batch + ['pocket_pos']))
+            protocol = 'E'
+            if data_cfg.dataset.pocket_mode == 'center':
+                # 已有dock噪声配置决定整套T0/T1科学条件, 不另设训练偏移开关; 正式采样仍独立接收C0/C5.
+                dock_noise = next(item for item in self.config.noise.individual if item.name == 'dock')
+                protocol = 'C5' if dock_noise.center_translation else 'C0'
+            train_set = OccurrenceDataset(data_cfg.dataset, 'train', self.transforms, self.config.model.nucleic_branch, protocol, True)
+            val_set = OccurrenceDataset(data_cfg.dataset, 'validation', self.transforms, self.config.model.nucleic_branch, protocol, False)
+            batch_size = train_cfg.batch_size
+            val_workers = train_cfg.num_workers
+        else:
+            num_samplers_args = {
+                'num_workers': train_cfg.num_workers,
+                'global_rank': self.trainer.global_rank,
+                'world_size': self.trainer.world_size,
+            }
+            train_set = ForeverTaskDataset(data_cfg.dataset, data_cfg.task_db_weights, 'train', transforms=self.transforms, shuffle=True, **num_samplers_args)
+            divider = 4 if self.trainer.world_size > 100 else 1
+            val_workers = train_cfg.num_workers // divider
+            num_samplers_args['num_workers'] = val_workers
+            val_set = ForeverTaskDataset(data_cfg.dataset, data_cfg.task_db_weights, 'val', transforms=self.transforms, shuffle=False, **num_samplers_args)
+            batch_size = 40 if is_vscode else train_cfg.batch_size
+        self.train_loader = DataLoader(train_set, batch_size=batch_size, num_workers=train_cfg.num_workers, pin_memory=train_cfg.pin_memory, follow_batch=follow_batch, exclude_keys=exclude_keys, persistent_workers=train_cfg.persistent_workers)
+        self.val_loader = DataLoader(val_set, batch_size=batch_size, num_workers=val_workers, pin_memory=train_cfg.pin_memory, follow_batch=follow_batch, exclude_keys=exclude_keys, persistent_workers=train_cfg.persistent_workers)
+
     def train_dataloader(self):
+        """向 Lightning 提供无限训练实例流, 由优化器更新数或 Plateau 停止条件结束."""
         return self.train_loader
+
     def val_dataloader(self):
+        """向 Lightning 提供一次完整验证实例遍历, 沿原 validation_step 计算 val/loss."""
         return self.val_loader
 
-# XXX
+
 class ModelLightning(pl.LightningModule):
     """
-    封装共享去噪网络、逐任务损失、优化器和训练/验证日志。
+    封装共享去噪网络、逐任务损失、优化器和训练/验证日志.
 
     构造参数:
-        - config.model: ``PMAsymDenoiser`` 配置；``name`` 必须为 ``pm_asym_denoiser`` 才会创建 ``self.model``。
-        - config.model.pretrained: str|空字符串；非空时读取 checkpoint ``state_dict`` 中以 ``model.`` 开头的键并去掉该前缀。
-        - config.loss: 损失配置；当前 reduced 配置由 ``IndividualTasksLoss`` 分别统计 mixed 与各任务分量。
-        - config.train: 优化器、调度器、warmup 与日志相关设置。
-        - args.num_gpus: int，当前节点使用的 GPU 数。
-        - args.multi_node: bool，是否跨多个计算节点训练。
-        - num_node_types: int, 配体原子类别数；传给原子 Embedding 与分类头。
-        - num_edge_types: int, 配体半边类别数；传给半边 Embedding 与分类头。
-        - ``**kwargs``: 至少含 ``pocket_in_dim``，传给 ``PMAsymDenoiser`` 的口袋线性嵌入层。
+        - config.model: ``PMAsymDenoiser`` 配置; ``name`` 必须为 ``pm_asym_denoiser`` 才会创建 ``self.model``.
+        - config.model.pretrained: str|空字符串, 旧 LMDB 分支的预训练模型路径.
+        - config.train.initial_checkpoint: str, adaligand 首次训练的官方模型路径; --resume 时跳过官方初始化.
+        - config.loss: 损失配置; 当前 reduced 配置由 ``IndividualTasksLoss`` 分别统计 mixed 与各任务分量.
+        - config.train: 优化器、调度器、warmup 与日志相关设置.
+        - args.num_gpus: int, 当前节点使用的 GPU 数.
+        - args.multi_node: bool, 是否跨多个计算节点训练.
+        - num_node_types: int, 配体原子类别数; 传给原子 Embedding 与分类头.
+        - num_edge_types: int, 配体半边类别数; 传给半边 Embedding 与分类头.
+        - ``**kwargs``: 至少含 ``pocket_in_dim``, 传给 ``PMAsymDenoiser`` 的口袋线性嵌入层.
+
+    形状符号: N_all 为批内配体原子数, H_all 为配体完全图半边数, P 为受体原子数, E_p 为口袋有向边数, K_n/K_e 为模型输出类别数.
 
     前向输入:
-        - batch.node_in: LongTensor，形状为 (N_all,)，带噪原子类别。
-        - batch.pos_in: FloatTensor，形状为 (N_all, 3)，带噪配体局部坐标，单位 Å。
-        - batch.halfedge_in: LongTensor，形状为 (H_all,)，带噪半边类别。
-        - batch.halfedge_index: LongTensor，形状为 (2, H_all)，完全图半边端点。
-        - batch.fixed_node: LongTensor|BoolTensor，形状为 (N_all,)，原子类别条件掩码。
-        - batch.fixed_pos: LongTensor|BoolTensor，形状为 (N_all,)，坐标条件掩码。
-        - batch.fixed_halfedge: LongTensor|BoolTensor，形状为 (H_all,)，半边类别条件掩码。
-        - batch.fixed_halfdist: LongTensor|BoolTensor，形状为 (H_all,)，半边距离条件掩码。
-        - batch.node_type_batch: LongTensor，形状为 (N_all,)，逐原子图归属编号。
-        - batch.pocket_atom_feature: FloatTensor，形状为 (P, D_p_raw)，口袋输入特征。
-        - batch.pocket_pos: FloatTensor，形状为 (P, 3)，口袋局部坐标，单位 Å。
-        - batch.pocket_knn_edge_index: LongTensor，形状为 (2, E_p)，口袋 kNN 有向边端点。
-        - batch.pocket_pos_batch: LongTensor，形状为 (P,)，逐口袋原子图归属编号。
-        - batch.is_peptide: LongTensor，形状为 (N_all,)，小分子任务为全 0；仅配置请求时读取。
+        - batch.node_in: LongTensor, 形状为 (N_all,), 带噪原子类别.
+        - batch.pos_in: FloatTensor, 形状为 (N_all, 3), 带噪配体局部坐标, 单位 Å.
+        - batch.halfedge_in: LongTensor, 形状为 (H_all,), 带噪半边类别.
+        - batch.halfedge_index: LongTensor, 形状为 (2, H_all), 完全图半边端点.
+        - batch.fixed_node: LongTensor|BoolTensor, 形状为 (N_all,), 原子类别条件掩码.
+        - batch.fixed_pos: LongTensor|BoolTensor, 形状为 (N_all,), 坐标条件掩码.
+        - batch.fixed_halfedge: LongTensor|BoolTensor, 形状为 (H_all,), 半边类别条件掩码.
+        - batch.fixed_halfdist: LongTensor|BoolTensor, 形状为 (H_all,), 半边距离条件掩码.
+        - batch.node_type_batch: LongTensor, 形状为 (N_all,), 逐原子图归属编号.
+        - batch.pocket_atom_feature: FloatTensor, (P, 25), P 个受体原子的原蛋白输入特征; 核酸位置为0.
+        - batch.pocket_nucleic_feature: FloatTensor, (P, 15), adaligand 核酸输入特征; 蛋白位置为0, 与 pocket_pos 第一维对齐.
+        - batch.pocket_is_nucleic: bool, (P,), adaligand 标准 RNA/DNA 原子标记, True 为核酸.
+        - batch.pocket_pos: FloatTensor, 形状为 (P, 3), 口袋局部坐标, 单位 Å.
+        - batch.pocket_knn_edge_index: LongTensor, 形状为 (2, E_p), 口袋 kNN 有向边端点.
+        - batch.pocket_pos_batch: LongTensor, 形状为 (P,), 逐口袋原子图归属编号.
+        - batch.is_peptide: LongTensor, 形状为 (N_all,), 小分子任务为全 0; 仅配置请求时读取.
 
     前向输出:
-        - pred_node: (N_all, K_n), 每个配体原子的真值类别 logits。
-        - pred_pos: (N_all, 3), 每个配体原子的去噪坐标，坐标原点与 ``pos_in`` 一致，单位 Å。
-        - pred_halfedge: (H_all, K_e), 每条无向半边的真值类别 logits。
-        - confidence_node: (N_all, 1), 可选原子类别置信度原始分数；配置 ``add_output`` 含 ``confidence`` 时存在。
-        - confidence_pos: (N_all, 1), 可选原子坐标置信度原始分数；与原子第一维对齐。
-        - confidence_halfedge: (H_all, 1), 可选半边类别置信度原始分数；与半边第一维对齐。
+        - pred_node: (N_all, K_n), 每个配体原子的真值类别 logits.
+        - pred_pos: (N_all, 3), 每个配体原子的去噪坐标, 坐标原点与 ``pos_in`` 一致, 单位 Å.
+        - pred_halfedge: (H_all, K_e), 每条无向半边的真值类别 logits.
+        - confidence_node: (N_all, 1), 可选原子类别置信度原始分数; 配置 ``add_output`` 含 ``confidence`` 时存在.
+        - confidence_pos: (N_all, 1), 可选原子坐标置信度原始分数; 与原子第一维对齐.
+        - confidence_halfedge: (H_all, 1), 可选半边类别置信度原始分数; 与半边第一维对齐.
 
     损失输出:
-        - <task>/node: 当前任务未固定原子类别的标量损失。
-        - <task>/pos: 当前任务未固定坐标的标量损失。
-        - <task>/edge: 当前任务未固定半边类别的标量损失。
-        - <task>/fixed_node: 当前任务固定原子类别的标量损失。
-        - <task>/fixed_pos: 当前任务固定坐标的标量损失。
-        - <task>/fixed_edge: 当前任务固定半边类别的标量损失。
-        - <task>/dist: 当前任务同域待恢复距离的标量损失。
-        - <task>/fixed_dist: 当前任务固定距离的标量损失。
-        - <task>/dih: 当前任务二面角周期标量损失。
-        - <task>/total: 当前任务各叶按 ``config.loss.weights`` 汇总的标量。
-        - mixed/total: 混合批次各恢复叶与可选 confidence/口袋距离项的反向传播标量。
+        - <task>/node: 当前任务未固定原子类别的标量损失.
+        - <task>/pos: 当前任务未固定坐标的标量损失.
+        - <task>/edge: 当前任务未固定半边类别的标量损失.
+        - <task>/fixed_node: 当前任务固定原子类别的标量损失.
+        - <task>/fixed_pos: 当前任务固定坐标的标量损失.
+        - <task>/fixed_edge: 当前任务固定半边类别的标量损失.
+        - <task>/dist: 当前任务同域待恢复距离的标量损失.
+        - <task>/fixed_dist: 当前任务固定距离的标量损失.
+        - <task>/dih: 当前任务二面角周期标量损失.
+        - <task>/total: 当前任务各叶按 ``config.loss.weights`` 汇总的标量.
+        - mixed/total: 混合批次各恢复叶与可选 confidence/口袋距离项的反向传播标量.
     """
     def __init__(self, config, args, num_node_types, num_edge_types, **kwargs):
-        super(ModelLightning, self).__init__()
-        # ``config.model.name``：str，模型注册名；当前必须为 ``pm_asym_denoiser``。
-        # ``config.model.pretrained``：str|缺省，可选预训练 Lightning checkpoint 路径。
-        # ``config.model``：Mapping，PMAsymDenoiser 的结构、输出头和附加节点特征叶。
-        # ``config.loss.name``：str，损失注册名；当前为 ``individual_tasks``。
-        # ``config.loss.weights``：Mapping，各恢复分量的标量权重叶。
-        # ``config.loss.tasks``：list[str]，逐任务日志与掩码的有序任务名。
-        # ``config.loss.confidence``：Mapping|缺省，置信度目标与分量权重叶。
-        # ``config.train.optimizer``：Mapping，优化器类型、学习率、权重衰减和动量叶。
-        # ``config.train.scheduler.warmup_step``：int，线性 warmup 步数。
-        # ``config.train.scheduler.instance``：Mapping，调度器类型与构造参数叶。
-        # ``config.train.scheduler.params``：Mapping，Lightning 调度间隔、频率与监控指标叶。
-        # ``self.config``：EasyDict，保留上述模型、损失和优化训练叶。
+        """构造原主干及 loss, 新实验只加载官方 model 权重, 自己续训交给 Lightning 恢复.
+
+        config.train.initial_checkpoint 是 adaligand 首次训练的官方检查点路径; args.resume 非空时跳过该路径. num_node_types/num_edge_types 为配体类别数, kwargs.pocket_in_dim 保持蛋白25维.
+        官方参数去掉 model. 前缀后严格匹配旧主干, 只允许新 nucleic_embedder/nucleic_encoder 参数缺失. RB 随后从已加载的 pocket_encoder 复制核酸编码器初值; 恢复自己检查点时不执行这一步.
+        """
+        super().__init__()
         self.config = config
         self.save_hyperparameters()
-        # ``self.num_gpus``：int，命令行声明的当前节点 GPU 数。
         self.num_gpus = args.num_gpus
-        # ``self.multi_node``：bool，是否跨多个计算节点运行。
         self.multi_node = args.multi_node
-        # ``self.sync_dist``：bool，多 GPU 或多节点时让 Lightning 日志跨进程同步归约。
-        self.sync_dist = (self.num_gpus>1) or self.multi_node
-
-        # Model
+        self.sync_dist = self.num_gpus > 1 or self.multi_node
+        self.is_docking = getattr(config.data.dataset, 'name', '') == 'adaligand'
         if self.config.model.name == 'pm_asym_denoiser':
-            # ``self.model``：PMAsymDenoiser，共享原子交互去噪网络；词表宽度与口袋输入宽度由 DataModule 推导。
-            self.model = PMAsymDenoiser(config=self.config.model,
-                                  num_node_types=num_node_types,
-                                  num_edge_types=num_edge_types, **kwargs)
-        
-        if getattr(self.config.model, 'pretrained', ''):
-            # ``ckpt``：dict，CPU 上读取的 Lightning checkpoint；预期含 ``state_dict`` 叶。
-            # ``ckpt.state_dict``：dict[str, Tensor]，Lightning 模块参数全名到权重张量的映射。
-            ckpt = torch.load(self.config.model.pretrained, map_location='cpu')
-            # ``k``：str，checkpoint 中当前参数全名；只有 ``model.`` 前缀的主网络参数被保留。
-            # ``value``：Tensor，当前 checkpoint 参数值；形状必须与去前缀后的模型参数一致。
-            self.model.load_state_dict({k[6:]:value for k, value in ckpt['state_dict'].items()
-                                        if k.startswith('model.')})
-            print('Load pretrained model from', self.config.model.pretrained)
-        
+            self.model = PMAsymDenoiser(config=self.config.model, num_node_types=num_node_types, num_edge_types=num_edge_types, **kwargs)
 
-        # ``self.loss_func``：nn.Module，当前配置为 IndividualTasksLoss，返回逐任务及 mixed 标量映射。
+        initial_checkpoint = self.config.train.initial_checkpoint if self.is_docking else getattr(self.config.model, 'pretrained', '')
+        if initial_checkpoint and not (self.is_docking and args.resume):
+            # dict[str, Tensor], 只取主网络参数; 不载入官方 optimizer、scheduler 或 best 分数.
+            ckpt = torch.load(initial_checkpoint, map_location='cpu', weights_only=False)
+            model_state = {key[6:]: value for key, value in ckpt['state_dict'].items() if key.startswith('model.')}
+            if self.is_docking:
+                incompatible = self.model.load_state_dict(model_state, strict=False)
+                missing = [key for key in incompatible.missing_keys if not key.startswith(('nucleic_embedder.', 'nucleic_encoder.'))]
+                if missing or incompatible.unexpected_keys:
+                    raise RuntimeError(f'官方权重与原模型不匹配: missing={missing}, unexpected={incompatible.unexpected_keys}')
+                if self.config.model.nucleic_branch == 'RB':
+                    self.model.nucleic_encoder.load_state_dict(self.model.pocket_encoder.state_dict())
+            else:
+                self.model.load_state_dict(model_state)
+            print('Load pretrained model from', initial_checkpoint)
         self.loss_func = get_loss_func(self.config.loss)
-        # self.skip = False
-        # self.automatic_optimization = False
-        # self.gradient_clip_val = getattr(self.config.train, 'gradient_clip_val', 0)
-        # self.gradient_clip_algorithm = getattr(self.config.train, 'gradient_clip_algorithm', 'norm')
 
     def forward(self, batch):
         """把带噪分子—口袋批次交给共享去噪模型。
@@ -791,56 +664,24 @@ class ModelLightning(pl.LightningModule):
         return loss_dict
 
     def configure_optimizers(self):
+        """沿原工厂创建 optimizer 与 scheduler, 保留 Lightning 自动反向传播和梯度累积.
+
+        config.train.optimizer 决定全部 model.parameters() 的单一参数组. scheduler.instance 决定原调度器参数, warmup_step 仍由 on_before_optimizer_step 读取.
+        adaligand 返回 optimizer, 并将原 ReduceLROnPlateau 保存为 docking_scheduler; 仅 DockingCheckpoint 在完整验证结束后调用一次 step 并先更新后保存. 旧来源返回原 Lightning lr_scheduler 元数据, 调度行为不变.
         """
-        从 ``config.train`` 构造优化器、调度器和 Lightning 调度元数据。
-
-        读取配置:
-            - self.config.train.optimizer: Mapping，优化器名称、学习率、权重衰减及实现特有参数。
-            - self.config.train.scheduler.warmup_step: int，可选，线性 warmup 的优化步数；缺省为 0。
-            - self.config.train.scheduler.instance: Mapping，调度器名称及其实例化参数。
-            - self.config.train.scheduler.params.interval: str，Lightning 调度时间单位，取 ``step`` 或 ``epoch``。
-            - self.config.train.scheduler.params.frequency: int，每隔多少个 interval 调用一次调度器。
-            - self.config.train.scheduler.params.monitor: str，需要指标驱动时读取的 Lightning 日志键。
-
-        返回值:
-            - optimizer: ``torch.optim.Optimizer``，参数只来自 ``self.model``；类型与超参数由 ``config.train.optimizer`` 决定。
-            - lr_scheduler.scheduler: 调度器实例；由 ``config.train.scheduler.instance`` 构造。
-            - lr_scheduler.interval: str，Lightning 按 step 或 epoch 调度的时间单位。
-            - lr_scheduler.frequency: int，每隔多少个 interval 调用一次调度器。
-            - lr_scheduler.monitor: str，ReduceLROnPlateau 读取的日志标量名。
-
-        状态变化:
-            - warmup_step: int, 从 scheduler 配置读取；只由 ``on_before_optimizer_step`` 使用，不包装调度器实例。
-        """
-        # ``optimizer``：torch.optim.Optimizer，只接收 ``self.model`` 参数和 optimizer 配置叶。
         optimizer = get_optimizer(self.config.train.optimizer, self.model)
-        # ``scheduler_config``：EasyDict，包含 ``warmup_step``、``instance`` 与 ``params`` 三个子对象。
-        # ``scheduler_config.warmup_step``：int|缺省，线性 warmup 步数。
-        # ``scheduler_config.instance``：Mapping，调度器名称及实例化参数。
-        # ``scheduler_config.params.interval``：str，Lightning 调度时间单位。
-        # ``scheduler_config.params.frequency``：int，Lightning 调度调用频率。
-        # ``scheduler_config.params.monitor``：str，需要指标驱动时读取的日志键。
         scheduler_config = self.config.train.scheduler
-        # ``scheduler``：lr_scheduler，按 ``instance`` 配置绑定上述 optimizer。
         scheduler = get_scheduler(scheduler_config.instance, optimizer)
-        # ``self.warmup_step``：int，线性 warmup 步数；缺省 0 表示不缩放学习率。
-        self.warmup_step = getattr(scheduler_config, "warmup_step", 0)
+        self.warmup_step = getattr(scheduler_config, 'warmup_step', 0)
         if self.warmup_step > 0:
             print('Warmup step is', self.warmup_step)
+        if self.is_docking:
+            self.docking_scheduler = scheduler
+            return optimizer
         return {
-            # ``optimizer``：torch.optim.Optimizer，Lightning 执行反向更新的优化器实例。
             'optimizer': optimizer,
-            # ``lr_scheduler``：dict，Lightning 调度器实例及其调度元数据。
-            'lr_scheduler': {
-                # ``lr_scheduler.scheduler``：lr_scheduler，绑定 ``optimizer`` 的学习率调度器实例。
-                'scheduler': scheduler,
-                # ``lr_scheduler.interval``：str，由 ``scheduler_config.params`` 展开的调度时间单位。
-                # ``lr_scheduler.frequency``：int，由 ``scheduler_config.params`` 展开的调度调用频率。
-                # ``lr_scheduler.monitor``：str，由 ``scheduler_config.params`` 展开的指标日志键。
-                **scheduler_config.params,
-            },
+            'lr_scheduler': {'scheduler': scheduler, **scheduler_config.params},
         }
-
 
     def optimizer_step2(self, epoch, batch_idx, optimizer, optimizer_closure=None):
         """保留的优化器 OOM 处理实验；名称不是 Lightning 当前 ``optimizer_step`` 钩子，本训练入口不会调用。"""
@@ -857,136 +698,262 @@ class ModelLightning(pl.LightningModule):
                 raise e
 
 
-# ``is_vscode``：bool，模块导入时的调试环境标记；VS Code 终端中 DataLoader batch size 强制为 40。
-is_vscode = False
-if os.environ.get("TERM_PROGRAM") == "vscode":
-    # ``is_vscode``：bool，TERM_PROGRAM 精确为 vscode 时启用调试路径。
-    is_vscode = True
+class DockingCheckpoint(ModelCheckpoint):
+    """按优化器更新数触发原验证, 调度一次并保存全部验证检查点.
+
+    构造参数:
+        - dirpath: str, 单个实验的 checkpoints 目录; 原 ModelCheckpoint 保存 step=<更新步>.ckpt 和 last.ckpt.
+        - run_id: str, W&B 运行标识, 如 h3k82abc; 新训练由 W&B 生成, 续训从检查点取回.
+
+    callbacks[state_key].pocketxmol 字段, state_key 是 Lightning 根据回调类名与监控配置生成的字符串:
+        - scheduler: dict, 原 ReduceLROnPlateau.state_dict(), 下列状态与配置一并恢复.
+            - factor: float, 实际下降时的学习率乘数.
+            - min_lrs: list[float], 与 optimizer.param_groups 对齐的学习率下限.
+            - patience: int, 允许连续未达到改善要求的验证次数; 超过该次数才下降.
+            - cooldown: int, 配置的冷却验证次数, 正式值0.
+            - cooldown_counter: int, 当前剩余冷却验证次数.
+            - mode: str, 指标优化方向, 正式值min表示最小化val/loss.
+            - threshold_mode: str, 改善阈值模式, 正式值rel表示相对改善.
+            - threshold: float, 改善阈值, 正式值0.01.
+            - eps: float, 新旧学习率差必须超过此值才实际修改.
+            - last_epoch: int, 已调用 scheduler.step 的验证次数, 与数据 epoch 不同.
+            - _last_lr: list[float], 最近一次调度后各参数组的学习率.
+            - mode_worse: float, 未见首个验证值时的最差基准, min 模式为正无穷.
+            - best: float, 最近达到相对改善要求的验证基准, 与原始 loss 的最低值可能不同.
+            - num_bad_epochs: int, 当前连续未达到改善要求的验证次数.
+        - decline_count: int, 各参数组学习率确实减小的累计次数; 第三次减小时停止.
+        - last_validation_step: int, 最近已处理的优化器更新编号, 用于防止累积批次或续训重复验证.
+        - stop_reason: str|None, plateau 表示第三次下降, max_steps 表示到达更新上限, None 表示仍可续训.
+        - run_id: str, 上述 W&B 运行标识, 不含账号凭据.
+        - rng: dict, 训练主进程的随机生成器状态, 不含 DataLoader worker 的私有 Generator.
+            - python: tuple(version, internal_state, gauss_next), int版本号、内部整数状态元组、float|None高斯缓存; 由random.setstate整体恢复.
+            - numpy: tuple(algorithm, keys, position, has_gauss, cached_gaussian), str算法名、uint32状态数组、int当前索引、int是否持有高斯缓存、float缓存值; 由np.random.set_state整体恢复.
+            - torch: CPU uint8 向量, torch.get_rng_state() 的主进程 CPU 随机状态.
+            - cuda: uint8 Tensor|None, 当前训练设备的 CUDA 随机状态; CPU 测试为 None, 不初始化其它可见GPU.
+
+    callbacks[state_key] 还保留原 ModelCheckpoint 选择字段:
+        - dirpath: str, 实际checkpoints目录; 普通resume必须沿用此目录.
+        - best_model_path: str, 原始val/loss最低者路径.
+        - best_model_score: scalar Tensor|None, 最低原始val/loss; 尚未验证为None.
+        - best_k_models: dict[str,scalar Tensor], 每个保存路径及对应val/loss; save_top_k=-1保留全部.
+        - kth_best_model_path: str, 原ModelCheckpoint记录的当前最差保留路径; 不触发本项目删除.
+        - kth_value: scalar Tensor, 上述最差保留检查点分数.
+        - last_model_path: str, 最近保存的完整检查点路径, 原版本保护可以增加vN后缀.
+        - monitor: str, 监控字段val/loss.
+
+    根字段 lr_schedulers 为 []: 本分支未向Lightning注册自动调度器, 调度状态实际在 callbacks[state_key].pocketxmol.scheduler. optimizer_states、global_step、loops 和完整配置仍由Lightning保存. RNG只覆盖训练主进程; 多worker预取队列不保存, 恢复后仍按同一occurrence均匀有放回分布抽样.
+    """
+
+    def __init__(self, dirpath, run_id):
+        """建立只在验证结束保存的原 ModelCheckpoint, 不启用检查点淘汰."""
+        super().__init__(dirpath=dirpath, filename='{step}', monitor='val/loss', mode='min', save_top_k=-1, save_last=True, every_n_train_steps=0, every_n_epochs=1, save_on_train_epoch_end=False, verbose=True)
+        self.run_id = run_id
+        self.scheduler_state = None
+        self.decline_count = 0
+        self.last_validation_step = 0
+        self.stop_reason = None
+        self.rng_state = None
+        self.cuda_device = None
+
+    def on_fit_start(self, trainer, pl_module):
+        """在优化器构造后恢复原调度器; 原生 optimizer/loops 随后仍由 Lightning 恢复."""
+        if self.scheduler_state is not None:
+            pl_module.docking_scheduler.load_state_dict(self.scheduler_state)
+        else:
+            self.scheduler_state = pl_module.docking_scheduler.state_dict()
+
+    def on_train_start(self, trainer, pl_module):
+        """训练循环恢复后重建验证门控并恢复主进程随机状态; 已停止的检查点不再更新参数."""
+        trainer.val_check_batch = float('inf')
+        self.cuda_device = pl_module.device if pl_module.device.type == 'cuda' else None
+        if self.rng_state is not None:
+            random.setstate(self.rng_state['python'])
+            np.random.set_state(self.rng_state['numpy'])
+            torch.set_rng_state(self.rng_state['torch'].cpu())
+            if self.cuda_device is not None and self.rng_state['cuda'] is not None:
+                torch.cuda.set_rng_state(self.rng_state['cuda'].cpu(), self.cuda_device)
+        if self.stop_reason is not None:
+            trainer.should_stop = True
+
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+        """仅在新的完整优化器更新到达配置间隔时开放本次原验证循环.
+
+        trainer.global_step 在梯度累积期间保持不变. last_validation_step 排除同一步的后续 microbatch; val_check_batch=1 让原 Lightning 验证条件通过, inf 则等待下一次更新. 因此续训调整梯度累积数也不改变每800次更新验证一次的口径.
+        """
+        step = trainer.global_step
+        due = step > self.last_validation_step and step % pl_module.config.train.val_check_interval == 0
+        trainer.val_check_batch = 1 if due else float('inf')
+        super().on_train_batch_end(trainer, pl_module, outputs, batch, batch_idx)
+
+    def on_validation_end(self, trainer, pl_module):
+        """使用完整原 val/loss 调度一次, 先记录下降/停止状态再调用原检查点保存.
+
+        Lightning 原自动 Plateau 调度发生在 on_validation_end 之后. 本分支不向 Lightning 注册 scheduler, 从而避免保存旧调度状态或重复 step. 原 ModelCheckpoint 按原始 loss 的最小值选 best, 与 Plateau 的相对改善阈值无关.
+        """
+        step = trainer.global_step
+        if trainer.sanity_checking or trainer.state.fn != 'fit' or step <= self.last_validation_step:
+            return
+        # list[float], 对齐 optimizer.param_groups; 只有真实学习率下降才计数, eps 导致的不变不计入.
+        old_lrs = [group['lr'] for group in trainer.optimizers[0].param_groups]
+        pl_module.docking_scheduler.step(trainer.callback_metrics['val/loss'])
+        if any(group['lr'] < before for group, before in zip(trainer.optimizers[0].param_groups, old_lrs)):
+            self.decline_count += 1
+        self.last_validation_step = step
+        self.scheduler_state = pl_module.docking_scheduler.state_dict()
+        if self.decline_count >= 3:
+            self.stop_reason = 'plateau'
+        elif step >= trainer.max_steps:
+            self.stop_reason = 'max_steps'
+        if self.stop_reason is not None:
+            trainer.should_stop = True
+        super().on_validation_end(trainer, pl_module)
+
+    def state_dict(self):
+        """返回原检查点选择状态及类文档定义的 pocketxmol 调度、停止、W&B 与主进程随机状态."""
+        state = super().state_dict()
+        state['pocketxmol'] = {
+            'scheduler': self.scheduler_state,
+            'decline_count': self.decline_count,
+            'last_validation_step': self.last_validation_step,
+            'stop_reason': self.stop_reason,
+            'run_id': self.run_id,
+            'rng': {
+                'python': random.getstate(),
+                'numpy': np.random.get_state(),
+                'torch': torch.get_rng_state(),
+                'cuda': torch.cuda.get_rng_state(self.cuda_device) if self.cuda_device is not None else None,
+            },
+        }
+        return state
+
+    def load_state_dict(self, state_dict):
+        """恢复自己检查点的完整选择与训练控制状态; 实验目录须沿用原路径, 以保留原 best/last 记录."""
+        super().load_state_dict(state_dict)
+        state = state_dict['pocketxmol']
+        self.scheduler_state = state['scheduler']
+        self.decline_count = state['decline_count']
+        self.last_validation_step = state['last_validation_step']
+        self.stop_reason = state['stop_reason']
+        self.run_id = state['run_id']
+        self.rng_state = state['rng']
+
+
+# 旧 LMDB 调试入口保持 VS Code 终端的原行为; adaligand 始终使用显式批量与实验路径.
+is_vscode = os.environ.get('TERM_PROGRAM') == 'vscode'
 
 if __name__ == '__main__':
-    from pytorch_lightning.loggers import TensorBoardLogger  # only training script need this
-    # Parse arguments
+    from pytorch_lightning.loggers import TensorBoardLogger, WandbLogger
+
     parser = argparse.ArgumentParser()
-    parser.add_argument('--config', type=str,
-        default='configs/train/train_pxm.yml')
+    parser.add_argument('config_path', nargs='?', help='训练 YAML; 与原 --config 二选一.')
+    parser.add_argument('--config', type=str, help='兼容原入口的训练 YAML 参数.')
     parser.add_argument('--num_gpus', type=int, default=1)
     parser.add_argument('--num_nodes', type=int, default=1)
     parser.add_argument('--multi_node', action='store_true')
-    parser.add_argument('--device', type=int, default=0, help='GPU device id. Only for single GPU training.')
+    parser.add_argument('--device', type=int, default=0, help='单GPU训练的可见设备编号.')
     parser.add_argument('--tag', type=str, default='')
     parser.add_argument('--logdir', type=str, default='lightning_logs_tasked')
     parser.add_argument('--profile', type=bool, default=False)
-    parser.add_argument('--resume', type=str, default='')
-    # ``args``：argparse.Namespace，保存配置路径、设备拓扑、日志目录、resume 等命令行叶子。
+    parser.add_argument('--resume', type=str, default='', help='adaligand 接收完整 ckpt 路径; 旧来源保留 TensorBoard 版本目录名.')
     args = parser.parse_args()
-    # ``args.logdir`` 最终为 TensorBoard 根目录；若配置位于 ``configs/train/<subdirs>``，追加这些子目录保持实验分组。
-    if is_vscode:
-        # ``args.logdir``：path，在调试运行中把日志根移到 vscode 子目录，避免与正式实验混放。
-        args.logdir = os.path.join('vscode', args.logdir)
-    # ``dir_names``：list[str]，配置父目录按 ``/`` 切分后的路径段。
-    dir_names = os.path.dirname(args.config).split('/')
-    # ``is_train``：int，路径段 ``train`` 的位置；不存在会直接抛 ValueError。
-    is_train = dir_names.index('train')
-    # ``names``：list[str]，train 后的配置子目录层级，用于保持日志实验分组。
-    names = dir_names[is_train+1:]
-    # ``args.logdir``：path，把配置子目录逐层追加到命令行日志根。
-    args.logdir = '/'.join([args.logdir] + names)
-
-    # Load configs
-    # ``config``：EasyDict，递归合并/解析规则由 ``utils.misc.make_config`` 定义；后续所有模型、数据和训练字段都从此对象读取。
+    if args.config_path and args.config:
+        parser.error('位置参数与 --config 不能同时指定.')
+    args.config = args.config_path or args.config or 'configs/train/train_pxm.yml'
     config = make_config(args.config)
-    # ``config_name``：str，去掉最后一个扩展名的配置文件名；用作 TensorBoardLogger 的实验名称。
-    config_name = os.path.basename(args.config)[:os.path.basename(args.config).rfind('.')]
+    config_name = os.path.splitext(os.path.basename(args.config))[0]
+    is_docking = getattr(config.data.dataset, 'name', '') == 'adaligand'
     seed_all(config.train.seed)
 
-    # data and model
+    if is_docking:
+        import wandb
+
+        # 单卡各跑一个实验, 名义全局批量只由单卡 batch 与累积相乘; 原 reduce_batch 例外不改.
+        if args.num_gpus != 1 or args.num_nodes != 1 or args.multi_node:
+            parser.error('adaligand 当前阶段使用单GPU独立实验, 每张授权卡分别启动一个配置.')
+        if config.train.batch_size * config.train.accumulate_grad_batches != config.train.global_batch_size:
+            parser.error('batch_size × accumulate_grad_batches 必须等于 global_batch_size.')
+        log_dir = os.path.abspath(args.logdir)
+        checkpoint_callback = DockingCheckpoint(os.path.join(log_dir, 'checkpoints'), '')
+        ckpt_path = os.path.abspath(args.resume) if args.resume else None
+        if ckpt_path:
+            # 预读自家callback状态和hyper_parameters.config以核对恢复条件; 此处不向模型装载权重, 实际恢复交给Trainer.
+            resume_checkpoint = torch.load(ckpt_path, map_location='cpu', weights_only=False)
+            callback_state = resume_checkpoint['callbacks'][checkpoint_callback.state_key]
+            run_state = callback_state['pocketxmol']
+            if run_state['stop_reason'] is not None:
+                parser.error(f"该检查点已按 {run_state['stop_reason']} 结束, 不能作为普通续训再次更新参数.")
+            if os.path.realpath(callback_state['dirpath']) != os.path.realpath(checkpoint_callback.dirpath):
+                parser.error('续训 --logdir 必须使用原实验目录, 以保持原 best/last 和 W&B 运行记录.')
+            # 两份科学配置必须相同; 仅移除恢复路径、单卡批量/累积、加载资源、日志频率及W&B在线/离线偏好.
+            saved_config = deepcopy(resume_checkpoint['hyper_parameters']['config'])
+            requested_config = deepcopy(config)
+            for compared_config in (saved_config, requested_config):
+                if 'resume' in compared_config:
+                    compared_config.pop('resume')
+                for resource_key in ('batch_size', 'accumulate_grad_batches', 'num_workers', 'pin_memory', 'persistent_workers', 'log_every_n_steps'):
+                    compared_config.train.pop(resource_key, None)
+                compared_config.train.wandb.pop('mode', None)
+            if saved_config != requested_config:
+                parser.error('续训科学配置与检查点不同; 普通 resume 不能改变模型、口袋、噪声、数据清单或优化目标.')
+            checkpoint_callback.run_id = run_state['run_id']
+            config['resume'] = ckpt_path
+            del resume_checkpoint
+        else:
+            if os.path.isdir(checkpoint_callback.dirpath) and os.listdir(checkpoint_callback.dirpath):
+                parser.error('该实验已有检查点; 请用 --resume 续训或指定新的 --logdir.')
+            checkpoint_callback.run_id = wandb.util.generate_id()
+        os.makedirs(log_dir, exist_ok=True)
+        # W&B 自身写运行目录和日志; mode 明确传递, 不把 API key 写入配置或打印.
+        logger = WandbLogger(name=config.train.wandb.name, save_dir=log_dir, entity=config.train.wandb.entity, project=config.train.wandb.project, id=checkpoint_callback.run_id, mode=config.train.wandb.mode, offline=config.train.wandb.mode == 'offline', log_model=False)
+        logger.experiment
+    else:
+        if is_vscode:
+            args.logdir = os.path.join('vscode', args.logdir)
+        dir_names = os.path.dirname(args.config).replace('\\', '/').split('/')
+        names = dir_names[dir_names.index('train') + 1:]
+        args.logdir = os.path.join(args.logdir, *names)
+        checkpoint_callback = ModelCheckpoint(filename='{step}', monitor='val/loss', mode='min', save_top_k=-1, every_n_train_steps=config.train.ckpt_every_n_steps, save_last=True, verbose=True)
+        logger = TensorBoardLogger(save_dir=args.logdir, name=config_name, version=args.tag if args.tag else None)
+        log_dir = logger.log_dir
+        ckpt_path = os.path.join(os.path.dirname(log_dir), args.resume, 'checkpoints/last.ckpt') if args.resume else None
+        if ckpt_path:
+            config['resume'] = ckpt_path
+
     dm = DataModule(config)
-    # ``in_dims``：dict[str, int]，把特征词表大小和口袋输入宽度同时传入 Lightning 模型包装。
-    in_dims = dm.get_in_dims()
-    # ``model``：ModelLightning，绑定模型、损失和优化过程；输入维度来自同一 DataModule 的特征词表。
-    model = ModelLightning(config, args, **in_dims)
-
-    # callbacks
-    # ``checkpoint_callback``：每 ``ckpt_every_n_steps`` 保存一次且不淘汰旧步数 checkpoint；另维护 last.ckpt。
-    checkpoint_callback = ModelCheckpoint(
-        filename='{step}',
-        monitor='val/loss',
-        mode='min',
-        # save_top_k=3,
-        save_top_k=-1,
-        every_n_train_steps=config.train.ckpt_every_n_steps,
-        save_last=True,
-        verbose=True,
-        # every_n_epochs=config.train.ckpt_every_n_epochs,
-    )
-    # ``logger``：logger.log_dir 由 save_dir/name/version 三层组成，也是源码快照与训练配置的共同输出根目录。
-    logger = TensorBoardLogger(
-        save_dir=args.logdir,
-        name=config_name,
-        version=args.tag if args.tag else None,
-    )
-
+    model = ModelLightning(config, args, **dm.get_in_dims())
     if not args.multi_node:
-        # ``devices``：int|list[int]；多 GPU 时取设备数量，单 GPU 时显式指定命令行 device 编号。
         devices = args.num_gpus if args.num_gpus > 1 else [args.device]
-        # ``num_nodes``：int，单节点或非 multi_node 模式沿用命令行节点数。
         num_nodes = args.num_nodes
     else:
-        # ``devices``：int，multi_node 模式每节点只暴露 1 个设备给当前训练进程配置。
         devices = 1
-        # ``num_nodes``：int，multi_node 模式从环境变量 NUM_NODES 读取节点总数，缺省 1。
-        num_nodes = int(os.environ.get("NUM_NODES", 1))
-    # print(args.num_nodes, args.num_gpus, devices)
+        num_nodes = int(os.environ.get('NUM_NODES', 1))
     trainer = pl.Trainer(
         devices=devices,
         num_nodes=num_nodes,
-        max_epochs=1,
+        max_epochs=-1 if is_docking else 1,
         max_steps=config.train.max_steps,
         callbacks=[checkpoint_callback],
         precision=config.train.precision,
         check_val_every_n_epoch=None,
-        log_every_n_steps=config.train.val_check_interval,
+        log_every_n_steps=config.train.log_every_n_steps if is_docking else config.train.val_check_interval,
         val_check_interval=config.train.val_check_interval,
+        accumulate_grad_batches=config.train.accumulate_grad_batches if is_docking else 1,
         gradient_clip_val=getattr(config.train, 'gradient_clip_val', None),
         logger=logger,
         num_sanity_val_steps=0,
         profiler='simple' if args.profile else None,
-        strategy='ddp',
-        # strategy='ddp_find_unused_parameters_true',
+        strategy='auto' if is_docking else 'ddp',
         accelerator='gpu',
-        # detect_anomaly=True,
-        # detect_anomaly=True
-        # limit_train_batches=1.0 if not args.profile else 100,
-        # limit_val_batches=1.0 if not args.profile else 50,
     )
-    
-    # resume
-    # ``log_dir``：str，本次 Lightning 版本目录；checkpoint 由 callback 在其子目录管理。
-    log_dir = trainer.logger.log_dir
-    if args.resume:
-        # ``ckpt_path``：str，``--resume`` 被解释为当前 experiment name 目录下的版本名，而非任意 checkpoint 路径。
-        ckpt_path = os.path.join(os.path.dirname(log_dir),
-                        args.resume, 'checkpoints/last.ckpt')
-        print('Resume from', ckpt_path)
-        # ``config.resume``：path，把实际解析出的 last.ckpt 路径回写配置，随训练配置快照一起落盘。
-        config['resume'] = ckpt_path
-    else:
-        # ``ckpt_path``：None，未请求续训时 Trainer.fit 从新初始化状态开始。
-        ckpt_path = None
-    
-    # save source code (only for rank 0 if use multiple GPUs)
-    if (not args.multi_node and ((args.num_gpus == 1) or (trainer.global_rank == 0))) or \
-        (args.multi_node and trainer.global_rank == 0):
-        # ``curr_dir``：仓库根目录与 ``<log_dir>/src``；只有 global rank 0 执行文件写入。
-        curr_dir = '.' # os.path.dirname(os.path.realpath(__file__))
-        # ``save_dir``：path，本次实验版本目录下的源码快照根。
-        save_dir = os.path.join(trainer.logger.log_dir, "src")
-        copy_py_files(curr_dir, save_dir, base=True)
-        # ``config_dir``：``<log_dir>/train_config``，只保存本次实际解析后的一个 YAML 配置副本。
-        config_dir = os.path.join(log_dir, 'train_config')
+    if trainer.global_rank == 0:
+        # 首次快照保持 src/train_config 原目录; 续训新增带时间的目录, 不覆盖原实验来源.
+        suffix = '_resume_' + datetime.now().strftime('%Y%m%d-%H%M%S') if is_docking and ckpt_path else ''
+        copy_py_files('.', os.path.join(log_dir, 'src' + suffix), base=True)
+        config_dir = os.path.join(log_dir, 'train_config' + suffix)
         os.makedirs(config_dir, exist_ok=True)
         save_config(config, os.path.join(config_dir, os.path.basename(args.config)))
-        # shutil.copyfile(args.config, os.path.join(config_dir, os.path.basename(args.config)))
-
-    trainer.fit(model, dm, ckpt_path=ckpt_path)
+    fit_args = {'weights_only': False} if is_docking else {}
+    trainer.fit(model, dm, ckpt_path=ckpt_path, **fit_args)
+    if is_docking:
+        print(f'Training result: updates={trainer.global_step}, stop_reason={checkpoint_callback.stop_reason}, best={checkpoint_callback.best_model_path}, val/loss={checkpoint_callback.best_model_score}', flush=True)
     print('Training finished!')
