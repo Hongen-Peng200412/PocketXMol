@@ -1,17 +1,17 @@
 # 4-B-C-T0-RB
 
-**正式训练中，测试尚未开始。** 371591／gnode09 的本次日志已到27893次更新，学习率4e-6；最近完成27200步验证，val/loss=1.99282，日志当前最低值为21600步的1.80655。它只是训练中观测，尚不是最终测试best。已保存34份定期检查点及last，未见Traceback、OOM或非有限损失记录。
+**正式训练已正常完成，C0／C5测试准备中。** 371591／gnode09 在31200次更新的原C0验证后，因第三次学习率下降停止。实际best为21600步，原C0 val/loss=1.8065478801727295；已核对它是全部39个定期检查点中的最低原验证损失，1236个模型参数键均有限。全部检查点、last及训练W&B记录保留，测试结果尚未产生。
 
-更新核查：2026-09-13 13:36（服务器 master，UTC+8）。依据 [科学契约](../../想法/方案草稿/9-8-科学契约.md)、[工程细节](../../想法/方案草稿/9-8-工程与实现细节.md) 和 [边界清单](../../想法/方案草稿/9-8-边界与核查清单.md)，本文件统一保存本模型的训练、测试、评价与尝试历史。共同准备见 [实现与共同数据准备](../实现与共同数据准备.md)，全实验进度见 [总日志](../总日志.md)。
+更新核查：2026-09-13 14:45（服务器 master，UTC+8；随后完成检查点核对）。依据 [科学契约](../../想法/方案草稿/9-8-科学契约.md)、[工程细节](../../想法/方案草稿/9-8-工程与实现细节.md) 和 [边界清单](../../想法/方案草稿/9-8-边界与核查清单.md)，本文件统一保存本模型的训练、测试、评价与尝试历史。共同准备见 [实现与共同数据准备](../实现与共同数据准备.md)，全实验进度见 [总日志](../总日志.md)。
 
 ## 当前有效运行与产物
 
 | 项目 | 当前事实 |
 |---|---|
 | 训练产物根 | `/storage/penghongen/PocketXMol/training/B-C-T0-RB/` |
-| 正式测试检查点 | 尚未确定；训练完成后从全部原验证损失中核实，不按本次快照预选 |
+| 正式测试检查点 | `checkpoints/step=21600.ckpt`，相对于上述训练根；原C0 val/loss=1.8065478801727295 |
 | 训练 W&B | [hthglbuy](https://wandb.ai/pencounkdual-111/PocketXmol_raw/runs/hthglbuy) |
-| 测试与评价产物 | 尚未产生本模型的 `test/run.json`；正式输出目录以之后登记的测试配置为准 |
+| 测试与评价产物 | 预定 `/storage/penghongen/PocketXMol/sampling/B-C-T0-RB/test/`，尚未启动 |
 | 评价 W&B | 尚未创建 |
 
 训练保留原路径 `val/loss` 和最低损失检查点选择；训练结束后直接完整测试，不做训练后完整验证集采样。每实例每协议50候选、100步，原 self-ranking（原置信度及碰撞、立体化学项组成的候选排序）不变。完整结果优先放在下文，执行核查和失败尝试放在后部。
@@ -20,7 +20,29 @@ ALL为446个实例的完整测试集合。按完整模板身份object_key在ALL�
 
 ## 最近一次进度与下一步
 
-本次只读检查来自 `/home/penghongen/Feedback/Pocket_Plus/allocations/371591/out` 和 `err`，从启动记录指定的113849959／311189字节读取；after_lock存在，try_lock与kill_lock均不存在。平均约1.05次更新／秒，已完成两次学习率下降。训练摘要尚未生成。继续训练，停止后核实last、实际best及调度状态，再进行C0／C5完整测试和同作业CPU评价。
+控制器第21次执行成功，训练主进程7586已退出并完成W&B上传。after_lock及恢复的try_lock存在，kill_lock不存在；没有使用终止协议或覆盖训练产物。训练进度栏耗时8小时13分35秒，平均约1.05次更新／秒；无Traceback、OOM或非有限损失记录。
+
+完整摘要为 `/storage/penghongen/PocketXMol/training/B-C-T0-RB/training_summary_20260913.json`。下一步用明确best完成446实例的C0和C5完整测试，再用同作业8个CPU评价进程完成三个视图及核酸占比报告，不安排完整验证集采样。
+
+## 正式测试配置与命令（待启动）
+
+`configs/docking/sample-B-C-T0-RB-test.yml`读取本次保存的训练配置及21600步best，receptor_branch=RB、center_translation=false、protocols=[C0,C5]、split=test。与正确T0-RA的测试配置相比，仅替换RB分支、模型名称及各自训练／产物身份；冻结C5偏移、种子、50候选、100步、batch50和8进程评价保持。
+
+中心推理始终按实际给定中心选袋及定原点；T0+C5保留冻结偏移后的输入中心，首步及后续均使用原T0高斯链，不强制候选质心归零。定位后采样器不读取真值中心或偏移，输出只加回模型原点一次，不做最终质心对齐。
+
+本次没有新增或修改生产Python函数。主代理第一遍核对配置读取关系、模型与数据分支、检查点和输出身份，第二遍核对YAML注释及日志含义；独立代理随后在同一范围完成两轮只读核查，均通过。YAML解析比较确认相对正确T0-RA仅有六个模型身份、路径与分支字段变化，科学条件及预算保持；未扩大既有生产代码审查。
+
+以下是接续使用的正式命令，目前尚未执行；实际release、launch和启动记录将在接入后补齐。
+
+```bash
+bash 训练与运行/sh/sample_docking.sh B-C-T0-RB-test
+```
+
+两个协议的全部候选完成后，在同一A800作业执行以下正式CPU评价命令（尚未执行）：
+
+```bash
+bash 训练与运行/sh/evaluate_docking.sh B-C-T0-RB-test
+```
 
 ## 中心T0与RB契约
 
@@ -62,7 +84,19 @@ bash 训练与运行/sh/train_docking.sh B-C-T0-RB
 
 ## 计划与实现差异
 
-本实验沿用已纠正的中心T0契约和既定RB配置，没有新增科学开关、代码或资产重建。正式训练已接入，完整训练、规定测试与报告仍待完成。
+本实验沿用已纠正的中心T0契约和既定RB配置，没有新增科学开关、代码或资产重建。完整训练及best核对已完成，规定C0／C5测试与报告仍待完成。
+
+## 训练完成与检查点只读核对
+
+当前训练日志从 `/home/penghongen/Feedback/Pocket_Plus/allocations/371591/out` 和 `err` 的113849959／311189字节起读取。全部39次原C0验证正常保存，31200步验证后正常停止，W&B hthglbuy上传完成。训练进度栏耗时8小时13分35秒，平均约1.05次更新／秒；未见Traceback、OOM、非有限损失或reduce_batch记录。
+
+在371591.8的8核CPU内加载last和实际best，确认stop_reason=plateau、decline_count=3、global_step=last_validation_step=31200，优化器和调度器末次学习率均为8.000000000000002e-7，第三次下降后没有继续更新。best21600对应的1.8065478801727295是全部39个定期检查点的最低原验证损失；39个检查点均存在，best的1236个model参数键全部有限。
+
+以下是已执行的产物核对命令，不是正式训练、推理或评价命令。脚本只读取已有检查点并新写training_summary_20260913.json，不改写检查点；本地部署记录为 `tmp/pxm-20260913/check_c_t0_rb_checkpoint.sh`，摘要副本为 `tmp/pxm-20260913/B-C-T0-RB-training-summary.json`。
+
+```bash
+srun --jobid=371591 --overlap --nodes=1 --ntasks=1 --cpus-per-task=8 env CUDA_VISIBLE_DEVICES= OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 PYTHONDONTWRITEBYTECODE=1 /storage/penghongen/PocketXMol/runtime/venv/bin/python -B /storage/penghongen/tmp/pocketxmol_checkpoint_20260913/inspect_c_t0_rb.py
+```
 
 ## 实验过程与失败尝试
 
