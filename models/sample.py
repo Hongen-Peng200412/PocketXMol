@@ -1,12 +1,7 @@
-"""执行通用去噪采样循环，并把批级状态、输出和轨迹拆回单分子。
+"""执行原去噪采样循环, 将批级状态、输出和轨迹拆回单分子.
 
-构象生成与小分子 docking 共享 ``sample_loop3``：每个离散步骤先由任务 noiser
-把当前干净估计重新加噪成 ``*_in``，模型再直接预测干净变量，最后由
-``outputs2batch`` 把预测投影成下一步状态。它不是只依赖相邻时刻转移核的经典
-DDPM 反向迭代。
-
-记号：``B`` 为图数，``N``/``H`` 为批内配体原子/完整无向半边总数，``T`` 为
-一次采样轮次的步骤数。轨迹统一把时间轴放在第 0 维；单分子拆分后仍保留时间轴。
+先读sample_loop3: 每步由noiser重新加噪, 模型预测干净变量, outputs2batch再写回下一步状态. 可选progress只记录Python调用阶段与前向进入/返回次数, 不参与科学计算. seperate_outputs2负责逐图拆分, get_cfd_traj负责原轨迹置信度聚合.
+本模块不落盘. sample_loop3返回(batch, outputs, trajs), 核心字段见函数Docstring. B为候选图数, N和H为批内配体原子数与完整无向半边数, T为一轮步数; trajs各坐标/类别数组的首轴为时间, outputs.confidence_pos_traj则为(N,T).
 """
 
 # Standard library imports
@@ -83,113 +78,131 @@ def add_info_to_dict(data_dict, data, mode):
                 this = data['pred_' + key]
         data_dict[key].append(this.detach().cpu())
 
-
-def sample_loop3(batch, model, noiser, device=None, is_ar='', off_tqdm=False):
-    """执行“重新加噪—直接去噪—任务投影”的迭代采样。
+def sample_loop3(batch, model, noiser, device=None, is_ar='', off_tqdm=False, progress=None):
+    """执行"重新加噪-直接去噪-任务投影"的迭代采样.
 
     输入参数:
-        - batch: PyG Batch，已完成分子/口袋 featurizer 与任务 transform，含 B 个候选图。
-        - batch.node_type: LongTensor，形状为 (N,)，当前原子类别。
-        - batch.node_pos: FloatTensor，形状为 (N, 3)，当前配体坐标，单位 Å。
-        - batch.halfedge_type: LongTensor，形状为 (H,)，当前完整无向半边类别。
-        - batch.gt_node_type: LongTensor，形状为 (N,)，采样开始前保存的干净原子类别参照。
-        - batch.gt_node_pos: FloatTensor，形状为 (N, 3)，采样开始前保存的干净坐标参照，单位 Å。
-        - batch.gt_halfedge_type: LongTensor，形状为 (H,)，采样开始前保存的干净半边类别参照。
-        - batch.fixed_node: LongTensor|BoolTensor，形状为 (N,)，原子类别 prompt；0 表示待恢复，1 表示条件。
-        - batch.fixed_pos: LongTensor|BoolTensor，形状为 (N,)，坐标 prompt；0 表示待恢复，1 表示条件。
-        - batch.fixed_halfedge: LongTensor|BoolTensor，形状为 (H,)，半边类别 prompt；0 表示待恢复，1 表示条件。
-        - batch.fixed_halfdist: LongTensor|BoolTensor，形状为 (H,)，半边距离 prompt；0 表示待恢复，1 表示条件。
-        - model: PMAsymDenoiser，把写入 ``*_in`` 的 Batch 映射为干净变量和 confidence 预测。
-        - noiser: ConfSampleNoiser|DockSamplNoiser，提供 ``steps_loop``、``__call__``、``outputs2batch`` 与 ``num_steps``。
-        - device: torch.device|str|None，辅助批次需要迁移时使用的设备。
-        - off_tqdm: bool，是否关闭进度条，不影响采样数值。
+        - batch: PyG Batch, 已完成分子/口袋 featurizer 与任务 transform, 含 B 个候选图.
+        - batch.node_type: LongTensor, 形状为 (N,), 当前原子类别.
+        - batch.node_pos: FloatTensor, 形状为 (N, 3), 当前配体坐标, 单位 Å.
+        - batch.halfedge_type: LongTensor, 形状为 (H,), 当前完整无向半边类别.
+        - batch.gt_node_type: LongTensor, 形状为 (N,), 采样开始前保存的干净原子类别参照.
+        - batch.gt_node_pos: FloatTensor, 形状为 (N, 3), 历史调用可保存干净坐标参照; 本项目docking传全零轨迹占位, 不是沉积真值.
+        - batch.gt_halfedge_type: LongTensor, 形状为 (H,), 采样开始前保存的干净半边类别参照.
+        - batch.fixed_node: LongTensor|BoolTensor, 形状为 (N,), 原子类别 prompt; 0 表示待恢复, 1 表示条件.
+        - batch.fixed_pos: LongTensor|BoolTensor, 形状为 (N,), 坐标 prompt; 0 表示待恢复, 1 表示条件.
+        - batch.fixed_halfedge: LongTensor|BoolTensor, 形状为 (H,), 半边类别 prompt; 0 表示待恢复, 1 表示条件.
+        - batch.fixed_halfdist: LongTensor|BoolTensor, 形状为 (H,), 半边距离 prompt; 0 表示待恢复, 1 表示条件.
+        - model: PMAsymDenoiser, 把写入 ``*_in`` 的 Batch 映射为干净变量和 confidence 预测.
+        - noiser: ConfSampleNoiser|DockSamplNoiser, 提供 ``steps_loop``、``__call__``、``outputs2batch`` 与 ``num_steps``.
+        - device: torch.device|str|None, 辅助批次需要迁移时使用的设备.
+        - off_tqdm: bool, 是否关闭进度条, 不影响采样数值.
+        - is_ar: str, 空字符串是本项目普通单轮采样; 原ar/ar2分支按已有规则追加自回归步骤, 本项目不启用.
+        - progress: dict|None, 可选原地诊断字典, None保持旧调用; 不修改张量、随机数或采样规则.
+            - progress.stage: str, 当前Python执行阶段, prepare_loop、noise、forward、prediction_to_batch或trajectory.
+            - progress.model_forward_attempt_count: int, 调用方初始设0, 每次进入批量模型调用前增加1.
+            - progress.model_forward_completed_count: int, 调用方初始设0, 每次模型Python调用完整返回后增加1; CUDA异步错误可能之后才观察到.
 
-    返回值:
-        - batch: PyG Batch，最后一次 ``outputs2batch`` 投影后的最终状态。
-        - batch.node_type: LongTensor，形状为 (N,)，最终原子类别。
-        - batch.node_pos: FloatTensor，形状为 (N, 3)，最终生成坐标，单位 Å。
-        - batch.halfedge_type: LongTensor，形状为 (H,)，最终半边类别。
-        - outputs: dict，最后一步模型输出，并新增坐标 confidence 轨迹叶。
-        - outputs.pred_node: FloatTensor，形状为 (N, C_n)，最后一步原子类别 logits。
-        - outputs.pred_pos: FloatTensor，形状为 (N, 3)，最后一步干净坐标预测，单位 Å。
-        - outputs.pred_halfedge: FloatTensor，形状为 (H, C_e)，最后一步半边类别 logits。
-        - outputs.confidence_node: FloatTensor，形状为 (N, 1)，最后一步原子 confidence 原始输出。
-        - outputs.confidence_pos: FloatTensor，形状为 (N, 1)，最后一步坐标 confidence 原始输出。
-        - outputs.confidence_halfedge: FloatTensor，形状为 (H, 1)，最后一步半边 confidence 原始输出。
-        - outputs.confidence_pos_traj: FloatTensor，形状为 (N, T_total)，逐原子逐步坐标 confidence 原始输出。
-        - trajs: dict，顶层叶为 ``all``、``in``、``out``、``raw`` 四种轨迹来源。
-        - trajs.all.node: ndarray，形状为 (S_all, N)，依次交错保存 gt、每步输入和每步投影后的原子类别。
-        - trajs.all.pos: ndarray，形状为 (S_all, N, 3)，依次交错保存 gt、每步输入和每步投影后的坐标，单位 Å。
-        - trajs.all.halfedge: ndarray，形状为 (S_all, H)，依次交错保存 gt、每步输入和每步投影后的半边类别。
-        - trajs.in.node: ndarray，形状为 (T_total, N)，每步带噪原子类别。
-        - trajs.in.pos: ndarray，形状为 (T_total, N, 3)，每步带噪坐标，单位 Å。
-        - trajs.in.halfedge: ndarray，形状为 (T_total, H)，每步带噪半边类别。
-        - trajs.out.node: ndarray，形状为 (T_total, N)，每步投影后原子类别。
-        - trajs.out.pos: ndarray，形状为 (T_total, N, 3)，每步投影后坐标，单位 Å。
-        - trajs.out.halfedge: ndarray，形状为 (T_total, H)，每步投影后半边类别。
-        - trajs.raw.node: ndarray，形状为 (T_total, N)，模型原始原子类别 argmax。
-        - trajs.raw.pos: ndarray，形状为 (T_total, N, 3)，模型原始坐标预测，单位 Å。
-        - trajs.raw.halfedge: ndarray，形状为 (T_total, H)，模型原始半边类别 argmax。
+    返回值采用当前无linking分块、非自回归的普通单轮路径: N为批内配体原子总数, H为完全图半边总数, num_node_types和num_edge_types为模型词表宽度. T_total=num_steps, S_all=1+2*num_steps; 正式100步时分别为100和201. 所有预测坐标均相对pocket_center对应的模型局部原点.
+        - batch: PyG Batch, 最后一次 ``outputs2batch`` 投影后的最终状态.
+        - batch.node_type: LongTensor, 形状为 (N,), 最终原子类别.
+        - batch.node_pos: FloatTensor, 形状为 (N, 3), 最终生成坐标, 单位 Å.
+        - batch.halfedge_type: LongTensor, 形状为 (H,), 最终半边类别.
+        - outputs: dict, 最后一步模型输出, 并新增坐标 confidence 轨迹叶.
+        - outputs.pred_node: FloatTensor, 形状为 (N, num_node_types), 最后一步原子类别 logits.
+        - outputs.pred_pos: FloatTensor, 形状为 (N, 3), 最后一步干净坐标预测, 单位 Å.
+        - outputs.pred_halfedge: FloatTensor, 形状为 (H, num_edge_types), 最后一步半边类别 logits.
+        - outputs.confidence_node: FloatTensor, 形状为 (N, 1), 最后一步原子 confidence 原始输出.
+        - outputs.confidence_pos: FloatTensor, 形状为 (N, 1), 最后一步坐标 confidence 原始输出.
+        - outputs.confidence_halfedge: FloatTensor, 形状为 (H, 1), 最后一步半边 confidence 原始输出.
+        - outputs.confidence_pos_traj: FloatTensor, 形状为 (N, T_total), 逐原子逐步坐标 confidence 原始输出.
+        - trajs: dict, 顶层叶为 ``all``、``in``、``out``、``raw`` 四种轨迹来源.
+        - trajs.all.node: ndarray, 形状为 (S_all, N), 依次交错保存 gt、每步输入和每步投影后的原子类别.
+        - trajs.all.pos: ndarray, 形状为 (S_all, N, 3), 依次交错保存gt_node_pos、每步输入和每步投影后的坐标, 单位Å; 当前docking首项为全零占位.
+        - trajs.all.halfedge: ndarray, 形状为 (S_all, H), 依次交错保存 gt、每步输入和每步投影后的半边类别.
+        - trajs.in.node: ndarray, 形状为 (T_total, N), 每步带噪原子类别.
+        - trajs.in.pos: ndarray, 形状为 (T_total, N, 3), 每步带噪坐标, 单位 Å.
+        - trajs.in.halfedge: ndarray, 形状为 (T_total, H), 每步带噪半边类别.
+        - trajs.out.node: ndarray, 形状为 (T_total, N), 每步投影后原子类别.
+        - trajs.out.pos: ndarray, 形状为 (T_total, N, 3), 每步投影后坐标, 单位 Å.
+        - trajs.out.halfedge: ndarray, 形状为 (T_total, H), 每步投影后半边类别.
+        - trajs.raw.node: ndarray, 形状为 (T_total, N), 模型原始原子类别 argmax.
+        - trajs.raw.pos: ndarray, 形状为 (T_total, N, 3), 模型原始坐标预测, 单位 Å.
+        - trajs.raw.halfedge: ndarray, 形状为 (T_total, H), 模型原始半边类别 argmax.
     """
-    # ``traj_dict``：dict[str, list[Tensor]]，all 轨迹容器；三个叶先放 gt，随后交错追加 in/out。
+    if progress is not None:
+        progress['stage'] = 'prepare_loop'
+    # ``traj_dict``: dict[str, list[Tensor]], all 轨迹容器; 三个叶先放 gt, 随后交错追加 in/out.
     traj_dict = {
-        # ``traj_dict.node``：list[Tensor]，每项形状为 (N,)，保存一个阶段的原子类别索引。
+        # ``traj_dict.node``: list[Tensor], 每项形状为 (N,), 保存一个阶段的原子类别索引.
         'node': [],
-        # ``traj_dict.pos``：list[Tensor]，每项形状为 (N, 3)，保存一个阶段的配体坐标，单位 Å。
+        # ``traj_dict.pos``: list[Tensor], 每项形状为 (N, 3), 保存一个阶段的配体坐标, 单位 Å.
         'pos': [],
-        # ``traj_dict.halfedge``：list[Tensor]，每项形状为 (H,)，保存一个阶段的完整半边类别索引。
+        # ``traj_dict.halfedge``: list[Tensor], 每项形状为 (H,), 保存一个阶段的完整半边类别索引.
         'halfedge': [],
     }
-    # ``cfd_traj``：list[Tensor]，每项形状为 (N,)，按采样步保存逐原子坐标置信度原始值。
+    # ``cfd_traj``: list[Tensor], 每项形状为 (N,), 按采样步保存逐原子坐标置信度原始值.
     cfd_traj = []
     mol_parts = get_mol_parts_linking(batch, device=device)
     for data_mol in [batch] + mol_parts:
         add_info_to_dict(traj_dict, data_mol, 'gt')
 
-    # ``in_dict``：dict[str, list[Tensor]]，仅保存每步 noiser 产生的带噪变量。
+    # ``in_dict``: dict[str, list[Tensor]], 仅保存每步 noiser 产生的带噪变量.
     in_dict = {
-        # ``in_dict.node``：list[Tensor]，每项形状为 (N,)，逐步带噪原子类别索引。
+        # ``in_dict.node``: list[Tensor], 每项形状为 (N,), 逐步带噪原子类别索引.
         'node': [],
-        # ``in_dict.pos``：list[Tensor]，每项形状为 (N, 3)，逐步带噪配体坐标，单位 Å。
+        # ``in_dict.pos``: list[Tensor], 每项形状为 (N, 3), 逐步带噪配体坐标, 单位 Å.
         'pos': [],
-        # ``in_dict.halfedge``：list[Tensor]，每项形状为 (H,)，逐步带噪完整半边类别索引。
+        # ``in_dict.halfedge``: list[Tensor], 每项形状为 (H,), 逐步带噪完整半边类别索引.
         'halfedge': [],
     }
-    # ``out_dict``：dict[str, list[Tensor]]，仅保存每步 M-Projector 更新后的当前状态。
+    # ``out_dict``: dict[str, list[Tensor]], 仅保存每步 M-Projector 更新后的当前状态.
     out_dict = {
-        # ``out_dict.node``：list[Tensor]，每项形状为 (N,)，逐步投影后的原子类别索引。
+        # ``out_dict.node``: list[Tensor], 每项形状为 (N,), 逐步投影后的原子类别索引.
         'node': [],
-        # ``out_dict.pos``：list[Tensor]，每项形状为 (N, 3)，逐步投影后的配体坐标，单位 Å。
+        # ``out_dict.pos``: list[Tensor], 每项形状为 (N, 3), 逐步投影后的配体坐标, 单位 Å.
         'pos': [],
-        # ``out_dict.halfedge``：list[Tensor]，每项形状为 (H,)，逐步投影后的完整半边类别索引。
+        # ``out_dict.halfedge``: list[Tensor], 每项形状为 (H,), 逐步投影后的完整半边类别索引.
         'halfedge': [],
     }
-    # ``raw_dict``：dict[str, list[Tensor]]，仅保存模型原始干净预测；类别 logits 转成 argmax 类别。
+    # ``raw_dict``: dict[str, list[Tensor]], 仅保存模型原始干净预测; 类别 logits 转成 argmax 类别.
     raw_dict = {
-        # ``raw_dict.node``：list[Tensor]，每项形状为 (N,)，模型原始原子类别 logits 的 argmax 索引。
+        # ``raw_dict.node``: list[Tensor], 每项形状为 (N,), 模型原始原子类别 logits 的 argmax 索引.
         'node': [],
-        # ``raw_dict.pos``：list[Tensor]，每项形状为 (N, 3)，模型原始坐标预测，单位 Å。
+        # ``raw_dict.pos``: list[Tensor], 每项形状为 (N, 3), 模型原始坐标预测, 单位 Å.
         'pos': [],
-        # ``raw_dict.halfedge``：list[Tensor]，每项形状为 (H,)，模型原始半边类别 logits 的 argmax 索引。
+        # ``raw_dict.halfedge``: list[Tensor], 每项形状为 (H,), 模型原始半边类别 logits 的 argmax 索引.
         'halfedge': [],
     }
     
     step_ar = 0
     while True:
-        # ``step``：int，noiser 的离散采样步编号；其到信息等级的映射由任务 level scaler 决定。
+        # ``step``: float, init_step*k/num_steps的采样进度; 正式100步依次为1.0, 0.99, ..., 0.01, 再由任务level scaler映射为信息等级.
         for step in tqdm(noiser.steps_loop(add_last=False), desc='Sampling steps', 
                         total=noiser.num_steps, disable=off_tqdm):
             with torch.no_grad():
-                # ``batch``：在当前状态上按 step 对应 level 重新加噪，并写入 ``*_in``。
+                if progress is not None:
+                    progress['stage'] = 'noise'
+                # ``batch``: 在当前状态上按 step 对应 level 重新加噪, 并写入 ``*_in``.
                 batch = noiser(batch, step)
+                if progress is not None:
+                    progress['stage'] = 'trajectory'
                 add_info_to_dict(in_dict, batch, 'in')
                 add_info_to_dict(traj_dict, batch, 'in')
                 
-                # ``outputs``：模型干净变量与置信度预测；节点/半边顺序仍与 Batch 对齐。
+                # ``outputs``: 模型干净变量与置信度预测; 节点/半边顺序仍与 Batch 对齐.
+                if progress is not None:
+                    progress['stage'] = 'forward'
+                    progress['model_forward_attempt_count'] += 1
                 outputs = model(batch) 
+                if progress is not None:
+                    progress['model_forward_completed_count'] += 1
+                    progress['stage'] = 'prediction_to_batch'
                 batch.update({'step': step})
-                # ``batch``：M-Projector 后的下一步当前状态；free 路径直接采用主预测。
+                # ``batch``: M-Projector 后的下一步当前状态; free 路径直接采用主预测.
                 batch = noiser.outputs2batch(batch, outputs)  # M-Projector (what a strange name, I (xingang) do not like it)
+                if progress is not None:
+                    progress['stage'] = 'trajectory'
                 add_info_to_dict(out_dict, batch, 'out')
                 add_info_to_dict(traj_dict, batch, 'out')
                 add_info_to_dict(raw_dict, outputs, 'raw_out')
@@ -209,27 +222,27 @@ def sample_loop3(batch, model, noiser, device=None, is_ar='', off_tqdm=False):
         else:
             break
     
-    # 四个字典的叶最终都把时间/阶段轴堆到第 0 维。
-    # ``all_trajs``：dict[str, ndarray]，稍后把 all 轨迹三个叶沿阶段轴堆叠。
-    # ``in_trajs``：dict[str, ndarray]，稍后把输入轨迹三个叶沿时间轴堆叠。
-    # ``out_trajs``：dict[str, ndarray]，稍后把投影轨迹三个叶沿时间轴堆叠。
+    # 四个字典的叶最终都把时间/阶段轴堆到第 0 维.
+    # ``all_trajs``: dict[str, ndarray], 稍后把 all 轨迹三个叶沿阶段轴堆叠.
+    # ``in_trajs``: dict[str, ndarray], 稍后把输入轨迹三个叶沿时间轴堆叠.
+    # ``out_trajs``: dict[str, ndarray], 稍后把投影轨迹三个叶沿时间轴堆叠.
     all_trajs, in_trajs, out_trajs = {}, {}, {}
-    # ``raw_trajs``：variable -> ndarray，形状为 (S, ...)，保存模型未投影的轨迹。
+    # ``raw_trajs``: variable -> ndarray, 形状为 (S, ...), 保存模型未投影的轨迹.
     raw_trajs = {}
     try:
-        # ``key``：str，当前堆叠的轨迹变量名，依次为 ``node``、``pos``、``halfedge``。
+        # ``key``: str, 当前堆叠的轨迹变量名, 依次为 ``node``、``pos``、``halfedge``.
         for key in traj_dict.keys():
-            # ``all_trajs[key]``：ndarray，形状为 (S_all, ...)，把 all 来源 CPU Tensor 沿阶段轴堆叠。
-            # ``d``：CPU Tensor，当前 ``key`` 在 all 来源中的一个阶段项；实体形状由 ``key`` 决定。
+            # ``all_trajs[key]``: ndarray, 形状为 (S_all, ...), 把 all 来源 CPU Tensor 沿阶段轴堆叠.
+            # ``d``: CPU Tensor, 当前 ``key`` 在 all 来源中的一个阶段项; 实体形状由 ``key`` 决定.
             all_trajs[key] = np.stack([d.numpy() for d in traj_dict[key]], axis=0)  # torch is slower here
-            # ``in_trajs[key]``：ndarray，形状为 (T_total, ...)，只含每步带噪输入。
-            # ``d``：CPU Tensor，当前 ``key`` 在 in 来源中的一个采样步项；实体形状由 ``key`` 决定。
+            # ``in_trajs[key]``: ndarray, 形状为 (T_total, ...), 只含每步带噪输入.
+            # ``d``: CPU Tensor, 当前 ``key`` 在 in 来源中的一个采样步项; 实体形状由 ``key`` 决定.
             in_trajs[key] = np.stack([d.numpy() for d in in_dict[key]], axis=0)
-            # ``out_trajs[key]``：ndarray，形状为 (T_total, ...)，只含每步投影后状态。
-            # ``d``：CPU Tensor，当前 ``key`` 在 out 来源中的一个采样步项；实体形状由 ``key`` 决定。
+            # ``out_trajs[key]``: ndarray, 形状为 (T_total, ...), 只含每步投影后状态.
+            # ``d``: CPU Tensor, 当前 ``key`` 在 out 来源中的一个采样步项; 实体形状由 ``key`` 决定.
             out_trajs[key] = np.stack([d.numpy() for d in out_dict[key]], axis=0)
-            # ``raw_trajs[key]``：ndarray，形状为 (T_total, ...)，只含模型未投影预测。
-            # ``d``：CPU Tensor，当前 ``key`` 在 raw 来源中的一个采样步项；实体形状由 ``key`` 决定。
+            # ``raw_trajs[key]``: ndarray, 形状为 (T_total, ...), 只含模型未投影预测.
+            # ``d``: CPU Tensor, 当前 ``key`` 在 raw 来源中的一个采样步项; 实体形状由 ``key`` 决定.
             raw_trajs[key] = np.stack([d.numpy() for d in raw_dict[key]], axis=0)
     except RuntimeError:
         raise NotImplementedError('fix to save traj information')
@@ -239,31 +252,20 @@ def sample_loop3(batch, model, noiser, device=None, is_ar='', off_tqdm=False):
             out_trajs[key] = pad_and_stack(out_dict[key], dim=0)
             raw_trajs[key] = pad_and_stack(raw_dict[key], dim=0)
     
-    # ``trajs``：dict[str, dict[str, ndarray]]，顶层来源为 ``all/in/out/raw``，内层变量为 ``node/pos/halfedge``。
+    # ``trajs``: dict[str, dict[str, ndarray]], 顶层来源为 ``all/in/out/raw``, 内层变量为 ``node/pos/halfedge``.
     trajs = {
-        # ``trajs.all``：dict[str, ndarray]，保存 gt 与每步输入/输出交错组成的完整阶段轨迹。
+        # ``trajs.all``: dict[str, ndarray], 保存 gt 与每步输入/输出交错组成的完整阶段轨迹.
         'all': all_trajs,
-        # ``trajs.in``：dict[str, ndarray]，保存每步重新加噪后的输入轨迹。
+        # ``trajs.in``: dict[str, ndarray], 保存每步重新加噪后的输入轨迹.
         'in': in_trajs,
-        # ``trajs.out``：dict[str, ndarray]，保存每步 M-Projector 投影后的状态轨迹。
+        # ``trajs.out``: dict[str, ndarray], 保存每步 M-Projector 投影后的状态轨迹.
         'out': out_trajs,
-        # ``trajs.raw``：dict[str, ndarray]，保存每步模型未经投影的原始预测轨迹。
+        # ``trajs.raw``: dict[str, ndarray], 保存每步模型未经投影的原始预测轨迹.
         'raw': raw_trajs,
     }
-    # ``outputs.confidence_pos_traj``：FloatTensor，形状为 (N, T_total)；``dim=-1`` 将采样步放在最后一维。
+    # ``outputs.confidence_pos_traj``: FloatTensor, 形状为 (N, T_total); ``dim=-1`` 将采样步放在最后一维.
     outputs['confidence_pos_traj'] = torch.stack(cfd_traj, dim=-1)
     return batch, outputs, trajs
-
-def pad_and_stack(tensor_list, dim):
-    size_list = [tensor.size(0) for tensor in tensor_list]
-    max_size = max(size_list)
-    if tensor_list[0].dim() == 1:
-        tensor_list = [F.pad(tensor, (0, max_size-size), mode='constant', value=-1)  # type = -1 means
-                    for tensor, size in zip(tensor_list, size_list)]
-    else:
-        tensor_list = [F.pad(tensor, (0, 0, 0, max_size-size), mode='constant', value=0)
-                    for tensor, size in zip(tensor_list, size_list)]
-    return torch.stack(tensor_list, dim=dim)
 
 def seperate_outputs2(batch, outputs, trajs, off_tqdm=False):
     """按 PyG 图归属把批级最终状态、模型输出和轨迹拆回单分子。
@@ -292,6 +294,7 @@ def seperate_outputs2(batch, outputs, trajs, off_tqdm=False):
         - generated_list[b].halfedge: ndarray，形状为 (H_b,)，图 b 的最终半边类别。
         - generated_list[b].halfedge_index: ndarray，形状为 (2, H_b)，图 b 的 0-based 半边端点索引。
         - generated_list[b].pocket_center: ndarray，形状为 (1, 3)，图 b 的口袋中心，单位 Å；缺失或为空时为零。
+
         - outputs_list: list[dict]，长度为 B，每项保存启发式判定可拆分的 CPU Tensor 输出叶。
         - outputs_list[b].pred_node: Tensor，可选，形状为 (N_b, C_n)，图 b 的原子类别 logits。
         - outputs_list[b].pred_pos: Tensor，可选，形状为 (N_b, 3)，图 b 的坐标预测，单位 Å。
@@ -302,6 +305,7 @@ def seperate_outputs2(batch, outputs, trajs, off_tqdm=False):
         - outputs_list[b].confidence_pos_traj: Tensor，可选，形状为 (N_b, T_total)，图 b 的坐标 confidence 轨迹。
         - outputs_list[b].halfedge_index: Tensor，形状为 (2, H_b)，图 b 的半边端点索引。
         - outputs_list[b].pocket_center: Tensor，通常形状为 (1, 3)，图 b 的口袋中心，单位 Å。
+
         - traj_list_dict: dict[str, list[dict]]|list，存在轨迹时顶层键为来源、每个列表长度为 B；``trajs is None`` 时为空列表。
         - traj_list_dict[source][b].node: ndarray，形状为 (S, N_b)，单图原子类别轨迹。
         - traj_list_dict[source][b].pos: ndarray，形状为 (S, N_b, 3)，单图坐标轨迹，单位 Å。
@@ -438,40 +442,64 @@ def seperate_outputs2(batch, outputs, trajs, off_tqdm=False):
     
     return generated_list, outputs_list, traj_list_dict
 
-
 def get_cfd_traj(cfd_pos_traj, atom_dim=0, steps=100):
-    """把逐原子逐步坐标置信度聚合为候选级轨迹分数。
+    """把单个候选配体的逐原子位置 confidence 原始输出汇总为一个标量.
+
+    形状符号:
+        - N_b: 当前候选配体的原子数.
+        - T_total: ``confidence_pos`` 写入轨迹的总次数.
+        - R: 把 T_total 个时间点按每段 steps 个时间点连续切分后得到的分段数.
 
     输入参数:
-        - cfd_pos_traj: Tensor，通常形状为 (N_b, T_total)，叶值是 ``confidence_pos`` 的原始单通道输出，本函数不做 sigmoid。
-        - atom_dim: int，原子轴；单分子默认第 0 维。
-        - steps: int，一轮采样的步数 T；总轨迹能被 T 整除且不等于 T 时按轮重排。
+        - cfd_pos_traj: Tensor, 通常形状为 (N_b, T_total); 数值是未经 sigmoid 的 ``confidence_pos`` 原始单通道输出, 不是概率.
+        - atom_dim: int, ``cfd_pos_traj`` 的原子轴; 沿该轴求均值后必须得到形状为 (T_total,) 的一维时间序列.
+        - steps: int, 正整数, 表示每个连续时间段包含的时间点数; 本函数不校验该前提.
 
     返回值:
-        - cfd: float，标准路径先在原子轴求均值，再对选中轨迹的后一半时间步求均值。
+        - cfd: float, 未经 sigmoid 的启发式轨迹分数; 先逐时间点平均 N_b 个原子, 再平均所用时间段末尾 ceil(L/2) 个值, 其中未分段时 L=T_total, 分段时 L=steps.
 
-    注意:
-        - 多轮 refine 路径把“标准差大于 0.01 的轮数减一”当作轮索引；只有满足条件的轮恰好构成前缀时，它才等于最后一个满足轮的真实索引。
-        - 没有任何轮满足标准差阈值时 ``last_round=-1``，因此选择末轮，而不是报告无有效轮。
+    分段规则:
+        - T_total 不等于 steps 且能被 steps 整除时, 时间序列按原顺序解释为 (R, steps); 该条件只检查长度, 不验证各段是否对应 refine 轮次.
+        - 设 K 为时间标准差大于 0.01 的分段数, 当前实现选择编号 K-1 的分段; 只有满足阈值的分段恰好构成从第 0 段开始的连续前缀时, K-1 才是最后一个满足阈值的分段编号.
+        - K=0 时分段编号为 -1, 因而选择最后一段; T_total 不能被 steps 整除时不分段, 而是直接使用完整时间序列.
     """
 
-    # ``cfd_atoms``：Tensor，形状为 (T_total,)，逐步对 N_b 个原子求均值后的原始置信度。
-    cfd_atoms = cfd_pos_traj.mean(dim=atom_dim)  # atom-wise mean
-    if (len(cfd_atoms) != steps) and (len(cfd_atoms) % steps == 0):  # refine-based sampling
-        # ``cfd_atoms_reshape``：Tensor，形状为 (R, T)，R 为采样/细化轮数。
+    # (T_total,), 每个时间点对 N_b 个原子的 ``confidence_pos`` 原始输出求均值.
+    cfd_atoms = cfd_pos_traj.mean(dim=atom_dim)
+    # 本项目当前100步单轮采样不触发; 其它轨迹长度满足下面条件时仍执行分段规则.
+    if (len(cfd_atoms) != steps) and (len(cfd_atoms) % steps == 0):
+        # (R, steps), 将时间轴连续切成 R 段, 不改变时间点的原有顺序.
         cfd_atoms_reshape = cfd_atoms.view(-1, steps)
-        # ``std_cfd``：Tensor，形状为 (R,)，每轮沿 T 步的置信度标准差。
+        # (R,), 每个时间段内 steps 个候选级原始输出的标准差.
         std_cfd = cfd_atoms_reshape.std(dim=1)
-        # ``last_round``：int，严格等于满足 std>0.01 的轮数减一，而非 argwhere 的末索引。
+        # int, 满足 std>0.01 的分段数减一; 该值不一定是最后一个满足阈值的真实分段编号.
         last_round = len(std_cfd[std_cfd > 0.01]) - 1
-        # ``cfd_atoms``：Tensor，形状为 (T,)，选中轮次的逐步候选级置信度。
+        # (steps,), 编号 last_round 的时间段; last_round=-1 时取最后一段.
         cfd_atoms = cfd_atoms_reshape[last_round]
-    # ``cfd``：标量 Tensor，仅平均选中轨迹的后半段，降低早期高噪声步骤影响。
+    # 标量 Tensor, 平均所用时间序列末尾 ceil(L/2) 个原始输出; L 为当前 cfd_atoms 的长度.
     cfd = cfd_atoms[-cfd_atoms.size(0)//2:].mean()
     if isinstance(cfd, torch.Tensor):
-        # ``cfd``：转为 Python float，便于写入 pandas/CSV。
+        # Python float, 作为普通标量返回并供 JSON、CSV 等格式序列化.
         cfd = cfd.item()
     return cfd
+
+def pad_and_stack(tensor_list, dim):
+    size_list = [tensor.size(0) for tensor in tensor_list]
+    max_size = max(size_list)
+    if tensor_list[0].dim() == 1:
+        tensor_list = [F.pad(tensor, (0, max_size-size), mode='constant', value=-1)  # type = -1 means
+                    for tensor, size in zip(tensor_list, size_list)]
+    else:
+        tensor_list = [F.pad(tensor, (0, 0, 0, max_size-size), mode='constant', value=0)
+                    for tensor, size in zip(tensor_list, size_list)]
+    return torch.stack(tensor_list, dim=dim)
+
+
+
+
+
+
+
 
 def post_process_generated(generated_list, outputs_list, traj_list_dict):
     mol_info_list = []
@@ -525,7 +553,6 @@ def post_process_generated(generated_list, outputs_list, traj_list_dict):
             mol_info['traj'] = mol_traj
         mol_info_list.append(mol_info)
 
-
 def get_mol_parts_linking(batch, device=None):
     parts = []
     for i_part in [1, 2]:
@@ -539,7 +566,6 @@ def get_mol_parts_linking(batch, device=None):
         }
         parts.append(part)
     return parts
-        
 
 def seperate_outputs_no_traj(outputs, n_graphs, batch_node, halfedge_index, batch_halfedge):
     outputs_pred = outputs
@@ -564,8 +590,6 @@ def seperate_outputs_no_traj(outputs, n_graphs, batch_node, halfedge_index, batc
             'halfedge_index': halfedge_index_this,
         })
     return new_outputs
-
-
 
 def get_atom_and_bond(pred_node, pred_pos, pred_halfedge):
     """
@@ -631,7 +655,6 @@ def get_atom_and_bond(pred_node, pred_pos, pred_halfedge):
     # # ele_prob = frag_atom_prob[is_atom]
     # pos = frag_pos[is_atom]
 
-
 def add_ligand_atom_to_data(data, element, pos, bond_types, bond_index, type_map=[6,7,8,9,15,16,17]):
     """
     """
@@ -668,7 +691,6 @@ def add_ligand_atom_to_data(data, element, pos, bond_types, bond_index, type_map
     ], dim=-1)
 
     return data
-
 
 def get_atom_and_bond(data, pred_atom_logits, pred_bond_logits, pos_pred):
     # get atoms

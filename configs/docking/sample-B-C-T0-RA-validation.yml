@@ -1,0 +1,35 @@
+# 历史配置: 用户已取消训练后完整验证集采样和评价, 本文件仅留证, 不再提交.
+# 本模型已按C0正确训练; C0/C5仍分别作为推理给定中心条件, 两者都执行T0原采样.
+model_name: B-C-T0-RA
+# str, 本次正确T0训练保存的配置, 不读取旧错误训练目录或可变的当前训练YAML.
+train_config: /storage/penghongen/PocketXMol/training/B-C-T0-RA-C0/train_config/B-C-T0-RA.yml
+# str, 按最低原C0 val/loss选出的21600步best, 不读取last或旧错误T0参数.
+checkpoint: /storage/penghongen/PocketXMol/training/B-C-T0-RA-C0/checkpoints/step=21600.ckpt
+# str, 模型和OccurrenceDataset均使用RA联合受体图及共享口袋编码器.
+receptor_branch: RA
+# bool, False保留原高斯采样; C5给定中心不被真实中心覆盖, 不增加整体平移.
+center_translation: false
+dataset:
+  # str, 原图、沉积坐标及标准受体资产根, 只读.
+  root: /storage/penghongen/AdaLigand/Ori_Data
+  # str, 已完成共同准备的共享对称排列和逐实例标签根.
+  derived_root: /storage/penghongen/Adaligand_Build/Ori_Data/pocketxmol
+  # str, 冻结实例清单、具体C5偏移和候选种子根, 不重新生成.
+  manifest_root: /storage/penghongen/PocketXMol/data
+  knn: 32  # int, OccurrenceDataset构造受体图的近邻上限.
+# list[str], 按C0、C5顺序独立生成; C5读取冻结偏移, 两种条件共用冻结候选种子.
+protocols: [C0, C5]
+split: validation  # str, 完整验证集合781个实例; 评价只汇总ALL.
+# str, 独立产物根; 名称末尾C0表示这次训练已纠偏, 推理协议由子目录区分.
+output_root: /storage/penghongen/PocketXMol/sampling/B-C-T0-RA-C0
+batch_size: 25  # int, 同一实例每批候选数, 不改变总预算.
+num_candidates: 50  # int, 每实例每协议固定预算, 失败仍进入分母.
+num_steps: 100  # int, 原sample_loop3的完整采样步数.
+device: cuda  # str, 在已获准GPU中执行采样.
+evaluation_workers: 8  # int, 后续evaluate_docking的CPU进程数, 提交时另明确申请8核.
+# 仅评价阶段读取并上传汇总, 私密API key不进入配置.
+wandb:
+  entity: pencounkdual-111
+  project: PocketXmol_raw
+  name: B-C-T0-RA-C0_validation
+  mode: online

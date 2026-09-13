@@ -1,0 +1,35 @@
+# scripts/sample_docking.py生成完整测试候选, scripts/evaluate_docking.py按同一配置评价.
+# 本模型按C0训练; C0/C5分别提供实际推理中心, 两者都执行T0原采样.
+model_name: B-C-T0-RB
+# str, 本次独立T0-RB训练保存的配置, 提供原模型、特征化和噪声参数.
+train_config: /storage/penghongen/PocketXMol/training/B-C-T0-RB/train_config/B-C-T0-RB.yml
+# str, 最低原C0 val/loss对应的21600步best; 已核对31200步停止及第三次学习率下降状态.
+checkpoint: /storage/penghongen/PocketXMol/training/B-C-T0-RB/checkpoints/step=21600.ckpt
+# str, 模型和OccurrenceDataset均使用RB分开的蛋白与核酸受体图及各自的口袋编码器.
+receptor_branch: RB
+# bool, False保留原高斯采样; C5给定中心不被真实中心覆盖, 不增加整体平移.
+center_translation: false
+dataset:
+  # str, 原图、沉积坐标及标准受体资产根, 只读.
+  root: /storage/penghongen/AdaLigand/Ori_Data
+  # str, 已完成共同准备的共享对称排列和逐实例标签根.
+  derived_root: /storage/penghongen/Adaligand_Build/Ori_Data/pocketxmol
+  # str, 冻结实例清单、具体C5偏移、候选种子及测试视图根, 不重新生成.
+  manifest_root: /storage/penghongen/PocketXMol/data
+  knn: 32  # int, OccurrenceDataset构造受体图的近邻上限.
+# list[str], 按C0、C5顺序独立生成; C5读取冻结偏移, 两种条件共用冻结候选种子.
+protocols: [C0, C5]
+split: test  # str, ALL完整446个实例; CAP10和HF10_TO5复用同一候选池.
+# str, 本模型独立采样根, 正式产物写入其test子目录.
+output_root: /storage/penghongen/PocketXMol/sampling/B-C-T0-RB
+batch_size: 50  # int, 同一实例的50个候选一次组批, 总预算仍为50.
+num_candidates: 50  # int, 每实例每协议固定预算, 失败仍进入分母.
+num_steps: 100  # int, 原sample_loop3的完整采样步数.
+device: cuda  # str, 在已获准GPU中执行采样.
+evaluation_workers: 8  # int, 后续evaluate_docking使用本A800作业已分配CPU, 不另排纯CPU任务.
+# 仅评价阶段读取并上传汇总, 私密API key不进入配置.
+wandb:
+  entity: pencounkdual-111
+  project: PocketXmol_raw
+  name: B-C-T0-RB_test
+  mode: online
