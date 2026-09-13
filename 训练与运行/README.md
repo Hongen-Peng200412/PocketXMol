@@ -8,7 +8,7 @@
 
 ## 正式命令
 
-工作目录为服务器 `/home/penghongen/My_Project/PocketXMol`。任务脚本使用 `/storage/penghongen/PocketXMol/runtime/venv/bin/python`；该项目环境继承 `pxm_phase1` 的 Torch/PyG/Lightning、RDKit、NumPy、SciPy 等科学依赖，仅在本项目目录补充 W&B 及其依赖，版本见[requirements-docking.txt](../requirements-docking.txt)。原 `pxm_phase1` 未改动。实际环境验收见[无密度实现与准备记录](../日志/第一类实验（不加密度信息）/00-实现与共同数据准备.md)。
+工作目录为服务器 `/home/penghongen/My_Project/PocketXMol`。任务脚本使用 `/storage/penghongen/PocketXMol/runtime/venv/bin/python`；该项目环境继承 `pxm_phase1` 的 Torch/PyG/Lightning、RDKit、NumPy、SciPy 等科学依赖，仅在本项目目录补充 W&B 及其依赖，版本见[requirements-docking.txt](../requirements-docking.txt)。原 `pxm_phase1` 未改动。实际环境验收见[无密度实现与准备记录](../日志/实现与共同数据准备.md)。
 
 ### 共同数据准备
 

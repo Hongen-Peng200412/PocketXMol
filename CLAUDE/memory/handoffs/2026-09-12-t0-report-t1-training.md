@@ -39,8 +39,8 @@ CPU Job 378916，cnode02、8核，COMPLETED、exit0、耗时1:54:34、最大常�
 
 ## Files To Reopen
 
-- [当前T1-RA训练](../../../日志/第一类实验（不加密度信息）/03-B-C-T1-RA.md)。
-- [完整T0测试报告](../../../日志/第一类实验（不加密度信息）/04-B-C-T0-RA推理与评价.md)、[T0纠偏与训练](../../../日志/第一类实验（不加密度信息）/02-T0中心契约修复与重训.md)。
+- [当前T1-RA训练](../../../日志/第一类实验（不加密度信息）/2-B-C-T1-RA.md)。
+- [完整T0测试报告](../../../日志/第一类实验（不加密度信息）/1-B-C-T0-RA.md)、[T0纠偏与训练](../../../日志/第一类实验（不加密度信息）/1-B-C-T0-RA.md)。
 - 三份9-8契约、日志/总日志.md、日志/计划执行映射.md。
 
 本地临时结果副本tmp/pxm-20260912/B-C-T0-RA-test-results.json包含服务器summary及全部occurrences，已解析并与逐候选记录核对。统一SSH helper通过Console.Out输出，PowerShell赋值不能直接捕获；需要下载JSON时在当前进程用StringWriter临时替换Console.Out并在finally恢复，再解析保存，避免把大JSON刷进聊天。不要修改共享helper或输出凭据。

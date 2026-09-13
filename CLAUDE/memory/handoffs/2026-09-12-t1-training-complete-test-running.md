@@ -43,7 +43,7 @@ bash 训练与运行/sh/sample_docking.sh B-C-T1-RA-test
 
 ## Files To Reopen
 
-- [T1训练与检查点核查](../../../日志/第一类实验（不加密度信息）/03-B-C-T1-RA.md)、[当前T1推理与评价](../../../日志/第一类实验（不加密度信息）/05-B-C-T1-RA推理与评价.md)。
-- [已完成T0报告](../../../日志/第一类实验（不加密度信息）/04-B-C-T0-RA推理与评价.md)、日志/总日志.md、日志/计划执行映射.md及三份9-8契约。
+- [T1训练与检查点核查](../../../日志/第一类实验（不加密度信息）/2-B-C-T1-RA.md)、[当前T1推理与评价](../../../日志/第一类实验（不加密度信息）/2-B-C-T1-RA.md)。
+- [已完成T0报告](../../../日志/第一类实验（不加密度信息）/1-B-C-T0-RA.md)、日志/总日志.md、日志/计划执行映射.md及三份9-8契约。
 
 本地T0汇总副本tmp/pxm-20260912/B-C-T0-RA-test-results.json包含两协议完整occurrences及summary。SSH helper通过Console.Out输出，PowerShell直接赋值不能捕获；大JSON应临时使用StringWriter接管Console.Out并在finally恢复后保存，避免刷入聊天。不得修改共享helper或输出凭据。

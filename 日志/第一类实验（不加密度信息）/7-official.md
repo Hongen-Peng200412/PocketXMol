@@ -1,8 +1,21 @@
-# 377793：官方测试结果与执行记录
+# 7-official
 
-官方冻结模型的C0/C5/E测试和CPU评价已于2026-09-12完成，九组视图汇总已保存并上传 [W&B official_377793_test](https://wandb.ai/pencounkdual-111/PocketXmol_raw/runs/x8diqywv)。每协议446个实例，445个实例成功生成并评价全部50个候选，9qkz/0保留50个预处理失败记录。374480_1（实际377793，gnode05）已回到try_lock，after_lock及全部产物保留。本对话另有F-5/F-6仍在H100队列，官方完成不代表这两项训练完成。
+**官方原始冻结模型的C0／C5／E完整测试和CPU评价已完成。** 有效运行是377793，三个协议的ALL Top-1成功率为44.84%／31.17%／63.90%。每协议446实例，其中445实例成功生成并评价全部50候选，9qkz/0的50个预处理失败记录保留在分母中。
 
-本记录依据 [科学契约](../../想法/方案草稿/9-8-科学契约.md)，接替 [377521官方测试](official-377521-测试与评价.md)。用户因怀疑gnode08异常，亲自执行scancel 374480_0，随后最终明确改为接管 **374480_1**，并要求不操作374480_2。本次只更换运行资源和独立产物目录，保留官方权重、测试协议、候选预算和评价定义。
+更新核查：2026-09-13 11:09（服务器 master，UTC+8），已只读确认最终summary.json及W&B身份存在；正式结果完成于2026-09-12。依据 [科学契约](../../想法/方案草稿/9-8-科学契约.md)，本文件统一保存官方测评的有效结果和中断尝试。全实验进度见 [总日志](../总日志.md)。本次没有重新运行官方推理或评价。
+
+## 当前有效运行与产物
+
+| 项目 | 当前事实 |
+|---|---|
+| 模型 | 原始官方冻结权重，不训练、不另建评分器 |
+| 权重 | `/storage/penghongen/PocketXMol_official_test/extracted/data/trained_models/pxm/checkpoints/pocketxmol.ckpt` |
+| 测试产物根 | `/storage/penghongen/PocketXMol/sampling/official-377793/test/` |
+| 有效配置 | `configs/docking/sample-official-377793-test.yml` |
+| 完成运行 | 377793，374480_1，gnode05，A100／8 CPU |
+| 评价W&B | [x8diqywv](https://wandb.ai/pencounkdual-111/PocketXmol_raw/runs/x8diqywv) |
+
+377521为用户取消的未完成尝试，其命令、空文件和保留证据归入本文末尾，不作为另一个实验或正式成绩。
 
 ## 九组正式测试结果
 
@@ -99,13 +112,17 @@ bash 训练与运行/sh/evaluate_docking.sh official-377793-test
 
 推理正常退出后，第二条使用本allocation已有8核和同一配置，入口关闭CUDA可见性；完成后继续after_hold。不追加完整验证集采样，不另申请GPU，不运行独立ranker。
 
-## 核查与执行记录
+## 有效运行的执行与核查记录
+
+本节按实际事件保留执行证据；其中启动阶段的进度与后续计划属于当时记录，当前完成状态以文档开头为准。
+
+### 核查与执行记录
 
 主代理第一遍用原make_config比较新旧配置，只有output_root和wandb.name的值变化；第二遍核对实际array索引1、JobId377793、gnode05、8核、正式命令及所有路径中的编号。配置解析是本地Python -X utf8的stdin检查，不是正式推理。此前三份配置和日志已完成两轮独立审查；本次主代理仅对迁移编号、路径和资源作窄核，没有改动Python逻辑。
 
 已于gnode05时间2026-09-11 17:37:24按try_lock协议请求启动。操作前/proc中只有原控制器PID68145，无活跃Python预测；原run_cmd备份到 `/storage/penghongen/PocketXMol/control/377793/run_cmd_377793_before_official_20260911.sh`，新动态命令为同目录official_377793_test_run_cmd.sh。新命令沿用已检查的两阶段调用，只替换作业编号和来源标记，bash -n语法检查通过。
 
-启动记录 `/storage/penghongen/PocketXMol/control/377793/official_377793_test_start.json` 保存实际资源、array索引1、旧任务备份及out/err起点17645/161。after_lock保留，未使用kill_lock或scancel。源码基准为b612032及本对话未提交的配置/日志；本次实际冻结副本为 `/home/penghongen/Feedback/PocketXMol/releases/PocketXMol_dceb9298cebe/PocketXMol`，启动证据目录为 `/home/penghongen/Feedback/PocketXMol/launches/377793/official_377793_test_job377793_20260911T173936`。本对话所有改动永远unstaged，不执行git add/commit，不处理其他人的修改或暂存内容。
+启动记录 `/storage/penghongen/PocketXMol/control/377793/official_377793_test_start.json` 保存实际资源、array索引1、旧任务备份及out/err起点17645/161。after_lock保留，未使用kill_lock或scancel。源码基准为b612032及本对话未提交的配置/日志；本次实际冻结副本为 `/home/penghongen/Feedback/PocketXMol/releases/PocketXMol_dceb9298cebe/PocketXMol`，启动证据目录为 `/home/penghongen/Feedback/PocketXMol/launches/377793/official_377793_test_job377793_20260911T173936`。当时负责该运行的对话按用户要求将改动保持unstaged，未执行git add/commit；用户后来统一备份到900a50e，本句只记录当时的版本来源。
 
 run.json记录模型严格加载完成于2026-09-11 17:40:16（UTC+8）。17:48的只读检查确认C0的11jb实例0至6均已完成，每实例50个候选全部成功，候选预算和100步未变。实例0耗时62.38秒、实例1耗时48.73秒，实例2至6耗时35.34至35.60秒。实例6记录一次采样批次、100次模型前向全部完成，峰值分配显存2500749312字节；这只代表启动时的这些实例，不外推整个测试集速度。C5和E尚未开始，推理结束后仍由已登记的第二条正式命令自动进行CPU评价。
 
@@ -125,4 +142,55 @@ run.json记录模型严格加载完成于2026-09-11 17:40:16（UTC+8）。17:48�
 
 ## 计划与实现差异
 
-中性差异：按用户明确指示迁移官方资源，科学条件不变，旧未完成尝试保留；CPU评价直接使用已分配的8核。官方测试和评价已完成，九组结果及失败分母已核查，未发现需修改科学契约的差异。未完成范围是F-5/F-6的排队、训练与配套测试，记录在各自日志中，未因本次迁移重新提交。
+中性差异：按用户明确指示迁移官方资源，科学条件不变，旧未完成尝试保留；CPU评价直接使用已分配的8核。官方测试和评价已完成，九组结果及失败分母已核查，未发现需修改科学契约的差异。官方测评本身没有未完成协议；F-5/F-6属于第5、6模型的并行尝试，其记录已归入对应模型末尾，不属于官方测评的待办。
+
+## 实验过程与失败尝试
+
+以下为追溯用记录。已结束阶段中的“尚未”“随后”等表述仅说明当时状态；本文件开头的当前状态优先。历史命令不应再次执行，旧产物不作为有效模型或测试结果。
+
+### 377521中断尝试
+
+本记录依据 [科学契约](../../想法/方案草稿/9-8-科学契约.md)的官方对照与共同评价协议，以及用户2026-09-11对374480_0的接管授权。本次工作属于既定官方测试，运行由“核查PocketXMol执行前准备（3: 独立做另外半边）”负责；不改变另一对话的371591或其它数组成员。
+
+本次尝试已由用户手动取消，当前官方测试转到 [374480_1实际377793](7-official.md)。下文377521命令和资源仅作历史记录，不再执行。
+
+#### 资源与产物隔离
+
+只读核实：用户点名374480_0的实际Slurm JobId为377521，gnode08，单张A100、8核，原任务为cryoatom2_test0。原控制目录为 `/storage/penghongen/Adaligand_infered_receptor_data/cryoatom2/test_0_chain06/运行日志与统计/slurm/allocations/377521/`；after_lock_377521在此目录，try_lock_377521在父目录。原预测已成功结束，控制器正在after_hold等待；该作业cgroup中未见活跃预测进程。执行前再次核实，再修改本作业动态命令并按实际try_lock协议启动；保留after_lock和全部旧产物，不触碰其它数组成员，也不使用scancel。
+
+正式配置 `configs/docking/sample-official-377521-test.yml` 复制sample-official-test.yml，只将输出根改为 `/storage/penghongen/PocketXMol/sampling/official-377521`，W&B评价名称改为official_377521_test；model_name仍为official。官方只读权重为 `/storage/penghongen/PocketXMol_official_test/extracted/data/trained_models/pxm/checkpoints/pocketxmol.ckpt`，训练配置为同模型目录下train_config/train.yml。
+
+测试实际落在上述输出根的test目录，C0/C5/E分别保存候选，每协议每实例50候选、100步、batch50。ALL有446个实例；CAP10和HF10_TO5分别272和227个，复用各协议已有候选，共九组评价汇总。输入保持官方标准蛋白特征；核酸参与共同受体碰撞评价。纯核酸实例按真实失败阶段及候选预算记录，不补生成、不从分母中静默删除。
+
+#### 正式命令
+
+在该作业内的PocketXMol冻结release根目录，顺序运行：
+
+```bash
+bash 训练与运行/sh/sample_docking.sh official-377521-test
+bash 训练与运行/sh/evaluate_docking.sh official-377521-test
+```
+
+第二条使用该allocation现有8核，入口关闭CUDA可见性，读取第一条的同一配置和候选；不另申请GPU。推理进程正常结束后才进入评价，after_hold继续保留资源。每实例保存candidates.json和result.json；成功候选写入poses.sdf，至少一个候选成功时才写confidence.npz。预处理失败时可能没有poses.sdf；零成功时result.json中的pose_file与confidence_file均为null。评价保留candidate_metrics.json、assessment.json、occurrences.json、summary.json，并以pencounkdual-111/PocketXmol_raw中的独立run汇报。
+
+#### 验收与执行状态
+
+第一遍主代理自查用原make_config解析，确认只有output_root及W&B名称改变，C0/C5/E、test、50候选/100步及官方权重保持；第二遍核对实际作业编号、输入协议与三个视图的区别、CPU配额及输出隔离。没有改动Python执行逻辑，不重复此前完整模型审查或新增测试集门控。配置解析是本地Python stdin检查，不是上面的正式命令。独立代理完成两轮限定审查，修正失败实例文件说明，并窄核关闭最新unstaged规则，无剩余问题。
+
+已于gnode08时间2026-09-11 16:23:42按实际try_lock协议请求运行。操作前重新核对Slurm资源、array身份和/proc进程，只见原控制器PID86152，无活跃Python预测；原run_cmd已备份为 `/storage/penghongen/PocketXMol/control/377521/run_cmd_377521_before_official_20260911.sh`。写入新动态命令后消耗try_lock，after_lock保持；未使用kill_lock或scancel，未删除旧产物。新命令先用bash -n检查语法，该检查是控制命令验收，不是正式测试。
+
+启动记录 `/storage/penghongen/PocketXMol/control/377521/official_377521_test_start.json` 保存资源、原命令备份、输出根及out/err读取起点17624/161；同目录official_377521_test_run_cmd.sh保存新动态命令。节点和master时钟存在差异，原样注明时间来源，不用跨节点时间相减估计耗时。
+
+启动初段尚无新增模型日志。按/proc核查后确认原控制器在执行AdaLigand的create_release.sh，子进程继续校验源码及tests_output中的文件；这是原控制器每次执行run_cmd前已有的步骤，尚未进入新PocketXMol命令。没有报错，不修改旧控制器或删除其文件；按用户要求静默等待60分钟后再确认实际模型加载和采样。
+
+本次接管前的命令备份、启动记录和动态命令留在 `/storage/penghongen/PocketXMol/control/377521/`；实际release/launch和推理/评价状态在启动后补记。服务器源资产只读。按用户随后明确要求，本对话新增及修改文件永远保持unstaged，不执行git add或git commit，也不处理其他人的修改或暂存内容。运行来源为基准提交f856ad8加本次未提交文件，实际执行内容由release/launch与配置快照留证。
+
+#### 计划与实现差异
+
+用户新增授权A100用于既定官方测试，并接受与另一对话重复计算；本次通过独立产物根避免混写。官方科学行为、三协议与三视图均不变。本次尝试未完成，后续使用用户最终指定的377793。
+
+#### 取消与保留证据
+
+60分钟静默等待后发现Slurm作业已退出。用户随即说明，因怀疑gnode08异常亲自执行scancel 374480_0；sacct记录为CANCELLED by 1351，结束时间2026-09-11 17:27:37，batch进程退出码15。after_lock等活动控制文件由原控制器退出清理，本对话未删除这些锁或发出scancel。
+
+本次实际PocketXMol release为 `/home/penghongen/Feedback/PocketXMol/releases/PocketXMol_db3c806a5acc/PocketXMol`，launch为 `/home/penghongen/Feedback/PocketXMol/launches/377521/official_377521_test_job377521_20260911T162940`。run.json表明模型严格加载完成，但C0/C5/E均无完成的result.json；只见C0/11jb/0/poses.sdf为空文件。未生成完整候选，未运行CPU评价；保留该目录、release/launch和全部日志，不把本次尝试作为官方测试结果。

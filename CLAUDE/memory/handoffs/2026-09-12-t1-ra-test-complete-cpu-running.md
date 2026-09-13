@@ -46,8 +46,8 @@ launch `/home/penghongen/Feedback/PocketXMol/launches/378693/train_B-C-T1-RB_job
 
 ## Files To Reopen
 
-- [T1-RA测试与评价日志05](../../../日志/第一类实验（不加密度信息）/05-B-C-T1-RA推理与评价.md)、[T1-RB训练日志06](../../../日志/第一类实验（不加密度信息）/06-B-C-T1-RB.md)。
-- [已完成T0报告](../../../日志/第一类实验（不加密度信息）/04-B-C-T0-RA推理与评价.md)、[总日志](../../../日志/总日志.md)、[计划执行映射](../../../日志/计划执行映射.md)。
+- [T1-RA测试与评价日志05](../../../日志/第一类实验（不加密度信息）/2-B-C-T1-RA.md)、[T1-RB训练日志06](../../../日志/第一类实验（不加密度信息）/5-B-C-T1-RB.md)。
+- [已完成T0报告](../../../日志/第一类实验（不加密度信息）/1-B-C-T0-RA.md)、[总日志](../../../日志/总日志.md)、[计划执行映射](../../../日志/计划执行映射.md)。
 - 三份9-8契约及训练与运行/README.md已按新goal收窄到本任务六模型范围。
 
 实际旧控制目录均在 `/home/penghongen/Feedback/Pocket_Plus/allocations/<job>/`，after_lock在子目录，try／pre在父目录。不要把本项目launch目录当成锁目录。manifest实例字段是candidate_id，result.json为occurrence_id；大型JSON应在本地用Console.Out的StringWriter捕获再落盘，不直接刷入聊天。T0完整汇总副本仍在tmp/pxm-20260912/B-C-T0-RA-test-results.json。

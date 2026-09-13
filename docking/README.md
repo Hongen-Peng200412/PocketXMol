@@ -2,7 +2,7 @@
 
 本目录把已有 AdaLigand 实例接入原 PocketXMol 的 free docking 路径。原实例身份、完整模板重原子和世界坐标始终保持一致；训练只增加必要的手性对称排列，密度辅助标签从已有 `ligand_area.npz` 按实例拆出。
 
-下列结构由当前准备代码生成，共同资产已在服务器完成准备；实际数量和核查证据见 [共同准备记录](../日志/第一类实验（不加密度信息）/00-实现与共同数据准备.md)。默认路径由 `configs/docking/prepare.yml` 指定。两个目录树中的 `data` 是同一个物理目录，分别列出稳定接口与准备诊断。
+下列结构由当前准备代码生成，共同资产已在服务器完成准备；实际数量和核查证据见 [共同准备记录](../日志/实现与共同数据准备.md)。默认路径由 `configs/docking/prepare.yml` 指定。两个目录树中的 `data` 是同一个物理目录，分别列出稳定接口与准备诊断。
 
 ## <科学产物>
 
@@ -134,4 +134,4 @@ RA/RB的E口袋为空时，`OccurrenceDataset.__getitem__` 在求均值前抛出
 
 训练对合法实例均匀有放回抽样；有限验证按 worker 编号跨步遍历，正常情况不漏尾部。原偶发 OOM 裁批仍单独记录，不用它解释正常遍历缺失。
 
-正式准备入口为 `scripts/prepare_docking.py`，按 `index → objects → samples → freeze` 执行。每 CPU 任务 8 核、最多 12 份并发；正式 Slurm 命令见 `训练与运行/README.md`。`tests/test_docking_data.py` 使用构造资产检查筛选、原子编号、几何与视图；实际检查和正式运行分别记在 `日志/第一类实验（不加密度信息）/00-实现与共同数据准备.md`。
+正式准备入口为 `scripts/prepare_docking.py`，按 `index → objects → samples → freeze` 执行。每 CPU 任务 8 核、最多 12 份并发；正式 Slurm 命令见 `训练与运行/README.md`。`tests/test_docking_data.py` 使用构造资产检查筛选、原子编号、几何与视图；实际检查和正式运行分别记在 `日志/实现与共同数据准备.md`。

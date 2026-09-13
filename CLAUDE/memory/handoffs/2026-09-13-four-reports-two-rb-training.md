@@ -20,7 +20,7 @@ bash 训练与运行/sh/train_docking.sh B-C-T0-RB
 
 训练根 `/storage/penghongen/PocketXMol/training/B-C-T0-RB/`，保存配置与检查点分别在train_config／checkpoints。W&B本地目录wandb/run-20260913_061159-hthglbuy。启动记录 `/storage/penghongen/PocketXMol/control/371591/train_B-C-T0-RB_start.json`，out／err起点113849959／311189；新旧动态命令同目录保存。
 
-实际launch为 `/home/penghongen/Feedback/PocketXMol/launches/371591/train_B-C-T0-RB_job371591_20260913T061132`，节点时钟约慢3分钟。本次配置SHA256为19809af372ac4c127efd8dab8c3850992cbb1164211a258eaebf4a4b0d6f8279，登记提交3101cff。完整记录见[日志09](../../../日志/第一类实验（不加密度信息）/09-B-C-T0-RB.md)。
+实际launch为 `/home/penghongen/Feedback/PocketXMol/launches/371591/train_B-C-T0-RB_job371591_20260913T061132`，节点时钟约慢3分钟。本次配置SHA256为19809af372ac4c127efd8dab8c3850992cbb1164211a258eaebf4a4b0d6f8279，登记提交3101cff。完整记录见[日志09](../../../日志/第一类实验（不加密度信息）/4-B-C-T0-RB.md)。
 
 训练和val/loss均为正确C0：真实中心选袋与定原点、无新增偏移及平移；后续T0+C5测试保持给定偏移中心且仅执行原T0噪声。模型最终输出只加回原点一次。不要把T0重新改成C5训练或打开mol_as_pocket_center。
 
@@ -34,16 +34,16 @@ gnode10，A800／16CPU。第5个T1-RB报告完成后，于master 05:06:47启动�
 bash 训练与运行/sh/train_docking.sh B-E-T0-RB
 ```
 
-训练根 `/storage/penghongen/PocketXMol/training/B-E-T0-RB/`，W&B本地目录wandb/run-20260913_050609-423nfmpm。启动记录 `/storage/penghongen/PocketXMol/control/378693/train_B-E-T0-RB_start.json`，out／err起点25869442／59362。launch为 `/home/penghongen/Feedback/PocketXMol/launches/378693/train_B-E-T0-RB_job378693_20260913T050539`，节点时钟约慢1分钟。配置SHA256为d4e03bf8a21553c2af786f3563a689e68b812ba5f58573368dd83aa8c556ef4b，登记提交d86a452。完整记录见[日志08](../../../日志/第一类实验（不加密度信息）/08-B-E-T0-RB.md)。
+训练根 `/storage/penghongen/PocketXMol/training/B-E-T0-RB/`，W&B本地目录wandb/run-20260913_050609-423nfmpm。启动记录 `/storage/penghongen/PocketXMol/control/378693/train_B-E-T0-RB_start.json`，out／err起点25869442／59362。launch为 `/home/penghongen/Feedback/PocketXMol/launches/378693/train_B-E-T0-RB_job378693_20260913T050539`，节点时钟约慢1分钟。配置SHA256为d4e03bf8a21553c2af786f3563a689e68b812ba5f58573368dd83aa8c556ef4b，登记提交d86a452。完整记录见[日志08](../../../日志/第一类实验（不加密度信息）/6-B-E-T0-RB.md)。
 
 两项训练共用已审查的 `/home/penghongen/Feedback/PocketXMol/releases/PocketXMol_43742cdf8166/PocketXMol`，基线ec06dbd加c9cc4a1空E修复。本次没有新增生产代码或资产重建。均为官方初始化、72×1、bf16、15 workers，AdamW1e-4、warmup0，每800次优化器更新原val/loss；Plateau相对阈值1%、patience5、factor0.2，第三次实际下降停，上限40000步，best按原loss最低值取。不要沿用更早的1000步验证等旧参数。
 
 ## 四项已完成报告
 
-- [日志04：正确T0-RA](../../../日志/第一类实验（不加密度信息）/04-B-C-T0-RA推理与评价.md)：best21600，训练根B-C-T0-RA-C0，C0／C5 ALL Top-1为60.09%／43.05%，评价W&B v4jilbdr。
-- [日志05：T1-RA](../../../日志/第一类实验（不加密度信息）/05-B-C-T1-RA推理与评价.md)：best20800，C0／C5 ALL Top-1为59.19%／42.15%，评价W&B n9ddvnid。
-- [日志06：T1-RB](../../../日志/第一类实验（不加密度信息）/06-B-C-T1-RB.md)：best17600，C0／C5 ALL Top-1为58.97%／39.46%，评价W&B 6wvylxgi；全部逐候选指标及25个报告数值记录已核对，591条既有RDKit allene提示，无RMSD回退。
-- [日志07：E-RA](../../../日志/第一类实验（不加密度信息）/07-B-E-T0-RA.md)：独立重训根B-E-T0-RA-nonemptyE，26400步停止，best21600、原E val/loss=1.6292482614517212；E ALL Top-1／Top-5／oracle为65.47%／80.94%／90.36%，评价W&B ajpum4py。全部逐候选指标及16个报告数值记录已核对，323条allene提示，无RMSD回退。
+- [日志04：正确T0-RA](../../../日志/第一类实验（不加密度信息）/1-B-C-T0-RA.md)：best21600，训练根B-C-T0-RA-C0，C0／C5 ALL Top-1为60.09%／43.05%，评价W&B v4jilbdr。
+- [日志05：T1-RA](../../../日志/第一类实验（不加密度信息）/2-B-C-T1-RA.md)：best20800，C0／C5 ALL Top-1为59.19%／42.15%，评价W&B n9ddvnid。
+- [日志06：T1-RB](../../../日志/第一类实验（不加密度信息）/5-B-C-T1-RB.md)：best17600，C0／C5 ALL Top-1为58.97%／39.46%，评价W&B 6wvylxgi；全部逐候选指标及25个报告数值记录已核对，591条既有RDKit allene提示，无RMSD回退。
+- [日志07：E-RA](../../../日志/第一类实验（不加密度信息）/3-B-E-T0-RA.md)：独立重训根B-E-T0-RA-nonemptyE，26400步停止，best21600、原E val/loss=1.6292482614517212；E ALL Top-1／Top-5／oracle为65.47%／80.94%／90.36%，评价W&B ajpum4py。全部逐候选指标及16个报告数值记录已核对，323条allene提示，无RMSD回退。
 
 以上每个协议均446实例、22300候选生成与评价成功，无候选错误；三个视图、PDB等权、Spearman／AUC与7个含核酸实例含纯RNA9v7o/0均已记录。E-RA完成证据 `/storage/penghongen/PocketXMol/control/371591/evaluate_B-E-T0-RA_test_complete_20260913.json`，正式结果根 `/storage/penghongen/PocketXMol/sampling/B-E-T0-RA-nonemptyE/test/`；本地完整副本 `tmp/pxm-20260913/B-E-T0-RA-test-results.json`。T1-RB本地副本为同目录B-C-T1-RB-test-results.json。不要根据这些测试结果重选检查点或新增实验。
 

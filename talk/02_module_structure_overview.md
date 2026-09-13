@@ -12,7 +12,7 @@
 | 采样 | `scripts/sample_docking.py → docking/sampling.py → 原sample_loop3` | 明确checkpoint和冻结定位条件，保存逐实例候选与实际失败阶段 |
 | 评价 | `scripts/evaluate_docking.py → docking/evaluation.py` | 原self-ranking、完整标准受体碰撞、未对齐RMSD及实例内统计 |
 
-T1在原 `ConfSampleNoiser.add_noise` 中增加非先验步的整分子平移；原 `sample_loop3` 的可选 `progress` 只记录执行阶段与模型调用次数。两处均保持原噪声／模型／预测写回的主调用顺序。正式短命令与资源边界见[训练与运行说明](../训练与运行/README.md)，当前实现和验证状态见[执行记录](../日志/第一类实验（不加密度信息）/00-实现与共同数据准备.md)。
+T1在原 `ConfSampleNoiser.add_noise` 中增加非先验步的整分子平移；原 `sample_loop3` 的可选 `progress` 只记录执行阶段与模型调用次数。两处均保持原噪声／模型／预测写回的主调用顺序。正式短命令与资源边界见[训练与运行说明](../训练与运行/README.md)，当前实现和验证状态见[执行记录](../日志/实现与共同数据准备.md)。
 
 ## 1. 推理主链
 

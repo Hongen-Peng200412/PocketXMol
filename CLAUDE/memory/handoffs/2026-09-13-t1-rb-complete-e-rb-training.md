@@ -12,7 +12,7 @@ Date: 2026-09-13
 
 ## 已完成的T1-RB
 
-完整记录见[日志06](../../../日志/第一类实验（不加密度信息）/06-B-C-T1-RB.md)。训练22400步按第三次学习率下降停止，原C5 val/loss最低为17600步、2.8354082107543945，训练W&B wmgkgurr。C0／C5各446实例、22300候选生成及评价全部完成，没有候选错误或RMSD按原子编号匹配的回退。ALL Top-1为58.97%／39.46%，Top-5为75.34%／50.22%，oracle为87.67%／60.54%。评价W&B [6wvylxgi](https://wandb.ai/pencounkdual-111/PocketXmol_raw/runs/6wvylxgi)已在线上传。
+完整记录见[日志06](../../../日志/第一类实验（不加密度信息）/5-B-C-T1-RB.md)。训练22400步按第三次学习率下降停止，原C5 val/loss最低为17600步、2.8354082107543945，训练W&B wmgkgurr。C0／C5各446实例、22300候选生成及评价全部完成，没有候选错误或RMSD按原子编号匹配的回退。ALL Top-1为58.97%／39.46%，Top-5为75.34%／50.22%，oracle为87.67%／60.54%。评价W&B [6wvylxgi](https://wandb.ai/pencounkdual-111/PocketXmol_raw/runs/6wvylxgi)已在线上传。
 
 正式结果根为 `/storage/penghongen/PocketXMol/sampling/B-C-T1-RB/test/`，本地完整整理副本 `tmp/pxm-20260913/B-C-T1-RB-test-results.json`。报告包括三个视图、两种加权、Spearman／AUC、7个含核酸实例及纯RNA9v7o/0、与T1-RA的逐实例比较。25个数值表格记录与JSON逐一核对通过。评价有591条既有RDKit allene提示，无Traceback；完整候选与评价完成证据位于 `/storage/penghongen/PocketXMol/control/378693/` 下sample_B-C-T1-RB_test_complete_20260913.json与evaluate_B-C-T1-RB_test_complete_20260913.json。
 
@@ -20,7 +20,7 @@ Date: 2026-09-13
 
 ## E-RA的CPU评价
 
-有效训练根 `/storage/penghongen/PocketXMol/training/B-E-T0-RA-nonemptyE/`，W&B lukfzmf3，26400步停止，best21600、原E val/loss=1.6292482614517212。46个空E训练身份跳过、验证0个，旧异常E目录和so6e0mvy保留且无效。空E修复及全部验收见[日志07](../../../日志/第一类实验（不加密度信息）/07-B-E-T0-RA.md)。
+有效训练根 `/storage/penghongen/PocketXMol/training/B-E-T0-RA-nonemptyE/`，W&B lukfzmf3，26400步停止，best21600、原E val/loss=1.6292482614517212。46个空E训练身份跳过、验证0个，旧异常E目录和so6e0mvy保留且无效。空E修复及全部验收见[日志07](../../../日志/第一类实验（不加密度信息）/3-B-E-T0-RA.md)。
 
 E的446实例、22300候选全部生成成功，冻结身份和预算核对通过；逐实例耗时合计12606.271秒，推理合计12533.717秒。采样完成证据为 `/storage/penghongen/PocketXMol/control/371591/sample_B-E-T0-RA_test_complete_20260913.json`。实际采样／评价release为 `/home/penghongen/Feedback/PocketXMol/releases/PocketXMol_1ce7d5426c18/PocketXMol`，包含c9cc4a1修复和aac0b89的E测试配置。
 
@@ -34,7 +34,7 @@ master时间05:02:17接入，控制器第20次执行，主进程37521及工作�
 
 ## 新启动的E-RB
 
-本次没有新增或修改生产函数、科学参数或资产，使用已通过两轮审查和真实RA／RB输入验收的 `/home/penghongen/Feedback/PocketXMol/releases/PocketXMol_43742cdf8166/PocketXMol`。源码为ec06dbd加c9cc4a1，配置 `configs/docking/B-E-T0-RB.yml` 与E-RA仅核酸分支及W&B名称不同。登记提交d86a452，完整记录见[日志08](../../../日志/第一类实验（不加密度信息）/08-B-E-T0-RB.md)。
+本次没有新增或修改生产函数、科学参数或资产，使用已通过两轮审查和真实RA／RB输入验收的 `/home/penghongen/Feedback/PocketXMol/releases/PocketXMol_43742cdf8166/PocketXMol`。源码为ec06dbd加c9cc4a1，配置 `configs/docking/B-E-T0-RB.yml` 与E-RA仅核酸分支及W&B名称不同。登记提交d86a452，完整记录见[日志08](../../../日志/第一类实验（不加密度信息）/6-B-E-T0-RB.md)。
 
 正式命令：
 
