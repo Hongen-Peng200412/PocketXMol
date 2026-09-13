@@ -1,6 +1,6 @@
-# Pocket Plus 服务器交互工具箱
+# PocketXMol 服务器交互工具箱
 
-本目录记录 Pocket Plus 项目的服务器交互工具与使用纪律。工具随项目走，密码、本机依赖和 VS Code 用户设置不随项目走。
+本目录记录 PocketXMol 的安全同步与轻量服务器访问。工具从 Pocket Plus 基础设施复制；通用协议继续使用，当前正式任务与资源许可见[训练与运行说明](../../训练与运行/README.md)。密码、本机依赖和 VS Code 用户设置不随项目走。
 
 ## 布局
 
@@ -21,8 +21,8 @@
 
 ## 当前映射
 
-- 本地项目：`...(取决于设备)\OneDrive\My_Project\Pocket_Plus`
-- 远端目录：`/home/penghongen/My_Project/Pocket_Plus`
+- 本地项目：`C:\Users\15919\Desktop\PocketXMol`，同步脚本按自身所在目录推导根目录。
+- 安全同步远端目录：`/home/penghongen/My_Project/PocketXMol`。不删除远端文件和 `.git`，不上传本地 review、临时目录、权重压缩包及论文 PDF。
 - 服务器：`penghongen@10.102.33.220:10022`
 
 ## 免密推荐方案
