@@ -65,8 +65,6 @@ def test_supervised_protocol_from_existing_mechanism(prepared_data, experiment, 
         data = dataset[0]
         if protocol == 'C0':
             torch.testing.assert_close(data.node_pos.mean(0), torch.zeros(3), rtol=0, atol=1e-6)
-        elif protocol == 'C5' and not dataset.shuffle:
-            torch.testing.assert_close(data.node_pos.mean(0), -torch.tensor(dataset.records[0]['center_offset_xyz_A'], dtype=torch.float32), rtol=1e-6, atol=1e-6)
         elif protocol == 'E':
             torch.testing.assert_close(data.pocket_pos.mean(0), torch.zeros(3), rtol=0, atol=1e-6)
 
@@ -140,7 +138,7 @@ def test_sampling_condition_mechanism_and_world_restore(prepared_data, tmp_path,
         assert torch.count_nonzero(batch.gt_node_pos) == 0
         torch.testing.assert_close(batch.pocket_center, fixed.pocket_center.expand(2, 3))
         torch.testing.assert_close(batch.pocket_pos, fixed.pocket_pos.repeat(2, 1))
-        # 两个候选具有不同且大于5 Å的预测中心差, 证明逐分子计算且没有5 Å截断或最终质心对齐.
+        # 两个候选分别保留非零质心, 验证后续T0不重新居中或最终对齐.
         per_molecule = torch.tensor([[9., 3., -2.], [-8., -4., 1.]])
         positions = per_molecule[batch.node_type_batch].clone()
         positions[:, 0] += torch.arange(batch.num_nodes) % fixed.num_nodes

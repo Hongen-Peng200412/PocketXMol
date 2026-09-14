@@ -33,6 +33,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def reference_modules(revision):
+    """从Git提交revision载入参照模块, 返回以仓库相对文件名为键的dict[str, ModuleType]."""
     modules = {}
     for path in ('utils/prior.py', 'utils/info_level.py', 'utils/sample_noise.py', 'models/sample.py', 'utils/transforms.py', 'models/maskfill.py'):
         source = subprocess.check_output(['git', 'show', f'{revision}:{path}'], cwd=ROOT).decode('utf-8')
@@ -47,15 +48,21 @@ def reference_modules(revision):
 
 @pytest.fixture(scope='module')
 def official():
+    """同一测试模块复用固定官方源码, 不读取可变远端分支或服务器文件."""
     return reference_modules(OFFICIAL_REVISION)
 
 
 @pytest.fixture(scope='module')
 def baseline():
+    """载入收口前已经正确训练T0的源码, 验证移除RB/T1不影响现有RA行为."""
     return reference_modules(BASELINE_REVISION)
 
 
 def clean_sample(assets, split, protocol):
+    """构造指定定位条件的单实例, 返回训练配置、原特征器、free任务变换和局部坐标Data.
+
+    assets提供root/derived_root/manifest_root路径; split是构造清单名; protocol为C0/C5/E. Data的node_pos为(N,3)局部XYZ、Å, pocket_center为(1,3)世界原点.
+    """
     config = make_config(str(ROOT / 'configs/docking/B-C-T0-RA.yml'))
     config.data.dataset.update(root=assets.root, derived_root=assets.derived_root, manifest_root=assets.manifest_root)
     config.data.dataset.pocket_mode = 'envelope' if protocol == 'E' else 'center'
@@ -68,6 +75,7 @@ def clean_sample(assets, split, protocol):
 @pytest.mark.parametrize('protocol', ['C0', 'C5', 'E'])
 @pytest.mark.parametrize('mode', ['train', 'sample'])
 def test_t0_noise_matches_official_and_valid_baseline(prepared_data, official, baseline, protocol, mode, monkeypatch):
+    """在相同随机状态和实际信息等级下, 比较当前、官方和旧正确T0的完整噪声输出."""
     config, _, _, data = clean_sample(prepared_data, 'validation', protocol)
     noise_config = config.noise.individual[0] if mode == 'train' else make_config(str(ROOT / 'configs/sample/test/dock_poseboff/base.yml')).noise
     modules = [None, official, baseline]
@@ -90,6 +98,7 @@ def test_t0_noise_matches_official_and_valid_baseline(prepared_data, official, b
 
 @pytest.mark.parametrize('protocol', ['C0', 'C5'])
 def test_full_sampling_loop_matches_official(prepared_data, official, baseline, protocol):
+    """以两个候选和100步原采样比较三个版本的最终张量、轨迹及单次世界坐标恢复."""
     config, featurizer, task, data = clean_sample(prepared_data, 'validation', protocol)
     data.node_pos.zero_()
     data.gt_node_pos.zero_()
@@ -98,6 +107,7 @@ def test_full_sampling_loop_matches_official(prepared_data, official, baseline, 
     sample_config.num_steps = 100
 
     def forward(batch):
+        """返回依赖当前带噪输入的确定性预测, 让错误中心校正在随后步骤产生可观测差异."""
         # 候选之间保留不同的非零质心, 输出明确依赖带噪坐标, 从而放大错误重新居中的影响.
         assert torch.count_nonzero(batch.gt_node_pos) == 0
         positions = batch.pos_in * .7 + torch.tensor([6., -2., 1.]) * (batch.node_type_batch[:, None] + 1)
@@ -129,6 +139,7 @@ def test_full_sampling_loop_matches_official(prepared_data, official, baseline, 
 
 
 def test_original_prior_and_level_have_identical_executable_ast():
+    """逐定义核对先验与信息等级的可执行语法树, 单独保留其余顶层语句的顺序检查."""
     # 包括GaussianExplodePrior的尺寸尺度和clamp、advance等级映射; 注释与Docstring不参与运行.
     for name in ('utils/prior.py', 'utils/info_level.py'):
         sources = [(ROOT / name).read_text(encoding='utf-8'), subprocess.check_output(['git', 'show', f'{OFFICIAL_REVISION}:{name}'], cwd=ROOT).decode('utf-8')]
@@ -147,6 +158,7 @@ def test_original_prior_and_level_have_identical_executable_ast():
 
 @pytest.mark.parametrize('receptor_kind', ['protein', 'mixed', 'nucleic'])
 def test_ra_forward_and_gradients_unchanged(prepared_data, baseline, receptor_kind):
+    """同一RA参数在三类受体输入上的输出及坐标、置信度目标梯度与旧正确版本逐值一致."""
     from models.maskfill import PMAsymDenoiser
 
     config, batch = assemble_batch(prepared_data, 'RA', receptor_kind)
@@ -169,6 +181,7 @@ def test_ra_forward_and_gradients_unchanged(prepared_data, baseline, receptor_ki
 @pytest.mark.skipif(not os.environ.get('PXM_ACCEPTANCE_ASSETS'), reason='需要只读复制的真实非测试训练资产')
 @pytest.mark.parametrize('experiment', ['B-C-T0-RA', 'B-E-T0-RA'])
 def test_real_train_t0_against_official(experiment, official):
+    """以冻结训练实例5ftl/0核对完整DataModule装配, 只把末端噪声器替换成官方参照."""
     assets = Path(os.environ['PXM_ACCEPTANCE_ASSETS'])
     config = make_config(str(ROOT / f'configs/docking/{experiment}.yml'))
     config.data.dataset.update(root=str(assets / 'source'), derived_root=str(assets / 'derived'), manifest_root=str(assets / 'manifests'))

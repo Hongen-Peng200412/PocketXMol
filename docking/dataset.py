@@ -165,8 +165,9 @@ class OccurrenceDataset(IterableDataset):
             nucleic_elements = torch.from_numpy(pocket["element"][pocket_is_nucleic.numpy()].astype(np.int64))
             nucleic_features[pocket_is_nucleic, :4] = (nucleic_elements[:, None] == torch.tensor([6, 7, 8, 15])).float()
             nucleic_features[pocket_is_nucleic, 4:12] = torch.nn.functional.one_hot(torch.from_numpy(pocket["res_type"][pocket_is_nucleic.numpy()].astype(np.int64) - 20), num_classes=8).float()
-            # int64, (P_na,), 组分编号0/1/2分别是碱基、糖、磷酸; 旧星号只规范为撇号.
+            # list[str], 长度P_na, 当前口袋标准核酸原子名; P_na为核酸原子数, 如C1*规范为C1'.
             names = [name.decode("ascii").strip().replace("*", "'") for name in pocket["atom_name"][pocket_is_nucleic.numpy()]]
+            # int64, (P_na,), 组分编号0/1/2分别是碱基、糖、磷酸, 顺序与names一致.
             components = torch.tensor([1 if name in SUGAR_ATOMS else 2 if name in PHOSPHATE_ATOMS else 0 for name in names], dtype=torch.long)
             nucleic_features[pocket_is_nucleic, 12:15] = torch.nn.functional.one_hot(components, num_classes=3).float()
             data.pocket_atom_feature = protein_features
