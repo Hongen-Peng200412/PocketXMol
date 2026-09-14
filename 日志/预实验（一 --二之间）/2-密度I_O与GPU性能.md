@@ -1,5 +1,34 @@
 # 密度读取与GPU性能预实验
 
+## 本次前置集成的补充入口验收
+
+2026-09-14，SMILES新数据链与D1/D4/D2/D3中心／包络八个配置均通过真实非测试GPU入口验收：8通过、0失败、0跳过，705.84秒。每配置从官方初始权重开始，仅执行2次优化器更新、1验证批、2候选3步及CPU评价；全部候选和RMSD计数均为2/2，原val/loss与新增参数保持有限，D3另检查辅助损失有限。验证／短采样实例为validation的5irx/0，没有使用测试集。其后D1/D4/D2/D3×sdpa/flash的固定缓存／重新编码检查8通过、0跳过，29.82秒。
+
+这两项是必要入口验收，不是正式训练或模型效果评价；没有新正式W&B、best或正式测试指标，不延长已经结束的三小时I/O调优循环。下表fit耗时包含加载和冷启动，不能用于比较稳定吞吐；GiB按2^30字节换算。
+
+| 配置 | 批量×累积 | 完整更新 | fit秒数（含加载） | 峰值已分配GiB | 采样／评价候选 |
+|---|---:|---:|---:|---:|---|
+| D1-C-T0-RA | 72×1 | 2 | 175.688 | 54.545 | 2/2、2/2 |
+| D1-E-T0-RA | 72×1 | 2 | 86.147 | 54.012 | 2/2、2/2 |
+| D4-C-T0-RA | 36×2 | 2 | 82.997 | 59.073 | 2/2、2/2 |
+| D4-E-T0-RA | 36×2 | 2 | 60.552 | 58.891 | 2/2、2/2 |
+| D2-C-T0-RA | 36×2 | 2 | 65.647 | 59.069 | 2/2、2/2 |
+| D2-E-T0-RA | 36×2 | 2 | 60.012 | 58.886 | 2/2、2/2 |
+| D3-C-T0-RA | 36×2 | 2 | 83.104 | 59.115 | 2/2、2/2 |
+| D3-E-T0-RA | 36×2 | 2 | 60.335 | 58.807 | 2/2、2/2 |
+
+源提交为5af144f，实际release为`/storage/penghongen/tmp/pxm_formal_smiles_20260914/density-gate/releases/PocketXMol_706febc31afc/PocketXMol`。launch为`density_gate_5af144f_r2`；同一证据根下`gate-5af144f-r2.out/.err`、`training-sampling.xml`、`cached-sampling.xml`保存原始结果。本地完整JSON及各原文件SHA256保存于`tmp/formal-smiles-density/density-gpu-evidence.json`。逐配置记录位于`/storage/penghongen/tmp/pocketxmol_gpu_checks_density_gate_5af144f_r2/pytest/*/real_data_gate.json`。
+
+门控命令（已执行，非正式运行）：`bash ops/run_docking_gpu_checks.sh -k 'real_data and (D1 or D4 or D2 or D3)' --junitxml <证据根>/training-sampling.xml`；随后`python -B -m pytest tests/test_density_sampling.py -q -s -p no:cacheprovider --basetemp <证据根>/pytest-cache-sampling --junitxml <证据根>/cached-sampling.xml`。Python是PocketXMol专用venv，W&B关闭。CUDA PID43112已核实属于379402并使用指定GPU-adbf8fc8-5a4a-87e3-853b-c9cadcbdf74b。
+
+首次20:28启动在GPU运算前因归档shell的CRLF失败，模型未运行；保留原始归档、失败日志和run_cmd，仅将本次新源副本36份shell转为LF，再于gnode09时间20:30:46重试。逐文件换行证据为`shell-line-ending-normalization.json`，科学代码及配置未改变。20:44全部完成，20:48以后只读复核控制器PID2383等待、after_lock及父try_lock保留、kill_lock不存在，指定GPU 0%／5MiB。旧服务器产物未删除。
+
+本次集成收口后停止推进，正式密度及无密度复验等待用户再次明确允许。后续资源、顺序及监测计划见[预实验总日志](总日志.md#待再次批准的后续执行计划)。
+
+## 之前的尝试：三小时I/O预实验及其结果
+
+以下记录使用当时旧配体图，全部保留。D1持续供数未达目标，D4在已测三个窗口内达标；本次新SMILES入口短验收不改写这些性能事实，也不声称已经证明D2/D3的持续性能。
+
 2026-09-14 18:34状态：预实验已结束，共24次改进，未启动正式八模型训练。D1选72×1，D4选36×2，均32 worker、prefetch1、cuDNN benchmark开启并保留距离项。D1的60更新窗口平均1.96571秒、等待29.21%，三段稳定窗口未全部达到目标；D4的48更新窗口平均4.57112秒，三段GPU中位数均100%、等待约0.02%。D1-E与D4-E均通过4次完整更新；实际A800数值测试12 passed、采样缓存测试4 passed无skip。最后的MADV_RANDOM候选仅有受前缀/缓存混杂的小幅差异，未集成正式读取逻辑，完整56通道模块与ALL保持原样。指定GPU无计算进程，控制器PID2383等待，after_lock和try_lock保留、kill_lock不存在。
 
 开始时间为2026-09-14 15:40:56（北京时间），主要工作截止18:40:56；全部GPU测试在18:34前结束，每次首次真实forward后观察不超过5分钟。GPU利用率90%及读取等待不超过10%是优化目标，未达到的D1供数目标如实保留，后续按最快稳定资源组合继续，不延长本次搜索。全部真实训练链使用原有配体图；SMILES新图的科学分歧由另一预实验处理，不把本次结果当作其验收。
