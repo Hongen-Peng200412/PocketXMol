@@ -64,7 +64,7 @@ def clean_sample(assets, split, protocol):
     assets提供root/derived_root/manifest_root路径; split是构造清单名; protocol为C0/C5/E. Data的node_pos为(N,3)局部XYZ、Å, pocket_center为(1,3)世界原点.
     """
     config = make_config(str(ROOT / 'configs/docking/B-C-T0-RA.yml'))
-    config.data.dataset.update(root=assets.root, derived_root=assets.derived_root, manifest_root=assets.manifest_root)
+    config.data.dataset.update(root=assets.root, derived_root=assets.derived_root, manifest_root=assets.manifest_root, smiles_root=assets.smiles_root, smiles_coords_root=assets.smiles_coords_root)
     config.data.dataset.pocket_mode = 'envelope' if protocol == 'E' else 'center'
     featurizer = FeaturizeMol(config.transforms.featurizer)
     task = ConfTransform(config.transforms.task.individual[0], mode='test')
@@ -184,7 +184,7 @@ def test_real_train_t0_against_official(experiment, official):
     """以冻结训练实例5ftl/0核对完整DataModule装配, 只把末端噪声器替换成官方参照."""
     assets = Path(os.environ['PXM_ACCEPTANCE_ASSETS'])
     config = make_config(str(ROOT / f'configs/docking/{experiment}.yml'))
-    config.data.dataset.update(root=str(assets / 'source'), derived_root=str(assets / 'derived'), manifest_root=str(assets / 'manifests'))
+    config.data.dataset.update(root=str(assets / 'source'), derived_root=str(assets / 'derived'), manifest_root=str(assets / 'manifests'), smiles_root=str(assets / 'smiles_assets'), smiles_coords_root=str(assets / 'smiles_coords'))
     module = DataModule(config)
     module.setup('fit')
     dataset = module.train_dataloader().dataset
