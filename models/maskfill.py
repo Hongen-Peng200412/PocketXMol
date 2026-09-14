@@ -77,7 +77,7 @@ class PMAsymDenoiser(Module):
         - pocket_pos: (P, 3), 与 pos_in 使用同一局部原点的口袋坐标, 单位 Å.
         - pocket_knn_edge_index: int64, (2, E_p), 有向 kNN 边端点索引 pocket_pos 第一维; RA 使用蛋白与核酸联合图, 批内不同实例由 PyG 图编号隔离; 同一口袋内不同链及蛋白与核酸之间均可连边.
         - pocket_pos_batch: int64, (P,), 每个口袋原子所属图编号.
-        - density_input: float32, (B, 56, 48, 48, 48), 仅密度模型读取; 固定裁块的全部56通道, 空间轴 ZYX.
+        - density_input: float32, (B, 56, 48, 48, 48), 密度模型未接收推理缓存时读取; 固定裁块的全部56通道, 空间轴 ZYX.
         - density_origin: float32, (B, 3), 实际裁块角点的局部 XYZ 坐标, 单位 Å, 与 pos_in 共用原点.
         - density_basis: float32, (B, 3, 3), 三行依次为源 X、Y、Z 一个体素步长的局部向量, 单位 Å.
         - is_peptide: 0/1, (N,), 小分子构象/docking 为全 0; 若配置不请求该附加特征则不读取.
@@ -217,7 +217,7 @@ class PMAsymDenoiser(Module):
             self.edge_cfd = MLP(edge_dim, 1, edge_dim//2)
             
 
-    def forward(self, batch, **kwargs):
+    def forward(self, batch, density_feature=None, **kwargs):
         """编码带噪分子与口袋条件, 并返回干净变量及可选置信度预测.
 
         输入字段:
@@ -236,10 +236,11 @@ class PMAsymDenoiser(Module):
             - batch.pocket_pos: FloatTensor, 形状为 (P, 3), 与配体同原点的口袋局部坐标, 单位 Å.
             - batch.pocket_knn_edge_index: LongTensor, 形状为 (2, E_p), 口袋内部有向 kNN 边端点.
             - batch.pocket_pos_batch: LongTensor, 形状为 (P,), 每个口袋原子的图归属编号.
-            - batch.density_input: float32, (B, 56, 48, 48, 48), 仅密度模型读取; B 个分子的固定裁块, 空间轴 ZYX.
+            - batch.density_input: float32, (B, 56, 48, 48, 48), 密度模型未接收推理缓存时读取; B 个分子的固定裁块, 空间轴 ZYX.
             - batch.density_origin: float32, (B, 3), 实际裁块角点的局部 XYZ 坐标, 单位 Å, 与 pos_in 共用模型原点.
             - batch.density_basis: float32, (B, 3, 3), 三行依次为源 X、Y、Z 一个体素步长在局部坐标系的向量, 单位 Å.
             - batch.is_peptide: LongTensor, 形状为 (N,), 小分子构象/docking 为全 0; 仅配置请求时读取.
+            - density_feature: Tensor|None, 推理调用方为同一权重和固定裁块预先计算的体素特征; D1 为 (B, 256, 6, 6, 6), D4 为 (B, 48, 48, 48, 48), 空间轴 ZYX; None 从 batch.density_input 编码, 训练必须使用 None.
             - kwargs: Mapping, 本实现不读取其中任何字段, 保留给统一调用接口.
 
         返回字段:
@@ -308,9 +309,13 @@ class PMAsymDenoiser(Module):
         # ``h_edge``: FloatTensor, 形状为 (2 * n_halfedges, self.config.edge_dim), 与双向 ``edge_index`` 列对齐的最终边隐藏特征.
         density_arguments = {}  # 无密度时不传新增字段, 保持原去噪调用路径.
         if self.density_encoder is not None:
-            # 同一前向内只编码一次, 六个去噪块共享该特征; 训练的不同更新不复用旧编码结果.
+            if density_feature is not None and self.training:
+                raise ValueError('训练必须重新编码当前密度输入, 不得传入缓存特征.')
+            # 训练每次编码, 六个去噪块共享; eval 可读取当前固定裁块在本次采样开始时的编码.
+            if density_feature is None:
+                density_feature = self.density_encoder(batch['density_input'])
             density_arguments = dict(
-                density_feature=self.density_encoder(batch['density_input']),
+                density_feature=density_feature,
                 density_origin=batch['density_origin'],
                 density_basis=batch['density_basis'],
             )
