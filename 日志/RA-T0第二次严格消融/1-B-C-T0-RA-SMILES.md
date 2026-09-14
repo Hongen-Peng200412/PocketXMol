@@ -1,6 +1,6 @@
 # B-C-T0-RA-SMILES
 
-当前状态（2026-09-15 07:25核查）：训练已完成，31200次更新因第三次学习率下降停止；最终best为step=21600.ckpt，val/loss=1.72273850440979。训练W&B miwl75au已在线结束；正在准备best的完整C0/C5测试，尚无测试指标。
+当前状态（2026-09-15 07:38派发）：训练已完成，31200次更新因第三次学习率下降停止；最终best为step=21600.ckpt，val/loss=1.72273850440979。训练W&B miwl75au已在线结束；379402已接收best的完整C0/C5测试及后续CPU评价命令，尚无测试指标。
 
 | 项目 | 当前内容 |
 |---|---|
@@ -8,7 +8,8 @@
 | 配置 | configs/docking/B-C-T0-RA-SMILES.yml |
 | 产物根 | /storage/penghongen/PocketXMol/training/B-C-T0-RA-SMILES |
 | 测试协议 | C0/C5；每实例每协议50候选、100步，batch50 |
-| best／W&B／指标 | 最终best step=21600.ckpt，val/loss=1.72273850440979；last31200；[训练W&B](https://wandb.ai/pencounkdual-111/PocketXmol_raw/runs/miwl75au) finished；测试待启动 |
+| best／W&B／指标 | 最终best step=21600.ckpt，val/loss=1.72273850440979；last31200；[训练W&B](https://wandb.ai/pencounkdual-111/PocketXmol_raw/runs/miwl75au) finished；测试已派发，尚无指标 |
+| 当前测试产物 | /storage/penghongen/PocketXMol/sampling/B-C-T0-RA-SMILES/test |
 
 所有新训练从规定官方参数初始化，重建优化器与调度状态；训练bf16-mixed，推理官方FP32张量路径。训练保留原val/loss与best选择，结束后直接完整测试，中心C0/C5、包络E；既有清单、视图、C5和种子不重建，每实例每协议50候选、100步，推理优先batch_size=50。W&B保持online，无法在线时报告，不自行切换offline。 无密度和D1起始72×1，D4/D2/D3起始36×2；OOM按72→36→24降批、累积相应1→2→3，配置global_batch_size保持72。接受原reduce_batch偶发裁批和累积梯度丢失，不增加补样或梯度补偿。仍无法运行则报告实际问题。
 
@@ -48,7 +49,7 @@ bash 训练与运行/sh/train_docking.sh B-C-T0-RA-SMILES
 
 新正式配置为`configs/docking/sample-B-C-T0-RA-SMILES-test.yml`，读取本次训练保存的`train_config/B-C-T0-RA-SMILES.yml`和最终best。新输出为`/storage/penghongen/PocketXMol/sampling/B-C-T0-RA-SMILES/test`，启动前尚不存在。C0/C5沿同一T0入口，50候选、100步、batch50、FP32，后续CPU评价8进程；不完整验证集采样。
 
-以下是本模型已获准的正式短命令，当前仅完成配置准备，启动后补实际release与launch：
+以下是本模型已获准的正式短命令，07:38已派发，采样退出0后自动开始同资源CPU评价：
 
 ```bash
 bash 训练与运行/sh/sample_docking.sh B-C-T0-RA-SMILES-test
@@ -56,6 +57,14 @@ bash 训练与运行/sh/evaluate_docking.sh B-C-T0-RA-SMILES-test
 ```
 
 配置自查核对了`sample_docking`的训练配置读取、strict权重加载、协议决定口袋、精确SMILES数据根、原T0采样与CPU评价字段。只读停止状态命令为`tmp/formal-execution-20260914/read_completed_center.sh`；本地验收使用既有venv执行`utils.misc.make_config`加载并核对预算及数据根，未运行测试样本做验收，不重复GPU预实验。独立配置审查仅针对本次新增入口。
+
+## 正式测试启动记录
+
+2026-09-15 07:38:08（gnode09）消费379402父目录try_lock，after_lock保留。新配置已通过主代理自查、本地解析与一轮独立审查，未重跑GPU验收。测试使用提交`3af42af2866b947fdf2c6bee0e4d1dc2ff9e17da`，冻结release为`/home/penghongen/Feedback/PocketXMol/releases/PocketXMol_ea479744bb2a/PocketXMol`；源码归档SHA-256为`72033736faddd5d86e5bb9814329855ffbf8cb965000846dd06a544bcd161829`，仅22个Shell文件恢复LF行尾。
+
+实际launch为`/home/penghongen/Feedback/PocketXMol/launches/379402/formal_B-C-T0-RA-SMILES_test_3af42af`，正式stdout确认于07:39:34开始。stdout／stderr分别写入`/storage/penghongen/tmp/pxm_formal_execution_20260914/runs/B-C-T0-RA-SMILES-test/`下的`sample.out`、`sample.err`、`evaluate.out`、`evaluate.err`；原训练控制命令保存在同目录`previous_run_cmd.sh`。控制脚本来源为本地`tmp/formal-execution-20260914/start-center-test-379402.sh`及本次续派脚本`resume-center-test-dispatch.sh`，这些是资源控制证据，不是新增科学运行入口。
+
+首次派发在`bash -n`检查发现评价stderr重定向缺少末尾引号，未消费try_lock、未启动GPU采样；修正后语法检查通过再派发。失败命令保存于同目录`dispatch-syntax-failed.sh`，不覆盖训练命令备份或任何实验产物。此次goal面板只读返回blocked，但无执行阻塞；已通知用户恢复面板，继续执行已获准流程。
 
 ## 之前的准备与尝试
 
