@@ -3,6 +3,7 @@
 
 从 PMAsymDenoiser.forward 阅读主流程: PyG Batch 的带噪配体、fixed 条件标记和口袋图先成为隐藏特征, 再由原去噪网络更新配体原子、相互作用边及坐标.
 口袋编码保持官方蛋白入口; 可选 RA 在蛋白与核酸联合图中共享编码器.
+配置 model.density 时, 另将固定密度裁块编码为体素特征, 在配体去噪网络的各层读取该特征.
 本模块不落盘, 返回原子和半边的分类原始分数 logits、去噪坐标以及可选的原子类别、位置和半边置信度分数, 各字段形状见类 Docstring.
 本模块不读取时间步或任务名称, 构象与 docking 的任务条件由 fixed_*、带噪输入和口袋字段表达.
 """
@@ -46,6 +47,7 @@ class PMAsymDenoiser(Module):
     构造参数:
         - config.pocket_dim: int, 编码后口袋节点宽度.
         - config.nucleic_branch: None|str, None 保持官方蛋白编码; RA 在联合口袋图中共享编码器.
+        - config.density: 可选映射, 存在时构造密度编码器和逐层原子读出; 字段由 DensityEncoder、DensityReadout 读取, 缺省不增加密度参数或依赖.
         - config.node_dim: int, 拼接原子 Embedding、两维 fixed prompt 和附加节点特征后的总宽度.
         - config.edge_dim: int, 拼接半边 Embedding 与两维 fixed prompt 后的总宽度.
         - config.addition_node_features: list[str], 追加到节点表示的逐原子标量字段名; reduced 配置只含 ``is_peptide``.
@@ -75,6 +77,9 @@ class PMAsymDenoiser(Module):
         - pocket_pos: (P, 3), 与 pos_in 使用同一局部原点的口袋坐标, 单位 Å.
         - pocket_knn_edge_index: int64, (2, E_p), 有向 kNN 边端点索引 pocket_pos 第一维; RA 使用蛋白与核酸联合图, 批内不同实例由 PyG 图编号隔离; 同一口袋内不同链及蛋白与核酸之间均可连边.
         - pocket_pos_batch: int64, (P,), 每个口袋原子所属图编号.
+        - density_input: float32, (B, 56, 48, 48, 48), 密度模型未接收推理缓存时读取; 固定裁块的全部56通道, 空间轴 ZYX.
+        - density_origin: float32, (B, 3), 实际裁块角点的局部 XYZ 坐标, 单位 Å, 与 pos_in 共用原点.
+        - density_basis: float32, (B, 3, 3), 三行依次为源 X、Y、Z 一个体素步长的局部向量, 单位 Å.
         - is_peptide: 0/1, (N,), 小分子构象/docking 为全 0; 若配置不请求该附加特征则不读取.
 
     前向输出字段:
@@ -88,7 +93,7 @@ class PMAsymDenoiser(Module):
     位置置信度的目标由外部 ConfidenceLoss 决定; 旧配置 prob_1A 不在(0,1)时直接回归负坐标误差, 本模型输出端不做 sigmoid.
 
     条件边界:
-        - 本网络没有 ``task``、``task_setting``、扩散时间步或连续噪声等级输入, 所有任务条件只来自 fixed prompt、带噪状态和口袋.
+        - 本网络没有 ``task``、``task_setting``、扩散时间步或连续噪声等级输入; 条件来自 fixed prompt、带噪状态、口袋和明确配置的密度裁块.
         - 无口袋构象生成传入 P=0 的空张量; 口袋编码器和上下文 kNN 后端必须支持空边路径.
     """
     
@@ -99,7 +104,7 @@ class PMAsymDenoiser(Module):
         pocket_in_dim,
         **kwargs
     ):
-        """建立原配体去噪网络, 并按 config.nucleic_branch 增加RA核酸投影, 共享原口袋编码器.
+        """建立原配体去噪网络, 按配置增加共享口袋编码的 RA 核酸投影和密度条件模块.
 
         输入参数及前向字段见类 Docstring. 原 pocket_embedder、pocket_encoder 和配体参数名保持不变.
         """
@@ -184,6 +189,15 @@ class PMAsymDenoiser(Module):
         # ``self.denoiser``: Module, 输入节点/边总宽度分别为 ``node_dim``、``edge_dim``, 并用 ``pocket_dim`` 维口袋节点作为上下文.
         self.denoiser = denoiser_bb(node_dim, edge_dim,
                             context_dim=pocket_dim, **config.denoiser)
+        self.density_encoder = None
+        if 'density' in config:
+            # 仅密度模型加载其卷积依赖, 既有无密度配置不要求安装 einops.
+            from models.density_backbone import DensityEncoder
+            from models.density_readout import DensityReadout
+            self.density_encoder = DensityEncoder(config.density)
+            self.denoiser.density_readers = nn.ModuleList([
+                DensityReadout(node_dim,config.density) for _ in range(config.denoiser.num_blocks)
+            ])
 
         # Output decoders
         # ``self.node_decoder``: MLP; [N, node_dim] -> [N, num_node_types] 的原子类别 logits 解码头.
@@ -203,7 +217,7 @@ class PMAsymDenoiser(Module):
             self.edge_cfd = MLP(edge_dim, 1, edge_dim//2)
             
 
-    def forward(self, batch, **kwargs):
+    def forward(self, batch, density_feature=None, **kwargs):
         """编码带噪分子与口袋条件, 并返回干净变量及可选置信度预测.
 
         输入字段:
@@ -222,7 +236,11 @@ class PMAsymDenoiser(Module):
             - batch.pocket_pos: FloatTensor, 形状为 (P, 3), 与配体同原点的口袋局部坐标, 单位 Å.
             - batch.pocket_knn_edge_index: LongTensor, 形状为 (2, E_p), 口袋内部有向 kNN 边端点.
             - batch.pocket_pos_batch: LongTensor, 形状为 (P,), 每个口袋原子的图归属编号.
+            - batch.density_input: float32, (B, 56, 48, 48, 48), 密度模型未接收推理缓存时读取; B 个分子的固定裁块, 空间轴 ZYX.
+            - batch.density_origin: float32, (B, 3), 实际裁块角点的局部 XYZ 坐标, 单位 Å, 与 pos_in 共用模型原点.
+            - batch.density_basis: float32, (B, 3, 3), 三行依次为源 X、Y、Z 一个体素步长在局部坐标系的向量, 单位 Å.
             - batch.is_peptide: LongTensor, 形状为 (N,), 小分子构象/docking 为全 0; 仅配置请求时读取.
+            - density_feature: Tensor|None, 推理调用方为同一权重和固定裁块预先计算的体素特征; D1 为 (B, 256, 6, 6, 6), D4 为 (B, 48, 48, 48, 48), 空间轴 ZYX; None 从 batch.density_input 编码, 训练必须使用 None.
             - kwargs: Mapping, 本实现不读取其中任何字段, 保留给统一调用接口.
 
         返回字段:
@@ -289,6 +307,18 @@ class PMAsymDenoiser(Module):
         # ``h_node``: FloatTensor, 形状为 (N, self.config.node_dim), 完成 ``self.config.denoiser.num_blocks`` 个联合 block 后的配体节点隐藏特征.
         # ``pos_node``: FloatTensor, 形状为 (N, 3), 完成 ``self.config.denoiser.num_blocks`` 个坐标增量后的配体局部坐标, 单位 Å.
         # ``h_edge``: FloatTensor, 形状为 (2 * n_halfedges, self.config.edge_dim), 与双向 ``edge_index`` 列对齐的最终边隐藏特征.
+        density_arguments = {}  # 无密度时不传新增字段, 保持原去噪调用路径.
+        if self.density_encoder is not None:
+            if density_feature is not None and self.training:
+                raise ValueError('训练必须重新编码当前密度输入, 不得传入缓存特征.')
+            # 训练每次编码, 六个去噪块共享; eval 可读取当前固定裁块在本次采样开始时的编码.
+            if density_feature is None:
+                density_feature = self.density_encoder(batch['density_input'])
+            density_arguments = dict(
+                density_feature=density_feature,
+                density_origin=batch['density_origin'],
+                density_basis=batch['density_basis'],
+            )
         h_node, pos_node, h_edge = self.denoiser(
             h_node=h_node_in,
             pos_node=pos_in, 
@@ -301,6 +331,7 @@ class PMAsymDenoiser(Module):
             h_ctx=h_pocket,
             pos_ctx=batch['pocket_pos'],
             batch_ctx=batch['pocket_pos_batch'],
+            **density_arguments,
         )
         
         # ``pred_node``: FloatTensor, 形状为 (N, self.num_node_types); 逐原子干净类别 logits, 未归一化.
