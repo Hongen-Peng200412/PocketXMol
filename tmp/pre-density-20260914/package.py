@@ -12,7 +12,8 @@ with tarfile.open(fileobj=archive,mode='w:gz') as tar:
      data=path.read_bytes().replace(b'\r\n',b'\n');info=tar.gettarinfo(str(path),arcname=str(path.relative_to(root)));info.size=len(data);tar.addfile(info,io.BytesIO(data))
     else: tar.add(path,arcname=path.relative_to(root))
  for path in task.iterdir():
-  if path.suffix in ('.py','.sh') and path.name not in ('upload.sh',): tar.add(path,arcname=path.relative_to(root))
+  if path.suffix in ('.py','.sh') and path.name not in ('upload.sh',):
+   data=path.read_bytes().replace(b'\r\n',b'\n');info=tar.gettarinfo(str(path),arcname=str(path.relative_to(root)));info.size=len(data);tar.addfile(info,io.BytesIO(data))
  tar.add(root/'tests/test_density.py',arcname='tests/test_density.py')
  for name in ('raunet.py','attention_3d_rope.py'):
   tar.add(Path('C:/Users/15919/Desktop/Pocket_Plus/src/model')/name,arcname='tmp/pre-density-20260914/reference/'+name)

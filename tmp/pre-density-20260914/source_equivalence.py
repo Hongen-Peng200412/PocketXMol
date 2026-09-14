@@ -34,6 +34,19 @@ byname={name:grad for (name,_),grad in zip(reference.named_parameters(),gb[1:])}
 torch.testing.assert_close(ga[0],gb[0],rtol=2e-4,atol=1e-5)
 for (name,_),grad in zip(actual.named_parameters(),ga[1:]): torch.testing.assert_close(grad,byname[attention_name(name)],rtol=3e-4,atol=2e-5)
 report['checks'].append('PocketPlus_RoPE_output_input_parameter_gradients')
+
+actual.backend='flash'
+with torch.autocast('cuda',dtype=torch.bfloat16): a=actual(x)
+b=reference(x)
+torch.testing.assert_close(a,b,rtol=.03,atol=.02)
+w=torch.randn_like(a)
+ga=torch.autograd.grad((a*w).sum(),[x,*actual.parameters()]);gb=torch.autograd.grad((b*w).sum(),[x,*reference.parameters()])
+byname={name:grad for (name,_),grad in zip(reference.named_parameters(),gb[1:])}
+errors=[]
+for first,second in [(ga[0],gb[0]),*[(grad,byname[attention_name(name)]) for (name,_),grad in zip(actual.named_parameters(),ga[1:])]]:
+ relative=(first-second).square().mean().sqrt()/second.square().mean().sqrt().clamp_min(1e-8)
+ errors.append(float(relative));assert relative<.04,errors
+report['checks'].append({'PocketPlus_RoPE_forced_Flash_bf16':'output_input_parameter_gradients','relative_gradient_rms_max':max(errors)})
 del reference,actual,a,b,ga,gb,x
 
 actual=DensityEncoder(dict(mode='D4',checkpoint=False,attention_backend='reference')).cuda().eval()
@@ -58,11 +71,11 @@ for name,value in actual.state_dict().items():
  mapped[new]=value
 incompatible=reference.load_state_dict(mapped,strict=False)
 assert all(k.endswith('pos_encoding.inv_freq') for k in incompatible.missing_keys),incompatible
-x=torch.randn(1,56,32,32,32,device='cuda')
+x=torch.randn(1,56,48,48,48,device='cuda')
 with torch.no_grad():
  a=actual(x);b=reference(x,run_iters=1)
 torch.testing.assert_close(a,b,rtol=3e-4,atol=3e-5)
-report['checks'].append('PocketPlus_full_UNet_single_pass_output')
+report['checks'].append('PocketPlus_full_UNet_48cube_single_pass_output')
 del reference,actual,a,b,x;torch.cuda.empty_cache()
 
 for biased in (False,True):

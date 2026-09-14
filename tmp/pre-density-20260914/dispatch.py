@@ -8,6 +8,7 @@ control='/storage/penghongen/Adaligand_infered_receptor_data/cryoatom2/calibrati
 command=' '.join(shlex.quote(x) for x in a.command)
 body=f'''#!/usr/bin/env bash
 set -euo pipefail
+ulimit -Sn 65536
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 NUMEXPR_NUM_THREADS=1 PYTHONDONTWRITEBYTECODE=1
 export TMPDIR='{remote}/scratch'
 mkdir -p "$TMPDIR"
@@ -19,6 +20,13 @@ cd "$TASK_PROJECT_ROOT"
 export PYTHONPATH='{remote}/deps':"$TASK_PROJECT_ROOT"
 printf 'DENSITY_EXEC name={a.name} release=%s job=%s cuda=%s\\n' "$TASK_PROJECT_ROOT" "$SLURM_JOB_ID" "$CUDA_VISIBLE_DEVICES"
 {command}
+'''
+body=f'''#!/usr/bin/env bash
+set -euo pipefail
+remaining=$((1789382216-$(date +%s)))
+if (( remaining <= 0 )); then exit 124; fi
+exec timeout --signal=TERM --kill-after=15s "${{remaining}}s" bash -s <<'PXM_DENSITY_BUDGET'
+{body}PXM_DENSITY_BUDGET
 '''
 script=f'''#!/usr/bin/env bash
 set -euo pipefail
