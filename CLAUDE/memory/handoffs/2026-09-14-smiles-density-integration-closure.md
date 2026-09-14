@@ -18,9 +18,11 @@ D2与D3已经集成。D2按每分子当前坐标去重汇合7³体素邻域；D3
 
 八个密度配置在379402实际A800完成真实train/validation、bf16前向/反向、两次AdamW更新及2候选3步采样和CPU评价，8通过、0跳过，705.84秒；后续四类结构×sdpa/flash缓存检查8通过、0跳过，29.82秒。源5af144f，release在`/storage/penghongen/tmp/pxm_formal_smiles_20260914/density-gate/releases/PocketXMol_706febc31afc/PocketXMol`，结果XML与原日志同根，逐配置JSON在`/storage/penghongen/tmp/pocketxmol_gpu_checks_density_gate_5af144f_r2/pytest/`。首次CRLF启动失败未执行GPU，仅本次新发布副本shell转LF，原归档及变换证据保留。
 
-本机实现端点同范围检查85通过、8跳过；跳过为5项本机Flash内核不可用和3项服务器非测试资产未复制，不混入通过计数。完整证据、本机学习端点结果、两条线确切哈希及全树核验保存于`tmp/formal-smiles-density/dual-endpoints.json`和对应XML。共同基点92d08d6，实现线`codex/smiles-density-formal`长期保留，学习线`Learn/smiles-density-integration`按文档→数据→模型→组合→全部测试排列；只有端点等价且检查完成后快进Learn/CUMULATIVE。下一次实现从最终Learn/CUMULATIVE开始，不从旧worker分支恢复。
+本机实现与学习候选同范围检查均85通过、8跳过（198.96秒、288.59秒）；跳过为5项本机Flash内核不可用和3项服务器非测试资产未复制，不混入通过计数。完整证据、本机学习端点结果、两条线确切哈希及全树核验保存于`tmp/formal-smiles-density/dual-endpoints.json`和对应XML。共同基点92d08d6，实现线`codex/smiles-density-formal`长期保留，学习线`Learn/smiles-density-integration`按文档→数据→模型→组合→全部测试排列；只有端点等价且检查完成后快进Learn/CUMULATIVE。下一次实现从最终Learn/CUMULATIVE开始，不从旧worker分支恢复。
 
 ## 决策与限制
+
+2026-09-14前置集成收口：实现与学习候选的同范围本机检查均为85通过、8跳过（分别198.96秒、288.59秒）；必要真实D3-C入口在实现端已通过，学习端另外实际运行1通过、0跳过，112.07秒。学习端launch为`learning_d30a132_D3C_gate`，输出`density-gate/learning-training-sampling.xml`，本地完整记录`tmp/formal-smiles-density/learning-gpu-evidence.json`。这次只重跑同一真实小范围，没有正式运行。 goal已确认paused并保持暂停。
 
 后续固定RA＋T0，训练bf16-mixed、推理官方FP32张量路径及medium矩阵设置，保留原噪声、同构重分配、loss、置信度和self-ranking。中心训练/val用C0，包络E，冻结C5只在评测层提供实际中心。ALL56通道保留原模块，不recycle、不重采样、不改变裁块内缩前确定的模型原点。原OOM裁批仍按现有已批准契约保留。
 

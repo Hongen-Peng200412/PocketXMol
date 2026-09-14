@@ -29,7 +29,7 @@ bash 训练与运行/submit_task.sh --sh prepare.sh --resource cpu --cpus 8 -- f
 
 本次无密度复验配置为B-C-T0-RA-SMILES与B-E-T0-RA-SMILES，输出使用同名独立目录。C是中心模式，E是包络；中心训练和val/loss固定C0真中心，包络固定E，均只使用原dock噪声。RA在联合蛋白／核酸图中共享编码器。完整测试为中心C0/C5、包络E。退役RB/T1及F-5/F-6配置保存在Git基点463d590，当前configs/docking不再暴露它们；保留旧结果不意味着用当前源码重跑旧机制。
 
-密度模型沿用同一训练、采样和评价入口，通过model.density接入56通道与单次U-Net；D1/D4已有性能预实验，D2/D3已实现并正在完成主链验收；未通过各自必要验收前不能运行。密度模型额外需要einops 0.8.1，见[requirements-density.txt](../requirements-density.txt)；无密度配置不加载该依赖。预实验曾仅在独立deps提供此依赖；2026-09-14集成时已安装到PocketXMol专用venv，公共Conda未改动。依赖安装属于环境准备命令，不能与正式训练命令混记。
+密度模型沿用同一训练、采样和评价入口，通过model.density接入56通道与单次U-Net；D1/D4已有性能预实验，D2/D3已实现，四类结构的中心/包络真实入口均已验收；正式启动等待用户再次明确允许。密度模型额外需要einops 0.8.1，见[requirements-density.txt](../requirements-density.txt)；无密度配置不加载该依赖。预实验曾仅在独立deps提供此依赖；2026-09-14集成时已安装到PocketXMol专用venv，公共Conda未改动。依赖安装属于环境准备命令，不能与正式训练命令混记。
 
 历史运行的续训、补采样或再次评价须使用该运行冻结的release及原配置。收口删除了旧center_translation字段，历史run.json和checkpoint中仍保留原字段；当前严格配置检查会拒绝把新配置写入旧运行。下列含旧目录的命令仅说明历史入口和来源，不是本次待执行命令。未来获准的新运行使用独立目录及新配置，不修改旧元数据或绕过检查；除本次明确获准的两个RA＋T0修正编码复验外，不重训其他历史模型。
 
