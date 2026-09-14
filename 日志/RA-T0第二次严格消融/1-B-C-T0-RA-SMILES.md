@@ -1,6 +1,6 @@
 # B-C-T0-RA-SMILES
 
-当前状态（2026-09-14）：已完成235次更新，train/total约2.25，未到首次800步验证；[W&B miwl75au](https://wandb.ai/pencounkdual-111/PocketXmol_raw/runs/miwl75au)已在线，尚无best或测试指标。
+当前状态（2026-09-14，gnode09 23:09／gnode10 23:11）：已超过4100次更新；当前best为step=2400.ckpt，val/loss约2.14652，last为4000；W&B miwl75au在线running。尚无测试结果。
 
 | 项目 | 当前内容 |
 |---|---|
@@ -8,7 +8,7 @@
 | 配置 | configs/docking/B-C-T0-RA-SMILES.yml |
 | 产物根 | /storage/penghongen/PocketXMol/training/B-C-T0-RA-SMILES |
 | 测试协议 | C0/C5；每实例每协议50候选、100步，batch50 |
-| best／W&B／指标 | best与测试指标未产生；[W&B miwl75au](https://wandb.ai/pencounkdual-111/PocketXmol_raw/runs/miwl75au) online |
+| best／W&B／指标 | step=2400.ckpt；val/loss约2.14652；W&B miwl75au online；测试未开始 |
 
 所有新训练从规定官方参数初始化，重建优化器与调度状态；训练bf16-mixed，推理官方FP32张量路径。训练保留原val/loss与best选择，结束后直接完整测试，中心C0/C5、包络E；既有清单、视图、C5和种子不重建，每实例每协议50候选、100步，推理优先batch_size=50。W&B保持online，无法在线时报告，不自行切换offline。 无密度和D1起始72×1，D4/D2/D3起始36×2；OOM按72→36→24降批、累积相应1→2→3，配置global_batch_size保持72。接受原reduce_batch偶发裁批和累积梯度丢失，不增加补样或梯度补偿。仍无法运行则报告实际问题。
 
@@ -65,3 +65,5 @@ bash 训练与运行/sh/train_docking.sh B-C-T0-RA-SMILES
 启动确认：实际训练子进程开始于本节点22:03:54，stdout确认规定官方初始权重，stderr确认bf16-mixed及W&B online；没有继承预实验或旧模型状态。
 
 最近核查：2026-09-14 gnode09 22:08:03／gnode10 22:09:41，三模型均持续产生有限训练损失，stdout／stderr未见OOM或异常退出；暂未产生首个验证检查点。已进入正常运行观察。
+
+运行检查（23:09／23:11）：三模型累计OOM消息均为0，损失有限且学习率仍1e-4。W&B远端API确认三个run均running并持续收到训练指标。D1／D2／无密度中心显存快照分别75367／73531／61375 MiB，GPU利用率71%／100%／66%（单次快照，非窗口均值）。D1含验证平均约2.06秒／更新，未见相对前置约1.97秒明显退化；D2此时正在计算，不因利用率目标另做优化。已保存D1与无密度完整定期检查点及last；D2未到首个验证属于正常进度。只读命令包括目标GPU nvidia-smi、日志tail与OOM计数、checkpoint目录核查；在线指标脚本为tmp/formal-execution-20260914/read_wandb.sh，不是正式运行命令。
