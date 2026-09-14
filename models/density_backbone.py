@@ -18,6 +18,7 @@ class VolumeAttention(nn.Module):
     """对一个体素层施加八头自注意力与前馈残差, 保持 256 通道和空间尺寸.
 
     构造参数 backend 为 reference、sdpa 或 flash, 分别表示显式分数验收、PyTorch 自动选择内核、强制 Flash.
+    flash 遇到 FP32 推理输入时仅在注意力内核入口把 q、k、v 转为 bf16, 输出恢复 value 原类型; 卷积与投影精度不变.
     前向输入与输出均为 (B, 256, D, H, W), B 为裁块数, D、H、W 对应数组 ZYX; 当前每头 192 维.
     三条数组索引轴分别生成旋转相位, 不使用世界 XYZ 或新增物理位置通道; DensityEncoder 连续组合四层.
     """
@@ -54,8 +55,12 @@ class VolumeAttention(nn.Module):
             weights = (torch.einsum('blai,bkai->blka',query,key)/math.sqrt(192)).softmax(dim=-2)  # (B, L, K, 8), 每个查询体素沿 K 个键体素归一化; L=K=D*H*W.
             result = torch.einsum('blka,bkai->blai',weights,value)  # (B, L, 8, 192), 按权重对 K 个 value 求和.
         else:
+            original_dtype = value.dtype
+            if self.backend == 'flash' and value.dtype not in (torch.float16,torch.bfloat16):
+                query,key,value = query.bfloat16(),key.bfloat16(),value.bfloat16()
             with sdpa_kernel(SDPBackend.FLASH_ATTENTION) if self.backend == 'flash' else sdpa_kernel([SDPBackend.FLASH_ATTENTION,SDPBackend.EFFICIENT_ATTENTION,SDPBackend.MATH]):
                 result = F.scaled_dot_product_attention(query.transpose(1,2),key.transpose(1,2),value.transpose(1,2),dropout_p=0,scale=1/math.sqrt(192)).transpose(1,2)
+            result = result.to(original_dtype)  # (B, L, 8, 192), 恢复投影类型, FP32 推理不把后续线性层整体切为 bf16.
         result = self.norm1(vector+self.back(result.reshape(batch,-1,1536)))
         result = self.norm2(result+self.w3(F.silu(self.w1(result))*self.w2(result)))
         return result.transpose(1,2).reshape(batch,channels,depth,height,width)

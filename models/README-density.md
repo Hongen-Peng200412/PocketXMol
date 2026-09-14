@@ -32,7 +32,7 @@
 
 训练每次重新编码当前裁块，同一次前向的六个去噪块共用编码。正式采样入口`docking/sampling.py::sample_occurrence`在实例定位完成后，以eval模式一次编码当前固定裁块；通过`PMAsymDenoiser.forward(..., density_feature=...)`供该实例的候选批次和全部采样步读取。首维使用只读展开，不复制56通道输入；每个候选的原子位置、逐层邻域和注意力仍单独计算。缓存仅存在于当前实例调用，不跨权重更新或定位协议保存；训练拒绝传入缓存。原采样循环、噪声和置信度轨迹不变，编码耗时计入`inference_seconds`。
 
-瓶颈保留4层8头，每头192维三维RoPE。`attention_backend=reference`显式分数用于等价验收；`sdpa`允许PyTorch选择内核；`flash`强制Flash内核，不能静默回退。`checkpoint=true`在反向时重算重型块以节省显存。
+瓶颈保留4层8头，每头192维三维RoPE。`attention_backend=reference`显式分数用于等价验收；`sdpa`允许PyTorch选择内核；`flash`强制Flash内核，不能静默回退。FP32推理在Flash内核入口将Q/K/V转为bf16，输出恢复原value类型，卷积和投影精度保持不变；训练原有autocast不变。`checkpoint=true`在反向时重算重型块以节省显存。
 
 每个去噪块有独立4头×64维Q/K/V及320维输出投影，alpha可学习且初始0.1，额外门控g恒为1。D1每原子读取全部216特征；批内不同原子数仅在内部查询张量中暂时补齐，随后丢弃无效查询，密度地图不补齐。D4每个更新块按当前原子home周围各轴±3取邻域，与实际裁块求交集；全批次gather索引包含分子偏移，避免混用其它分子的体素。完全空的交集给零残差，不把越界原子夹到边缘。
 
