@@ -1,7 +1,6 @@
-# D1-E-T0-RA 的密度训练配置, scripts/train_pl.py 读取 model、loss、noise、transforms、data、train.
-# 数据集从 model.density 派生唯一密度入口; 原 RA 图、dock 噪声、loss 与置信度保持既定契约.
-# attention_backend 控制瓶颈和无距离全局读出的内核; 启用距离时全局读出使用 FP32 几何和 SDPA 数学内核.
-# 批量和加载配置来自 A800 性能预实验; 持续 I/O 与显存结果见预实验日志, 正式开训后继续复查.
+# 官方芳香键编码复验, 从官方参数初始化, 输出使用独立SMILES名称; 不恢复历史模板编码训练.
+# 读取入口: scripts/train_pl.py; 本文件完整定义一个已批准的无密度实验.
+# 作者 pxm 的主干结构和置信度头; 新增核酸分支由 nucleic_branch 选择.
 model:
   name: pm_asym_denoiser
   pocket_dim: 128
@@ -31,14 +30,8 @@ model:
         stop: 20
         num_gaussians: 64
         type_: linear
-  nucleic_branch: RA
-  # 密度编码与读出, PMAsymDenoiser 构造 DensityEncoder 及六个独立 DensityReadout.
-  density:
-    mode: D1  # str, 三次下采样至 6³×256, 不构建第四次下采样或解码器.
-    attention_backend: flash  # str, 瓶颈与无距离全局注意力强制使用 PyTorch Flash; 参考实现仅供数值验收.
-    distance_bias: true  # bool, 逐头 softplus(beta) 乘以平方物理距离 / 100; 额外耗时是否符合约定在预实验中判定.
-    checkpoint: true  # bool, 训练反向时重算重型块激活, 不保存跨更新的密度特征.
-# 原 IndividualTasksLoss 及其置信度目标; 本配置不增加密度监督项.
+  nucleic_branch: RA  # str, 蛋白与核酸独立投影后在同一图中共享口袋编码器.
+# 原完整 loss 配置; 实际数据仅dock, mixed/total 内保留confidence.
 loss:
   name: individual_tasks
   weights:
@@ -60,12 +53,12 @@ loss:
   - fbdd
   - pepdesign
   confidence:
+    # float, sigmoid(原始位置输出)拟合 prob_1A ** 原子坐标误差_Å; 0.2不是误差<1 Å的分类概率.
     prob_1A: 0.2
     weights:
       node: 1
       pos: 20
       edge: 1
-# 原 dock 高斯、同构重分配和固定字段恢复; C0/C5 不切换采样公式.
 noise:
   name: mixed
   individual:
@@ -93,12 +86,15 @@ noise:
       name: uniform
       min: 0.0
       max: 1.0
+# 原配体词表和任务变换; 本轮仅free, 不读取未使用的真实扭转几何.
 transforms:
   featurizer:
+    # bool, 配体11种元素后追加mask类别11; 元素列表中的位置即模型类别编号.
     use_mask_node: true
+    # bool, 半边0为无键, 1/2/3/4为单/双/三/芳香, 最后追加mask类别5.
     use_mask_edge: true
     chem:
-      # int 列表, 顺序决定模型元素词表编号; 与原官方特征化配置一致.
+      # list[int], 按原模型顺序C/N/O/F/P/S/Cl/B/Br/I/Se, 不能按原子序数重新排序.
       atomic_numbers:
       - 6
       - 7
@@ -111,7 +107,6 @@ transforms:
       - 35
       - 53
       - 34
-      # int 列表, 单键、双键、三键、芳香键类别; 保留原词表, 不表示本配置改变了实际输入编码.
       mol_bond_types:
       - 1
       - 2
@@ -124,6 +119,7 @@ transforms:
       settings:
         free: 1.0
       free_no_geometry: true
+# 原资产只读; derived_root保留逐实例ligand-area, 对称排列从SMILES公共包读取.
 data:
   dataset:
     name: adaligand
@@ -133,17 +129,18 @@ data:
     smiles_root: /storage/penghongen/AdaLigand/Ori_Data/smiles_assets
     smiles_coords_root: /storage/penghongen/AdaLigand/Ori_Data/smiles_assets/SMILE_coords/v1
     manifest_root: /storage/penghongen/PocketXMol/data/smiles-v1/frozen
-    pocket_mode: envelope  # str, 训练和 val/loss 使用真实配体包络 E, 原点为输入受体原子均值.
+    # str, center选择完整残基质量中心到给定中心<15 Å; envelope选择残基质量中心到任一完整GT重原子<10 Å.
+    pocket_mode: center
     knn: 32
+# 以下批量按单GPU写出: 72×1=72, 优先不累积; 显存调整时batch与累积成对更改.
 train:
   seed: 2023
   batch_size: 72
-  num_workers: 32
-  prefetch_factor: 1  # int, 每个加载进程预取一批; workers=0 时不传入 DataLoader.
-  cudnn_benchmark: true  # bool, Trainer 启用 cuDNN 卷积算法测速; 冷启动开销单独记录.
+  num_workers: 15
   pin_memory: true
-  max_steps: 40000  # int, 优化器更新上限; 第三次学习率实际下降时可提前停止.
-  val_check_interval: 800  # int, 每 800 次全局72实例的优化器更新计算原 val/loss.
+  max_steps: 40000
+  # int, 优化器更新间隔; 按global_step触发原验证循环; 更换单卡batch与累积后仍保持800次更新间隔.
+  val_check_interval: 800  # 同时是验证结束保存所有checkpoint的间隔, 无单独定期保存间隔.
   precision: bf16-mixed
   persistent_workers: true
   optimizer:
@@ -153,24 +150,28 @@ train:
     beta1: 0.99
     beta2: 0.999
     eps: 1.0e-08
+  # 原ReduceLROnPlateau, 第3次实际下降后立即停止; 最多40000更新.
+  # 调度器由DockingCheckpoint.on_validation_end直接读取val/loss, 先step再保存; 不注册Lightning自动lr_scheduler.
   scheduler:
     warmup_step: 0
     instance:
       type: plateau
       mode: min
       threshold_mode: rel
-      threshold: 0.01  # float, 原 val/loss 相对改善阈值 1%, 与 best 按最低原损失保存的规则区分.
-      patience: 5  # int, 连续第6次未达到改善阈值时降低学习率.
+      threshold: 0.01
+      patience: 5
       factor: 0.2
       cooldown: 0
       min_lr: 0
       eps: 1.0e-08
-  global_batch_size: 72  # int, 单卡批量×梯度累积×GPU数, 本阶段每模型一张GPU.
+  global_batch_size: 72
   accumulate_grad_batches: 1
   log_every_n_steps: 50
+  # str, 新训练只加载此权重的model参数; --resume自家完整ckpt时跳过.
   initial_checkpoint: /storage/penghongen/PocketXMol_official_test/extracted/data/trained_models/pxm/checkpoints/pocketxmol.ckpt
+  # 账号与项目名称可公开; API key只读服务器私有配置, 不写入YAML.
   wandb:
     entity: pencounkdual-111
-    project: PocketXmol_density
-    name: D1-E-T0-RA
+    project: PocketXmol_raw
+    name: B-C-T0-RA-SMILES
     mode: online

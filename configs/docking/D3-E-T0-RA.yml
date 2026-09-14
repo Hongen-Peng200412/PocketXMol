@@ -129,7 +129,12 @@ data:
     name: adaligand
     root: /storage/penghongen/AdaLigand/Ori_Data
     derived_root: /storage/penghongen/Adaligand_Build/Ori_Data/pocketxmol
-    manifest_root: /storage/penghongen/PocketXMol/data
+    # 公共精确SMILES图及同顺序沉积坐标, 不从旧ligand_object重新解析.
+    smiles_root: /storage/penghongen/AdaLigand/Ori_Data/smiles_assets
+    smiles_coords_root: /storage/penghongen/AdaLigand/Ori_Data/smiles_assets/SMILE_coords/v1
+    # 冻结768维SMI-TED逐实例向量, Dataset核对prepared_smiles; 不在训练中更新语言模型.
+    language_root: /storage/penghongen/AdaLigand/Ori_Data/stage1_preparation_box_pool_2/ligand_language_models/smi_ted_289m
+    manifest_root: /storage/penghongen/PocketXMol/data/smiles-v1/frozen
     pocket_mode: envelope  # str, 训练和 val/loss 使用真实配体包络 E, 原点为输入受体原子均值.
     knn: 32
 train:

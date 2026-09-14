@@ -8,5 +8,5 @@ export PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTECODE=1
 export OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1
 export TMPDIR=/storage/penghongen/tmp
 mkdir -p "$TMPDIR"
-run_name="${1:?请指定明确采样配置, 如 official-validation}"
+run_name="${1:?请指定明确采样配置, 如 official-SMILES-test}"
 exec /storage/penghongen/PocketXMol/runtime/venv/bin/python scripts/sample_docking.py "configs/docking/sample-${run_name}.yml"

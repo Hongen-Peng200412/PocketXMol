@@ -130,6 +130,7 @@ def sample_occurrence(dataset, index, model, noiser, featurizer, config, protoco
     pocket_protein_count = pocket_nucleic_count = None
     pocket_center = None
     density_feature = None  # Tensor|None, 此实例固定裁块的单份编码, 只在当前函数调用内复用.
+    density_indices = None  # int64 Tensor|None, (1,4096), D3按冻结语言与当前编码选出的ZYX平铺索引, 与整条轨迹共用.
     stage = "preprocess"
 
     try:
@@ -150,6 +151,9 @@ def sample_occurrence(dataset, index, model, noiser, featurizer, config, protoco
             try:
                 with torch.no_grad():
                     density_feature = model.density_encoder(data.density_input.to(config.device))
+                    if 'density_language' in data:
+                        # D3只使用SMILES语言向量与密度特征选点; 推理数据没有配体区域标签, 不用真实坐标修正所选体素.
+                        _, density_indices = model.density_selection(density_feature, data.density_language.to(config.device))
                 if sampling_device.type == 'cuda':
                     torch.cuda.synchronize(sampling_device)
             finally:
@@ -180,6 +184,8 @@ def sample_occurrence(dataset, index, model, noiser, featurizer, config, protoco
                     if density_feature is not None:
                         # 仅展开分子首维, 不复制底层体素; 各候选的位置和逐层查询仍分别计算.
                         sampling_model = partial(model, density_feature=density_feature.expand(stop - start, -1, -1, -1, -1))
+                        if density_indices is not None:
+                            sampling_model = partial(sampling_model, density_indices=density_indices.expand(stop - start, -1))
                     # 保留原 100 步循环和置信度轨迹聚合; 坐标和类别轨迹仅在内存短暂存在, 不另存完整去噪轨迹.
                     sampling_batch_attempt_count += 1
                     batch, outputs, trajectories = sample_loop3(batch, sampling_model, noiser, device=config.device, off_tqdm=True, progress=progress)

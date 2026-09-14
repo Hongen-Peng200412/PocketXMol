@@ -118,13 +118,16 @@ transforms:
       settings:
         free: 1.0
       free_no_geometry: true
-# 原资产只读; derived_root读共享对称排列, manifest_root读累计筛选后的四份清单.
+# 原资产只读; derived_root保留逐实例ligand-area, 对称排列从SMILES公共包读取.
 data:
   dataset:
     name: adaligand
     root: /storage/penghongen/AdaLigand/Ori_Data
     derived_root: /storage/penghongen/Adaligand_Build/Ori_Data/pocketxmol
-    manifest_root: /storage/penghongen/PocketXMol/data
+    # 精确SMILES公共图及已迁移原子顺序坐标, Dataset不读取ligand_object.
+    smiles_root: /storage/penghongen/AdaLigand/Ori_Data/smiles_assets
+    smiles_coords_root: /storage/penghongen/AdaLigand/Ori_Data/smiles_assets/SMILE_coords/v1
+    manifest_root: /storage/penghongen/PocketXMol/data/smiles-v1/frozen
     # str, center选择完整残基质量中心到给定中心<15 Å; envelope选择残基质量中心到任一完整GT重原子<10 Å.
     pocket_mode: envelope
     knn: 32
