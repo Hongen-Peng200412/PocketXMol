@@ -1,6 +1,6 @@
 """从编码密度向当前配体原子产生特征残差, 由原坐标更新器继续预测坐标.
 
-入口 DensityReadout 的 D1 模式读取全部 216 个粗体素, D4 模式按当前原子所在体素的各轴 ±3 邻域读取.
+入口 DensityReadout 的 D1 读取全部 216 个粗体素, D4 读取自身各轴 ±3 邻域, D2 读取同分子所有原子邻域的去重并集, D3 读取独立概率头预测的 4096 个体素.
 返回 (N, node_dim) 残差, N 为此批全部配体原子数, 当前 node_dim=320; 本模块不写文件.
 几何以局部裁块角点和三条源 XYZ 体素基向量表示, 密度特征数组始终按 ZYX 存放.
 """
@@ -55,11 +55,11 @@ class DensityReadout(nn.Module):
 
     构造参数:
         - node_dim: int, 原子隐藏特征宽度及残差输出宽度, 当前为 320.
-        - config: Mapping, mode 为 D1 或 D4, attention_backend 为注意力实现, distance_bias 决定是否加入平方距离项.
+        - config: Mapping, mode 为 D1/D2/D3/D4, attention_backend 为注意力实现, distance_bias 决定是否加入平方距离项.
     前向输入输出见 forward; 六个去噪块各持有一套参数, 不共享 alpha、beta 或投影层, 额外门控恒为 1.
     """
     def __init__(self,node_dim,config):
-        """建立一个块的独立投影; node_dim 当前为320, config 固定D1/D4与数值内核."""
+        """建立一个块的独立投影; node_dim 当前为320, config 指定密度读出模式与数值内核."""
         super().__init__()
         self.mode = config['mode']
         self.backend = config['attention_backend']
@@ -77,34 +77,41 @@ class DensityReadout(nn.Module):
         offsets = torch.arange(-3,4)
         self.register_buffer('offsets',torch.stack(torch.meshgrid(offsets,offsets,offsets,indexing='ij'),dim=-1).reshape(-1,3),persistent=False)
 
-    def forward(self,h_node,pos_node,batch_node,feature,origin,basis):
+    def forward(self,h_node,pos_node,batch_node,feature,origin,basis,indices=None):
         """批量读取每个原子的当前密度邻域, 返回 (N, node_dim) 残差.
 
         输入参数:
             - h_node: (N, node_dim), 此批全部 N 个配体原子的当前隐藏特征; 输出恢复其原始类型.
             - pos_node: (N, 3), 与 h_node 逐原子对齐的当前局部 XYZ 坐标, 单位 Å; 每个去噪块重新读取.
             - batch_node: int64, (N,), 按 PyG 拼批顺序排列的分子编号, 如 [0, 0, 1], 索引 feature、origin、basis 首维.
-            - feature: D1 为 (B, 256, 6, 6, 6), D4 为 (B, 48, 48, 48, 48), B 个分子的编码密度, 空间轴 ZYX.
+            - feature: D1 为 (B, 256, 6, 6, 6), D2/D3/D4 为 (B, 48, 48, 48, 48), B 个分子的编码密度, 空间轴 ZYX.
             - origin: float32, (B, 3), 实际裁块角点的模型局部 XYZ 坐标, 单位 Å.
             - basis: float32, (B, 3, 3), 三行依次为源 X、Y、Z 一个体素步长在局部坐标系的向量, 单位 Å.
+            - indices: int64 Tensor|None, D3 必须提供 (B, 4096) 的预测 ZYX 展平体素索引; 其他模式保持 None, 不读取此字段.
         投影和残差乘法使用参数类型, 正式混合精度训练的参数为 FP32; 普通 D1 Flash 的内核入口例外见 density_attention.
-        几何使用 FP32 逐元素乘加, 避免全局 medium 矩阵精度改变 floor 边界; D4 邻域与裁块取交集, 空交集返回零残差.
+        几何使用 FP32 逐元素乘加, 避免全局 medium 矩阵精度改变 floor 边界; D2/D4 邻域与裁块取交集, 空交集返回零残差.
         """
         original_dtype = h_node.dtype
         with torch.autocast(device_type=h_node.device.type,enabled=False):
             h_node = h_node.to(self.query.weight.dtype)
-            if self.mode == 'D1':
+            if self.mode in ('D1','D3'):
                 # query: (B, N_max, 256), N_max 为此批最大原子数; valid 为 (B, N_max), True 是真实原子, False 是补齐查询.
                 # 只补齐变长查询, 不增加密度体素或跨分子混合.
                 query,valid = to_dense_batch(self.query(h_node),batch_node,batch_size=feature.shape[0])
                 atom_pos,_ = to_dense_batch(pos_node,batch_node,batch_size=feature.shape[0])
                 query = query.reshape(feature.shape[0],-1,4,64).transpose(1,2)
-                # (B, 256, 6, 6, 6) -> (B, 216, 256), X 索引变化最快; 全批量共享投影运算而不共享分子特征.
-                voxel_features = feature.flatten(2).transpose(1,2).to(self.key.weight.dtype)
+                # (B, channels, Z, Y, X) -> (B, Z*Y*X, channels), X 索引变化最快; D1 channels=256, D3 channels=48.
+                voxel_features = feature.flatten(2).transpose(1,2)
+                if self.mode == 'D3':
+                    voxel_features = voxel_features.gather(1,indices[:,:,None].expand(-1,-1,48))  # (B, 4096, 48), 每个分子只读自己的预测体素.
+                voxel_features = voxel_features.to(self.key.weight.dtype)  # D3 先选体素再转投影精度, 不为未选中的全块特征额外分配 FP32 副本.
                 key = self.key(voxel_features).reshape(feature.shape[0],-1,4,64).transpose(1,2)
                 value = self.value(voxel_features).reshape(feature.shape[0],-1,4,64).transpose(1,2)
                 with torch.autocast(device_type=pos_node.device.type,enabled=False):
-                    voxel_pos = origin[:,None].float()+(self.voxel_xyz[None,:,:,None].float()*basis[:,None].float()).sum(-2)
+                    if self.mode == 'D3':
+                        voxel_pos = origin[:,None].float()+(self.voxel_xyz[indices][...,None].float()*basis[:,None].float()).sum(-2)
+                    else:
+                        voxel_pos = origin[:,None].float()+(self.voxel_xyz[None,:,:,None].float()*basis[:,None].float()).sum(-2)
                 attended = density_attention(query,key,value,atom_pos,voxel_pos,self.beta,self.distance_bias,self.backend)
                 attended = attended.transpose(1,2).reshape(feature.shape[0],-1,256)[valid]
                 # (B, N_max, 256) 按 valid 恢复原 N 个原子; alpha 在 FP32 中参与乘法和标量梯度归约.
@@ -118,6 +125,24 @@ class DensityReadout(nn.Module):
             neighborhood = home[:,None]+self.offsets[None]  # int64, (N, 343, 3), 各原子周围 7³ 体素的 XYZ 索引, 可越界.
             inside = ((neighborhood>=0)&(neighborhood<48)).all(-1)  # bool, (N, 343), True 表示落在此分子裁块内.
             linear = neighborhood[...,2]*48*48+neighborhood[...,1]*48+neighborhood[...,0]
+            if self.mode == 'D2':
+                # 每个分子并集大小独立变化; 不补假体素, 不把不同分子的相同 ZYX 编号合并.
+                molecule_residuals = []  # list[Tensor], 各元素为 (N_molecule, node_dim), 依 PyG 分子编号排列.
+                for molecule in range(feature.shape[0]):
+                    atom_mask = batch_node == molecule  # bool, (N,), 此分子的所有查询原子, 依 PyG 原顺序保留.
+                    selected_indices = torch.unique(linear[atom_mask][inside[atom_mask]], sorted=True)  # int64, (K,), 本分子有效 7³ 邻域的去重并集, K 可为 0.
+                    if selected_indices.numel() == 0:
+                        molecule_residuals.append(h_node[atom_mask]*0)
+                        continue
+                    selected_features = feature[molecule].flatten(1).transpose(0,1)[selected_indices].to(self.key.weight.dtype)  # (K, 48), 并集体素的编码特征, 每个体素只出现一次.
+                    query = self.query(h_node[atom_mask]).reshape(1,-1,4,64).transpose(1,2)  # (1, 4, N_molecule, 64), 本分子的查询轴.
+                    key = self.key(selected_features).reshape(1,-1,4,64).transpose(1,2)  # (1, 4, K, 64), K 个并集体素的键特征.
+                    value = self.value(selected_features).reshape(1,-1,4,64).transpose(1,2)  # (1, 4, K, 64), 与 key 相同体素顺序的值特征.
+                    voxel_pos = origin[molecule].float()+(self.voxel_xyz[selected_indices,:,None].float()*basis[molecule].float()).sum(-2)  # (K, 3), 并集体素中心的模型局部 XYZ 坐标, Å.
+                    attended = density_attention(query,key,value,pos_node[atom_mask][None],voxel_pos[None],self.beta,self.distance_bias,self.backend)
+                    attended = attended.transpose(1,2).reshape(-1,256)  # (N_molecule, 256), 同分子的每个原子都读取整个 K 体素并集.
+                    molecule_residuals.append(self.alpha*self.output(attended).to(self.alpha.dtype))
+                return torch.cat(molecule_residuals,dim=0).to(original_dtype)
             linear = linear.masked_fill(~inside,0)+batch_node[:,None]*(48**3)  # (N, 343), 加分子偏移后索引全批 ZYX 展平体素; 无效占位随后屏蔽.
             voxel_features = feature.permute(0,2,3,4,1).reshape(-1,48)  # (B*48³, 48), 先分子再 ZYX 展平, 与 linear 的分子偏移对齐.
             selected = voxel_features[linear].to(self.key.weight.dtype)  # (N, 343, 48), 每个原子的邻域只来自其所属分子.

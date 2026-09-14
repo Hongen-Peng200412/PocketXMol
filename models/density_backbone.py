@@ -1,7 +1,7 @@
 """把 56 通道裁块编码为 D1 的 6³ 特征或完整 U-Net 的 48³ 特征.
 
 入口 DensityEncoder 复用 Pocket_Plus 卷积、三维旋转位置编码 RoPE 和解码门控, 单次执行, 不保存循环状态或写文件.
-输入为 (B, 56, 48, 48, 48), B 为裁块数; D1 返回 (B, 256, 6, 6, 6), D4 返回 (B, 48, 48, 48, 48), 后三轴均为 ZYX.
+输入为 (B, 56, 48, 48, 48), B 为裁块数; D1 返回 (B, 256, 6, 6, 6), D2/D3/D4 返回 (B, 48, 48, 48, 48), 后三轴均为 ZYX.
 """
 
 import math
@@ -68,10 +68,10 @@ class VolumeAttention(nn.Module):
 
 # ================================================================================================
 class DensityEncoder(nn.Module):
-    """按 D1 或 D4 构造单次密度编码器, 不加载 Pocket_Plus 已训练参数.
+    """按 D1 或 D2/D3/D4 构造单次密度编码器, 不加载 Pocket_Plus 已训练参数.
 
     构造参数 config 的字段:
-        - mode: str, D1 在三次下采样与瓶颈注意力后返回 6³×256; D4 包含第四次下采样和完整解码, 返回 48³×48.
+        - mode: str, D1 在三次下采样与瓶颈注意力后返回 6³×256; D2/D3/D4 包含第四次下采样和完整解码, 返回 48³×48.
         - checkpoint: bool, True 时在训练反向中重算重型块的激活以节省显存, 不跨优化器更新缓存特征.
         - attention_backend: str, reference、sdpa 或 flash, 传入四层 VolumeAttention.
     前向 voxel 为 (B, 56, 48, 48, 48), 不接收上一轮特征; 返回形状见 mode 定义.
@@ -80,8 +80,8 @@ class DensityEncoder(nn.Module):
         """按 config.mode 建立所需编码与解码层; 参数和输出形状见类说明."""
         super().__init__()
         self.mode = config['mode']
-        if self.mode not in ('D1','D4'):
-            raise ValueError(f'密度模式{self.mode}尚未实现；当前只能显式选择D1或D4。')
+        if self.mode not in ('D1','D2','D3','D4'):
+            raise ValueError(f'未知密度模式 {self.mode}, 仅支持 D1/D2/D3/D4.')
         self.use_checkpoint = config['checkpoint']
         self.input_projection = ShortConvAdd(56,64)
         self.stem = ShortConv(64,256)
