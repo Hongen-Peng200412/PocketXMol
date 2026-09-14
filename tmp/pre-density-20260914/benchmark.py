@@ -86,6 +86,9 @@ def main():
  try:
   report['memory_available_bytes']=psutil.virtual_memory().available
   report['cpu_affinity_count']=len(os.sched_getaffinity(0))
+  report['cudnn_benchmark']=torch.backends.cudnn.benchmark
+  report['cudnn_allow_tf32']=torch.backends.cudnn.allow_tf32
+  report['float32_matmul_precision']=torch.get_float32_matmul_precision()
   memory_limit=Path('/sys/fs/cgroup/memory/slurm/uid_1351/job_379402/memory.limit_in_bytes')
   if memory_limit.exists(): report['job_memory_limit_bytes']=int(memory_limit.read_text())
   config=make_config(args.config)
