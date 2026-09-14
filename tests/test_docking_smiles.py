@@ -57,3 +57,13 @@ def test_explicit_unsupported_instance_preserves_records_and_test_failure(prepar
     dataset.split='test'
     with pytest.raises(UnsupportedSmilesError,match='constructed unsupported graph'):
         dataset[1]
+
+
+def test_runtime_identity_error_is_not_silently_excluded(prepared_data):
+    """只有清单明确批准的unsupported实例可跳过, 意外身份错误必须中止读取."""
+    config = EasyDict(deepcopy(dict(prepared_data)))
+    config.update(pocket_mode='center', knn=32)
+    dataset = OccurrenceDataset(config, 'train', lambda value:value, 'RA', 'C0', False)
+    dataset.records[0]['candidate_id'] = 99999
+    with pytest.raises(ValueError, match='smiles_coordinate_identity_mismatch'):
+        list(dataset)
