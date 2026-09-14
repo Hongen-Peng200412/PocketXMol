@@ -1,0 +1,40 @@
+# 官方冻结权重的精确SMILES芳香键复验; 本文件由378693执行, 旧测试产物保持原样.
+# scripts/sample_docking.py生成候选, scripts/evaluate_docking.py读取同一配置评价; 本文件只用于正式测试.
+model_name: official-SMILES
+train_config: /storage/penghongen/PocketXMol_official_test/extracted/data/trained_models/pxm/train_config/train.yml
+# 明确的只读官方权重; 不搜索或更换checkpoint.
+checkpoint: /storage/penghongen/PocketXMol_official_test/extracted/data/trained_models/pxm/checkpoints/pocketxmol.ckpt
+# str, OccurrenceDataset仅保留标准蛋白输入; 标准核酸仍参加独立评价的完整受体碰撞检查.
+receptor_branch: protein
+dataset:
+  # str, 只读AdaLigand原资产根, 本官方配置读取其中的受体.
+  root: /storage/penghongen/AdaLigand/Ori_Data
+  # str, 既有逐实例ligand-area索引根, 本无密度官方配置不读取标签.
+  derived_root: /storage/penghongen/Adaligand_Build/Ori_Data/pocketxmol
+  # str, 精确SMILES的公共重原子图及同顺序自同构排列根.
+  smiles_root: /storage/penghongen/AdaLigand/Ori_Data/smiles_assets
+  # str, 按公共SMILES原子顺序迁移的逐PDB沉积坐标包根.
+  smiles_coords_root: /storage/penghongen/AdaLigand/Ori_Data/smiles_assets/SMILE_coords/v1
+  # str, 保留原实例成员、C5偏移、种子及视图的迁移冻结清单根.
+  manifest_root: /storage/penghongen/PocketXMol/data/smiles-v1/frozen
+  # int, OccurrenceDataset构造模型输入受体图的近邻上限.
+  knn: 32
+# C0为真实中心, C5读取冻结偏移, E为完整配体包络; 每协议的三个测试视图共用同一候选池.
+protocols: [C0, C5, E]
+split: test
+output_root: /storage/penghongen/PocketXMol/sampling/official-SMILES
+# int, sample_occurrence每批候选数上限, 不改变单实例候选预算.
+batch_size: 50
+# int, 单实例固定候选预算, 失败候选仍进入统计分母.
+num_candidates: 50
+# int, 原sample_loop3对每个候选执行的循环步数.
+num_steps: 100
+device: cuda
+# ALL/CAP10/HF10_TO5读取同一份冻结实例与候选; 评价使用同一获准作业的8个CPU进程.
+# int, evaluate_docking的CPU进程数, 不另申请GPU.
+evaluation_workers: 8
+wandb:
+  entity: pencounkdual-111
+  project: PocketXmol_raw
+  name: official_SMILES_test
+  mode: online
