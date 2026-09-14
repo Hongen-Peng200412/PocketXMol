@@ -14,7 +14,7 @@ from test_docking_sampling import sampling_context
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason='真实密度编码与采样需要CUDA')
-@pytest.mark.parametrize('mode', ['D1', 'D4'])
+@pytest.mark.parametrize('mode', ['D1', 'D4', 'D2', 'D3'])
 @pytest.mark.parametrize('backend', ['sdpa', 'flash'])
 def test_cached_density_matches_reencoding_in_real_sampling(prepared_data, monkeypatch, mode, backend):
     """逐步比较同一输入的缓存/重新编码输出, 并核对跨候选批次只编码一次."""
@@ -24,6 +24,8 @@ def test_cached_density_matches_reencoding_in_real_sampling(prepared_data, monke
     training, dataset, featurizer, config, _ = sampling_context(prepared_data, 'RA', 'validation')
     training.model.density = dict(mode=mode, attention_backend=backend, distance_bias=True, checkpoint=False)
     dataset.density_config = training.model.density
+    if mode == 'D3':
+        dataset.config.language_root = prepared_data.language_root
     config.update(device='cuda', num_candidates=3, batch_size=2, num_steps=2)
     source = dataset[0]
     root = Path(__file__).resolve().parents[1]
@@ -39,19 +41,24 @@ def test_cached_density_matches_reencoding_in_real_sampling(prepared_data, monke
         """记录实际编码批量, 用于区分一次缓存和逐步重算的参考调用."""
         encoding_calls.append(arguments[0].shape[0])
 
-    def compare_forward(batch, density_feature=None):
+    def compare_forward(batch, density_feature=None, density_indices=None):
         """同一噪声状态计算两种输入方式, 检查全部预测和置信度后返回缓存结果."""
         assert density_feature is not None
         assert 'density_input' not in batch
+        assert 'density_target' not in batch
         assert torch.count_nonzero(batch.gt_node_pos) == 0
         torch.testing.assert_close(batch.density_origin.cpu(), source.density_origin.expand(batch.num_graphs, -1))
         if batch.num_graphs > 1:
             assert density_feature.stride(0) == 0
-        actual = original_forward(batch, density_feature=density_feature)
+        actual = original_forward(batch, density_feature=density_feature, density_indices=density_indices)
         batch.density_input = source.density_input.to('cuda').expand(batch.num_graphs, -1, -1, -1, -1)
         expected = original_forward(batch)
         del batch.density_input
-        for name in expected:
+        if mode == 'D3':
+            assert density_indices.shape == (batch.num_graphs, 4096)
+            assert 'density_logits' not in actual
+            assert 'density_logits' in expected
+        for name in actual:
             torch.testing.assert_close(actual[name], expected[name], rtol=2e-4, atol=2e-5)
         compared_batches.append(batch.num_graphs)
         return actual
