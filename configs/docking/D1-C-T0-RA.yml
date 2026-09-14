@@ -129,7 +129,10 @@ data:
     name: adaligand
     root: /storage/penghongen/AdaLigand/Ori_Data
     derived_root: /storage/penghongen/Adaligand_Build/Ori_Data/pocketxmol
-    manifest_root: /storage/penghongen/PocketXMol/data
+    # 精确SMILES公共图及已迁移原子顺序坐标, Dataset不读取ligand_object.
+    smiles_root: /storage/penghongen/AdaLigand/Ori_Data/smiles_assets
+    smiles_coords_root: /storage/penghongen/AdaLigand/Ori_Data/smiles_assets/SMILE_coords/v1
+    manifest_root: /storage/penghongen/PocketXMol/data/smiles-v1/frozen
     pocket_mode: center  # str, 训练和 val/loss 使用真实中心 C0 选袋及定位.
     knn: 32
 train:
