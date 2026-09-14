@@ -11,7 +11,8 @@ from easydict import EasyDict
 from rdkit import Chem
 from torch_geometric.transforms import Compose
 
-from docking.assets import read_receptor, read_template
+from docking.assets import read_receptor
+from docking.smiles import read_smiles_graph
 from docking.dataset import OccurrenceDataset
 from docking.evaluation import evaluate_docking, evaluate_occurrence, summarize_occurrences
 from docking.sampling import sample_occurrence
@@ -136,7 +137,7 @@ def test_complete_nucleic_clashes_unaligned_rmsd_and_failure_denominator(prepare
     read_receptor.cache_clear()
     directory = Path(config.output_root) / 'train/C0/train_demo/0'
     directory.mkdir(parents=True)
-    _, _, template, _ = read_template(Path(prepared_data.root) / 'ligand_objects/CCD_ETH.npz')
+    template=read_smiles_graph(prepared_data.smiles_root, 'CCO')['mol']
     with np.load(Path(prepared_data.root) / 'parse/train_demo/ligand_coords.npz') as archive:
         truth = archive['coords_0']
     candidates = []
@@ -152,7 +153,7 @@ def test_complete_nucleic_clashes_unaligned_rmsd_and_failure_denominator(prepare
             candidates.append(dict(sample_index=index, status='success', stage='complete', error=None, sdf_index=index, cfd_traj=float(1-index)))
     candidates.append(dict(sample_index=2, status='failed', stage='forward', error='constructed failure', sdf_index=None, cfd_traj=None))
     (directory / 'candidates.json').write_text(json.dumps(candidates))
-    sampling = dict(pdb_id='train_demo', occurrence_id=0, model_name=config.model_name, split='train', protocol='C0', object_key=record['object_key'], num_candidates=3, status='partial', candidate_file='candidates.json', pose_file='poses.sdf', inference_seconds=2., elapsed_seconds=3., sampling_batch_attempt_count=2, sampling_batch_completed_count=1, model_forward_attempt_count=4, model_forward_completed_count=3, peak_memory_allocated_bytes=None, peak_memory_reserved_bytes=None)
+    sampling = dict(pdb_id='train_demo', occurrence_id=0, model_name=config.model_name, split='train', protocol='C0', prepared_smiles=record['prepared_smiles'], num_candidates=3, status='partial', candidate_file='candidates.json', pose_file='poses.sdf', inference_seconds=2., elapsed_seconds=3., sampling_batch_attempt_count=2, sampling_batch_completed_count=1, model_forward_attempt_count=4, model_forward_completed_count=3, peak_memory_allocated_bytes=None, peak_memory_reserved_bytes=None)
     (directory / 'result.json').write_text(json.dumps(sampling))
     assessment = evaluate_occurrence((config, 'C0', record))
     metrics = json.loads((directory / 'candidate_metrics.json').read_text())
@@ -176,7 +177,7 @@ def test_storage_errors_do_not_create_completion_markers(prepared_data, monkeypa
     def unavailable_storage(*args, **kwargs):
         raise OSError('constructed storage outage')
 
-    monkeypatch.setattr('docking.sampling.read_template', unavailable_storage)
+    monkeypatch.setattr('docking.sampling.read_smiles_graph', unavailable_storage)
     with pytest.raises(OSError, match='storage outage'):
         sample_occurrence(dataset, 0, None, noiser, featurizer, config, 'C5')
     directory = Path(config.output_root) / 'validation/C5/val_demo/0'

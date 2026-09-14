@@ -32,7 +32,7 @@ from test_docking_data import prepared_data
 def test_official_weights_native_bf16_training_and_stopped_restore(prepared_data, tmp_path, branch):
     """核对原权重、RA投影、bf16原loss更新和完整已停止检查点恢复, 保留学到的核酸参数."""
     config = make_config(str(Path(__file__).resolve().parents[1] / f'configs/docking/B-C-T0-{branch}.yml'))
-    config.data.dataset.update(root=prepared_data.root, derived_root=prepared_data.derived_root, manifest_root=prepared_data.manifest_root)
+    config.data.dataset.update(root=prepared_data.root, derived_root=prepared_data.derived_root, manifest_root=prepared_data.manifest_root, smiles_root=prepared_data.smiles_root, smiles_coords_root=prepared_data.smiles_coords_root)
     config.train.update(batch_size=36, accumulate_grad_batches=2, num_workers=0, persistent_workers=False, val_check_interval=1)
     args = SimpleNamespace(num_gpus=1, multi_node=False, resume='')
     data_module = DataModule(config)

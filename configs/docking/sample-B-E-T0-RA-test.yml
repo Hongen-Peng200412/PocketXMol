@@ -13,7 +13,9 @@ dataset:
   # str, 已完成共同准备的共享对称排列和逐实例标签根.
   derived_root: /storage/penghongen/Adaligand_Build/Ori_Data/pocketxmol
   # str, 冻结实例清单、候选种子及测试视图根, 不重新生成.
-  manifest_root: /storage/penghongen/PocketXMol/data
+  smiles_root: /storage/penghongen/AdaLigand/Ori_Data/smiles_assets  # str, 精确SMILES公共图与排列包.
+  smiles_coords_root: /storage/penghongen/AdaLigand/Ori_Data/smiles_assets/SMILE_coords/v1  # str, 公共图原子顺序的坐标包.
+  manifest_root: /storage/penghongen/PocketXMol/data/smiles-v1/frozen
   knn: 32  # int, OccurrenceDataset构造受体图的近邻上限.
 protocols: [E]  # list[str], 本模型仅完成既定包络E测试.
 split: test  # str, ALL完整446个实例; CAP10和HF10_TO5复用同一候选池.

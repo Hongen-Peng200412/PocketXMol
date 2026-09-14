@@ -14,7 +14,9 @@ dataset:
   # str, 已完成共同准备的共享对称排列和逐实例标签根.
   derived_root: /storage/penghongen/Adaligand_Build/Ori_Data/pocketxmol
   # str, 冻结实例清单、具体C5偏移和候选种子根, 不重新生成.
-  manifest_root: /storage/penghongen/PocketXMol/data
+  smiles_root: /storage/penghongen/AdaLigand/Ori_Data/smiles_assets  # str, 精确SMILES公共图与排列包.
+  smiles_coords_root: /storage/penghongen/AdaLigand/Ori_Data/smiles_assets/SMILE_coords/v1  # str, 公共图原子顺序的坐标包.
+  manifest_root: /storage/penghongen/PocketXMol/data/smiles-v1/frozen
   knn: 32  # int, OccurrenceDataset构造受体图的近邻上限.
 # list[str], 按C0、C5顺序独立生成; C5读取冻结偏移, 两种条件共用冻结候选种子.
 protocols: [C0, C5]

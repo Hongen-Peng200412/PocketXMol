@@ -18,7 +18,7 @@ from rdkit import Chem
 from torch_geometric.data import Batch
 from torch_geometric.transforms import Compose
 
-from docking.assets import read_template
+from docking.smiles import read_smiles_graph
 from docking.dataset import OccurrenceDataset
 from models.maskfill import PMAsymDenoiser
 from models.sample import get_cfd_traj, sample_loop3, seperate_outputs2
@@ -71,7 +71,7 @@ def sample_occurrence(dataset, index, model, noiser, featurizer, config, protoco
             - model_name: str, 当前模型稳定名称.
             - split: str, validation 或 test.
             - protocol: str, 当前 C0、C5 或 E.
-            - object_key: str, 完整模板身份, 如 CCD:GMP.
+            - prepared_smiles: str, 精确SMILES身份, 如 CCO.
             - views: list[str], 冻结测试视图名称; 验证为空列表, 测试从 ALL、CAP10、HF10_TO5 选择.
             - sampling_seed: int, 当前 occurrence 的冻结候选种子, 如10831; 模型和协议不另混入种子.
             - center_offset_xyz_A: list[float], 长度3的冻结 C5 偏移, 世界 XYZ、Å; C0/E也保存此值但不施加.
@@ -139,7 +139,7 @@ def sample_occurrence(dataset, index, model, noiser, featurizer, config, protoco
         data.node_pos = torch.zeros_like(data.node_pos)
         data.gt_node_pos = torch.zeros_like(data.gt_node_pos)
         # 原 decode_output 必须读取真实模型原点; 官方纯核酸若在更早步骤失败, 会留下 preprocess 错误.
-        _, _, template, _ = read_template(dataset.root / "ligand_objects" / (record["object_key"].replace(":", "_") + ".npz"))
+        template = read_smiles_graph(dataset.config.smiles_root, record["prepared_smiles"])["mol"]
         template = Chem.Mol(template)
         template.AddConformer(Chem.Conformer(template.GetNumAtoms()), assignId=True)
     except Exception as error:
@@ -237,7 +237,7 @@ def sample_occurrence(dataset, index, model, noiser, featurizer, config, protoco
     total_pocket = (pocket_protein_count + pocket_nucleic_count) if pocket_protein_count is not None else 0
     result = {
         **identity,
-        "object_key": record["object_key"],
+        "prepared_smiles": record["prepared_smiles"],
         "views": record["views"],
         "sampling_seed": int(record["sampling_seed"]),
         "center_offset_xyz_A": record["center_offset_xyz_A"],

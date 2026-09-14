@@ -1,7 +1,7 @@
-"""读取标准受体, 并按 docking 定位条件选择完整残基口袋.
+"""读取完整配体模板和标准受体, 并按 docking 定位条件选择口袋.
 
-先阅读 read_receptor 和 select_pocket. 本模块只返回内存受体数组和原子掩码, 不写源资产或派生文件.
-配体图和坐标由 docking.smiles 读取; 受体坐标保持源 receptor_tokens 的世界 XYZ 坐标, 单位 Å.
+先阅读 read_template, 再阅读 read_receptor 和 select_pocket. 本模块只返回内存中的数组和 RDKit Mol, 不写源资产或派生文件.
+配体原子顺序始终对应 ligand_objects 的 atoms; 受体坐标保持源 receptor_tokens 的世界 XYZ 坐标, 单位 Å.
 """
 
 from functools import lru_cache
@@ -18,6 +18,54 @@ LIGAND_ELEMENTS = (6, 7, 8, 9, 15, 16, 17, 5, 35, 53, 34)
 BOND_TYPES = (Chem.BondType.SINGLE, Chem.BondType.DOUBLE, Chem.BondType.TRIPLE, Chem.BondType.DATIVE, Chem.BondType.AROMATIC)
 # 与 atoms.chirality 的七列逐项对应, 不根据沉积坐标猜测或重建模板手性.
 CHIRAL_TYPES = (Chem.ChiralType.CHI_OTHER, Chem.ChiralType.CHI_OCTAHEDRAL, Chem.ChiralType.CHI_TETRAHEDRAL_CW, Chem.ChiralType.CHI_TRIGONALBIPYRAMIDAL, Chem.ChiralType.CHI_UNSPECIFIED, Chem.ChiralType.CHI_TETRAHEDRAL_CCW, Chem.ChiralType.CHI_SQUAREPLANAR)
+
+
+@lru_cache(maxsize=256)
+def read_template(path):
+    """以源模板的原子和键顺序构建完整重原子分子, 不修电荷或键级, 过滤无碳原子的配体, 并排除配位键.
+
+    输入参数:
+        - path: Path, 如 ligand_objects/CCD_ATP.npz, 读取 atoms、bonds、atom_names 和 smiles; 不读取 object 类型的 blobs.
+
+    返回值:
+        - atoms: 结构化数组, (N,), N 为完整模板重原子数; 本链读取以下源字段, 其它字段原样保留但不参与计算.
+            - atoms.element: int8, (N,), 原子序数, 如6表示C; 模型词表顺序见 LIGAND_ELEMENTS.
+            - atoms.charge: int8, (N,), 每个原子的形式电荷, 如-1; 原样写入 RDKit, 不为 sanitize 修改.
+            - atoms.chirality: bool, (N, 7), 源手性类别 one-hot; 列序为 OTHER、OCTAHEDRAL、TETRAHEDRAL_CW、TRIGONALBIPYRAMIDAL、UNSPECIFIED、TETRAHEDRAL_CCW、SQUAREPLANAR.
+        - bonds: 结构化数组, (M,), M 为无向化学键数; 本链读取以下源字段.
+            - bonds.atom_1/bonds.atom_2: int32, (M,), 键的两个完整模板原子编号, 如0和1, 索引 atoms 第一维.
+            - bonds.type: bool, (M, 5), 列序为单、双、三、配位、芳香; 配位键被排除, 源索引4(第五列)的芳香键显式映射到原模型类别4.
+        - mol: RDKit Mol, N 个原子按 atoms 排列; 含模板形式电荷和已有手性, 没有目标沉积坐标.
+        - smiles: str, 源模板字符串, 如 CCO; 原样返回, 是否能作为有效输入由准备阶段检查.
+
+    本进程最多复用 256 份只读模板. 调用方若需添加构象, 必须先复制 mol.
+    """
+    with np.load(Path(path), allow_pickle=False) as archive:
+        # (N,) 与 (M,), 源结构化属性; 不访问无用途的 blobs、coords 或图派生占位项.
+        atoms, bonds = archive["atoms"], archive["bonds"]
+        atom_names = archive["atom_names"]
+        smiles = str(archive["smiles"].item())
+    if not np.isin(atoms["element"], LIGAND_ELEMENTS).all():
+        raise ValueError("unsupported_ligand_element")
+    if not np.any(atoms["element"] == 6):
+        raise ValueError("ligand_without_carbon")
+    # int64, (M,), 五维 one-hot 中的类别列; 3 是配位键, 4 是芳香键.
+    bond_kind = bonds["type"].argmax(axis=1)
+    if np.any(bond_kind == 3):
+        raise ValueError("unsupported_ligand_bond")
+    molecule = Chem.RWMol()
+    for properties, atom_name in zip(atoms, atom_names):
+        atom = Chem.Atom(int(properties["element"]))
+        atom.SetFormalCharge(int(properties["charge"]))
+        atom.SetChiralTag(CHIRAL_TYPES[int(properties["chirality"].argmax())])
+        atom.SetProp("_TriposAtomName", str(atom_name))
+        molecule.AddAtom(atom)
+    for bond, kind in zip(bonds, bond_kind):
+        molecule.AddBond(int(bond["atom_1"]), int(bond["atom_2"]), BOND_TYPES[int(kind)])
+    mol = molecule.GetMol()
+    Chem.SanitizeMol(mol)
+    Chem.AssignStereochemistry(mol, cleanIt=True, force=True)
+    return atoms, bonds, mol, smiles
 
 
 @lru_cache(maxsize=16)

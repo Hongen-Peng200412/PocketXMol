@@ -5,7 +5,9 @@ split_root: /storage/penghongen/AdaLigand/Ori_Data/stage1_preparation_box_pool_3
 test_split: /storage/penghongen/AdaLigand/held_out/split/held_out_06_chain/test_0.json
 language_root: /storage/penghongen/AdaLigand/Ori_Data/stage1_preparation_box_pool_2/ligand_language_models/smi_ted_289m
 derived_root: /storage/penghongen/Adaligand_Build/Ori_Data/pocketxmol
-manifest_root: /storage/penghongen/PocketXMol/data
+smiles_root: /storage/penghongen/AdaLigand/Ori_Data/smiles_assets  # str, 精确SMILES公共图与排列包.
+smiles_coords_root: /storage/penghongen/AdaLigand/Ori_Data/smiles_assets/SMILE_coords/v1  # str, 公共图原子顺序的坐标包.
+manifest_root: /storage/penghongen/PocketXMol/data/smiles-v1/frozen
 # int, 单任务8进程, 对应 Slurm --cpus 8; array 最多12个任务并发, 总CPU不超过96.
 workers: 8
 # int, 固定 C5 半径/方向与测试每身份一次排序; 不用测试结果调整种子.

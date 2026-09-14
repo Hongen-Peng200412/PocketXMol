@@ -1,0 +1,411 @@
+{
+  "cpu-v1/migration_report.json": {
+    "checked": 66878,
+    "failed": 0,
+    "failure_fraction": 0,
+    "elapsed_seconds": 14.941705703735352,
+    "splits": {
+      "train": 65290,
+      "validation": 781,
+      "calibration": 361,
+      "test": 446
+    },
+    "source_manifest": "/storage/penghongen/PocketXMol/data",
+    "output_manifest": "/storage/penghongen/PocketXMol/data/smiles-v1/frozen",
+    "coords_root": "/storage/penghongen/AdaLigand/Ori_Data/smiles_assets/SMILE_coords/v1",
+    "smiles_graph_sha256": "e8aad7336ccce54b01e606dfc79a82297f5bf7b86897a393bcfccf0c8d820625"
+  },
+  "diagnose-v1/raw_model_graph_report.json": {
+    "checked": 66878,
+    "failed": 28650,
+    "failure_fraction": 0.4283919973683424,
+    "pairs": 2039,
+    "failed_pairs": 1389,
+    "max_center_abs_A": 0.000244140625,
+    "split_failures": {
+      "test": 265,
+      "train": 27983,
+      "validation": 284,
+      "calibration": 118
+    }
+  },
+  "kekule_feasibility.json": {
+    "checked": 66878,
+    "failed": 16477,
+    "failure_fraction": 0.2463739944376327,
+    "failed_pairs": 653,
+    "old_aromatic_occurrences": 0,
+    "split_failures": {
+      "test": 143,
+      "train": 16039,
+      "validation": 205,
+      "calibration": 90
+    }
+  },
+  "bf16_repeat": [
+    {
+      "mode": "fp32",
+      "comparison": "old_repeat_1",
+      "gradient_abs_l2": 0.000006303966074483469,
+      "gradient_reference_l2": 8.511476516723633,
+      "gradient_relative_l2": 7.406430881928827e-7,
+      "outputs": {
+        "pred_node": {
+          "max_abs": 0.000034332275390625,
+          "relative_l2": 3.298935951079329e-7,
+          "rms": 0.000008835303560772445
+        },
+        "pred_pos": {
+          "max_abs": 5.960464477539062e-7,
+          "relative_l2": 5.874727548871306e-7,
+          "rms": 2.663626048615697e-7
+        },
+        "pred_halfedge": {
+          "max_abs": 0.00001049041748046875,
+          "relative_l2": 2.443702555865457e-7,
+          "rms": 0.000004225908924126998
+        },
+        "confidence_node": {
+          "max_abs": 0.000003814697265625,
+          "relative_l2": 1.326466474438348e-7,
+          "rms": 0.0000019073486328125
+        },
+        "confidence_pos": {
+          "max_abs": 3.8743019104003906e-7,
+          "relative_l2": 3.026860611043958e-7,
+          "rms": 2.274563541959651e-7
+        },
+        "confidence_halfedge": {
+          "max_abs": 0.000003814697265625,
+          "relative_l2": 1.9448950183686975e-7,
+          "rms": 0.000002939421619885252
+        }
+      }
+    },
+    {
+      "mode": "fp32",
+      "comparison": "old_repeat_2",
+      "gradient_abs_l2": 0.000006554252195201116,
+      "gradient_reference_l2": 8.511476516723633,
+      "gradient_relative_l2": 7.700488140471862e-7,
+      "outputs": {
+        "pred_node": {
+          "max_abs": 0.0000457763671875,
+          "relative_l2": 3.995675115220365e-7,
+          "rms": 0.000010701330211304594
+        },
+        "pred_pos": {
+          "max_abs": 8.344650268554688e-7,
+          "relative_l2": 6.499686264760385e-7,
+          "rms": 2.946984807294939e-7
+        },
+        "pred_halfedge": {
+          "max_abs": 0.0000152587890625,
+          "relative_l2": 2.47536718234187e-7,
+          "rms": 0.00000428066687163664
+        },
+        "confidence_node": {
+          "max_abs": 0.00000667572021484375,
+          "relative_l2": 3.1634209562980686e-7,
+          "rms": 0.000004548736797005404
+        },
+        "confidence_pos": {
+          "max_abs": 4.76837158203125e-7,
+          "relative_l2": 3.5082186400359205e-7,
+          "rms": 2.6362846483607427e-7
+        },
+        "confidence_halfedge": {
+          "max_abs": 0.00000762939453125,
+          "relative_l2": 2.576076383320469e-7,
+          "rms": 0.00000389335900763399
+        }
+      }
+    },
+    {
+      "mode": "fp32",
+      "comparison": "old_new_aligned",
+      "gradient_abs_l2": 0.000006571668563992716,
+      "gradient_reference_l2": 8.511476516723633,
+      "gradient_relative_l2": 7.720950065959187e-7,
+      "outputs": {
+        "pred_node": {
+          "max_abs": 0.000030517578125,
+          "relative_l2": 2.9660012046406337e-7,
+          "rms": 0.000007943627679196652
+        },
+        "pred_pos": {
+          "max_abs": 4.470348358154297e-7,
+          "relative_l2": 5.06579169723409e-7,
+          "rms": 2.2968512780607853e-7
+        },
+        "pred_halfedge": {
+          "max_abs": 0.0000133514404296875,
+          "relative_l2": 2.5919635504578764e-7,
+          "rms": 0.0000044822977542935405
+        },
+        "confidence_node": {
+          "max_abs": 0.000003814697265625,
+          "relative_l2": 1.5196583547094633e-7,
+          "rms": 0.0000021851424207852688
+        },
+        "confidence_pos": {
+          "max_abs": 3.5762786865234375e-7,
+          "relative_l2": 2.967826446820254e-7,
+          "rms": 2.230201658903752e-7
+        },
+        "confidence_halfedge": {
+          "max_abs": 0.00000762939453125,
+          "relative_l2": 2.0928145261223108e-7,
+          "rms": 0.0000031629799650545465
+        }
+      }
+    },
+    {
+      "mode": "bf16_native",
+      "comparison": "old_repeat_1",
+      "gradient_abs_l2": 1.0544002056121826,
+      "gradient_reference_l2": 8.637232780456543,
+      "gradient_relative_l2": 0.12207616120576859,
+      "outputs": {
+        "pred_node": {
+          "max_abs": 1,
+          "relative_l2": 0.010561645962297916,
+          "rms": 0.2828099727630615
+        },
+        "pred_pos": {
+          "max_abs": 0.013863861560821533,
+          "relative_l2": 0.013432369567453861,
+          "rms": 0.00603250227868557
+        },
+        "pred_halfedge": {
+          "max_abs": 0.375,
+          "relative_l2": 0.007913813926279545,
+          "rms": 0.13661329448223114
+        },
+        "confidence_node": {
+          "max_abs": 0.125,
+          "relative_l2": 0.006868854630738497,
+          "rms": 0.09882117807865143
+        },
+        "confidence_pos": {
+          "max_abs": 0.015625,
+          "relative_l2": 0.014163728803396225,
+          "rms": 0.01069770660251379
+        },
+        "confidence_halfedge": {
+          "max_abs": 0.125,
+          "relative_l2": 0.005616680718958378,
+          "rms": 0.08462540060281754
+        }
+      }
+    },
+    {
+      "mode": "bf16_native",
+      "comparison": "old_repeat_2",
+      "gradient_abs_l2": 0.966810405254364,
+      "gradient_reference_l2": 8.637232780456543,
+      "gradient_relative_l2": 0.11193520575761795,
+      "outputs": {
+        "pred_node": {
+          "max_abs": 0.625,
+          "relative_l2": 0.009066518396139145,
+          "rms": 0.2427748292684555
+        },
+        "pred_pos": {
+          "max_abs": 0.018038451671600342,
+          "relative_l2": 0.015623942017555237,
+          "rms": 0.007016741205006838
+        },
+        "pred_halfedge": {
+          "max_abs": 0.375,
+          "relative_l2": 0.008006727322936058,
+          "rms": 0.1382172405719757
+        },
+        "confidence_node": {
+          "max_abs": 0.1875,
+          "relative_l2": 0.006868854630738497,
+          "rms": 0.09882117807865143
+        },
+        "confidence_pos": {
+          "max_abs": 0.0078125,
+          "relative_l2": 0.008279019966721535,
+          "rms": 0.006253051105886698
+        },
+        "confidence_halfedge": {
+          "max_abs": 0.125,
+          "relative_l2": 0.005355294793844223,
+          "rms": 0.08068715035915375
+        }
+      }
+    },
+    {
+      "mode": "bf16_native",
+      "comparison": "old_new_aligned",
+      "gradient_abs_l2": 1.114372730255127,
+      "gradient_reference_l2": 8.637232780456543,
+      "gradient_relative_l2": 0.12901964783668518,
+      "outputs": {
+        "pred_node": {
+          "max_abs": 1.25,
+          "relative_l2": 0.01355983130633831,
+          "rms": 0.3630926311016083
+        },
+        "pred_pos": {
+          "max_abs": 0.024098992347717285,
+          "relative_l2": 0.021829776465892792,
+          "rms": 0.00980379432439804
+        },
+        "pred_halfedge": {
+          "max_abs": 0.625,
+          "relative_l2": 0.009861161932349205,
+          "rms": 0.17022965848445892
+        },
+        "confidence_node": {
+          "max_abs": 0.0625,
+          "relative_l2": 0.003762226551771164,
+          "rms": 0.05412658676505089
+        },
+        "confidence_pos": {
+          "max_abs": 0.021484375,
+          "relative_l2": 0.01851245015859604,
+          "rms": 0.013982247561216354
+        },
+        "confidence_halfedge": {
+          "max_abs": 0.125,
+          "relative_l2": 0.006982449907809496,
+          "rms": 0.10520317405462265
+        }
+      }
+    },
+    {
+      "mode": "bf16_fp32_scatter_diagnostic_only",
+      "comparison": "old_repeat_1",
+      "gradient_abs_l2": 0,
+      "gradient_reference_l2": 8.513712882995605,
+      "gradient_relative_l2": 0,
+      "outputs": {
+        "pred_node": {
+          "max_abs": 0,
+          "relative_l2": 0,
+          "rms": 0
+        },
+        "pred_pos": {
+          "max_abs": 0,
+          "relative_l2": 0,
+          "rms": 0
+        },
+        "pred_halfedge": {
+          "max_abs": 0,
+          "relative_l2": 0,
+          "rms": 0
+        },
+        "confidence_node": {
+          "max_abs": 0,
+          "relative_l2": 0,
+          "rms": 0
+        },
+        "confidence_pos": {
+          "max_abs": 0,
+          "relative_l2": 0,
+          "rms": 0
+        },
+        "confidence_halfedge": {
+          "max_abs": 0,
+          "relative_l2": 0,
+          "rms": 0
+        }
+      }
+    },
+    {
+      "mode": "bf16_fp32_scatter_diagnostic_only",
+      "comparison": "old_repeat_2",
+      "gradient_abs_l2": 0,
+      "gradient_reference_l2": 8.513712882995605,
+      "gradient_relative_l2": 0,
+      "outputs": {
+        "pred_node": {
+          "max_abs": 0,
+          "relative_l2": 0,
+          "rms": 0
+        },
+        "pred_pos": {
+          "max_abs": 0,
+          "relative_l2": 0,
+          "rms": 0
+        },
+        "pred_halfedge": {
+          "max_abs": 0,
+          "relative_l2": 0,
+          "rms": 0
+        },
+        "confidence_node": {
+          "max_abs": 0,
+          "relative_l2": 0,
+          "rms": 0
+        },
+        "confidence_pos": {
+          "max_abs": 0,
+          "relative_l2": 0,
+          "rms": 0
+        },
+        "confidence_halfedge": {
+          "max_abs": 0,
+          "relative_l2": 0,
+          "rms": 0
+        }
+      }
+    },
+    {
+      "mode": "bf16_fp32_scatter_diagnostic_only",
+      "comparison": "old_new_aligned",
+      "gradient_abs_l2": 0.05133223161101341,
+      "gradient_reference_l2": 8.513712882995605,
+      "gradient_relative_l2": 0.0060293590649962425,
+      "outputs": {
+        "pred_node": {
+          "max_abs": 0,
+          "relative_l2": 0,
+          "rms": 0
+        },
+        "pred_pos": {
+          "max_abs": 2.980232238769531e-7,
+          "relative_l2": 4.0759255170996767e-7,
+          "rms": 1.8321587447189813e-7
+        },
+        "pred_halfedge": {
+          "max_abs": 0,
+          "relative_l2": 0,
+          "rms": 0
+        },
+        "confidence_node": {
+          "max_abs": 0,
+          "relative_l2": 0,
+          "rms": 0
+        },
+        "confidence_pos": {
+          "max_abs": 0,
+          "relative_l2": 0,
+          "rms": 0
+        },
+        "confidence_halfedge": {
+          "max_abs": 0,
+          "relative_l2": 0,
+          "rms": 0
+        }
+      }
+    }
+  ],
+  "launches": [
+    "/home/penghongen/Feedback/PocketXMol/launches/371591/pre_smiles_bf16_repeat_v1_371591_20260914T160000",
+    "/home/penghongen/Feedback/PocketXMol/launches/371591/pre_smiles_cpu_371591_20260914T154459",
+    "/home/penghongen/Feedback/PocketXMol/launches/371591/pre_smiles_cpu_v1_371591_20260914T154730",
+    "/home/penghongen/Feedback/PocketXMol/launches/371591/pre_smiles_diagnose_v1_371591_20260914T155709",
+    "/home/penghongen/Feedback/PocketXMol/launches/371591/pre_smiles_gpu_v1_371591_20260914T155228",
+    "/home/penghongen/Feedback/PocketXMol/launches/371591/pre_smiles_kekule_feasibility_371591_20260914T160236"
+  ],
+  "resource": {
+    "after_lock": true,
+    "kill_lock": false,
+    "try_lock": true
+  }
+}

@@ -17,13 +17,13 @@ from scripts.train_pl import DataModule
 from utils.misc import make_config
 from utils.sample_noise import get_sample_noiser
 from utils.transforms import ConfTransform, FeaturizeMol
-from test_docking_data import prepared_data
+from test_docking_data import prepared_data, refresh_smiles_coords
 
 
 def center_config(experiment, assets):
     config = make_config(str(Path(__file__).resolve().parents[1] / f'configs/docking/{experiment}.yml'))
     if assets is not None:
-        config.data.dataset.update(root=assets.root, derived_root=assets.derived_root, manifest_root=assets.manifest_root)
+        config.data.dataset.update(root=assets.root, derived_root=assets.derived_root, manifest_root=assets.manifest_root, smiles_root=assets.smiles_root, smiles_coords_root=assets.smiles_coords_root)
     config.train.update(num_workers=0, persistent_workers=False)
     return config
 
@@ -79,6 +79,7 @@ def test_boundary_origin_and_noise(prepared_data, monkeypatch, protocol):
     world_truth = coordinates['coords_0'] - coordinates['coords_0'].mean(0)
     coordinates['coords_0'] = world_truth
     np.savez_compressed(parse_dir / 'ligand_coords.npz', **coordinates)
+    refresh_smiles_coords(prepared_data, 'train_demo')
     center = world_truth.mean(0)
     np.testing.assert_array_equal(center, np.zeros(3))
     # 相对g: C/O残基质量中心>15而算术均值14.9<15; 16.6的残基位于真中心阈值外, 另保留严格等号边界.

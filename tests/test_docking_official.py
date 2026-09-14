@@ -64,7 +64,7 @@ def clean_sample(assets, split, protocol):
     assets提供root/derived_root/manifest_root路径; split是构造清单名; protocol为C0/C5/E. Data的node_pos为(N,3)局部XYZ、Å, pocket_center为(1,3)世界原点.
     """
     config = make_config(str(ROOT / 'configs/docking/B-C-T0-RA.yml'))
-    config.data.dataset.update(root=assets.root, derived_root=assets.derived_root, manifest_root=assets.manifest_root)
+    config.data.dataset.update(root=assets.root, derived_root=assets.derived_root, manifest_root=assets.manifest_root, smiles_root=assets.smiles_root, smiles_coords_root=assets.smiles_coords_root)
     config.data.dataset.pocket_mode = 'envelope' if protocol == 'E' else 'center'
     featurizer = FeaturizeMol(config.transforms.featurizer)
     task = ConfTransform(config.transforms.task.individual[0], mode='test')
