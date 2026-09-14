@@ -2,13 +2,12 @@
 实现 PocketXMol 构象生成与小分子 docking 共用的配体去噪模型.
 
 从 PMAsymDenoiser.forward 阅读主流程: PyG Batch 的带噪配体、fixed 条件标记和口袋图先成为隐藏特征, 再由原去噪网络更新配体原子、相互作用边及坐标.
-口袋编码保持官方蛋白入口; 可选 RA 在蛋白与核酸联合图中共享编码器, RB 分别编码两类原子后恢复共同口袋原子顺序.
+口袋编码保持官方蛋白入口; 可选 RA 在蛋白与核酸联合图中共享编码器.
 本模块不落盘, 返回原子和半边的分类原始分数 logits、去噪坐标以及可选的原子类别、位置和半边置信度分数, 各字段形状见类 Docstring.
 本模块不读取时间步或任务名称, 构象与 docking 的任务条件由 fixed_*、带噪输入和口袋字段表达.
 """
 
 # Third-party imports
-from copy import deepcopy
 
 import torch
 from easydict import EasyDict
@@ -46,7 +45,7 @@ class PMAsymDenoiser(Module):
 
     构造参数:
         - config.pocket_dim: int, 编码后口袋节点宽度.
-        - config.nucleic_branch: None|str, None 保持官方蛋白编码; RA 在联合口袋图中共享编码器, RB 分别编码蛋白图与核酸图, 再按原口袋原子顺序合并.
+        - config.nucleic_branch: None|str, None 保持官方蛋白编码; RA 在联合口袋图中共享编码器.
         - config.node_dim: int, 拼接原子 Embedding、两维 fixed prompt 和附加节点特征后的总宽度.
         - config.edge_dim: int, 拼接半边 Embedding 与两维 fixed prompt 后的总宽度.
         - config.addition_node_features: list[str], 追加到节点表示的逐原子标量字段名; reduced 配置只含 ``is_peptide``.
@@ -70,11 +69,11 @@ class PMAsymDenoiser(Module):
         - fixed_halfedge: LongTensor|BoolTensor, 形状为 (H,), 1 表示半边类别是当前任务给定条件.
         - fixed_halfdist: LongTensor|BoolTensor, 形状为 (H,), 1 表示端点距离是当前任务给定条件.
         - node_type_batch: int64, (N,), 每个配体原子所属图编号, 范围 ``[0,B-1]``.
-        - pocket_atom_feature: (P, pocket_in_dim), 原 25 维蛋白元素、氨基酸与主链特征; RA/RB 中核酸原子的全部通道为零.
-        - pocket_is_nucleic: bool, (P,), 仅 RA/RB 读取; True 是标准 RNA/DNA 原子, False 是标准蛋白原子, 与 pocket_pos 第一维对齐.
-        - pocket_nucleic_feature: (P, 15), 仅 RA/RB 读取; 0:4 是 C/N/O/P 元素编码, 4:12 是 A/C/G/U/DA/DC/DG/DT 核苷酸编码, 12:15 依次表示碱基 base、糖基 sugar、磷酸基 phosphate; 蛋白原子全零.
+        - pocket_atom_feature: (P, pocket_in_dim), 原 25 维蛋白元素、氨基酸与主链特征; RA 中核酸原子的全部通道为零.
+        - pocket_is_nucleic: bool, (P,), 仅 RA 读取; True 是标准 RNA/DNA 原子, False 是标准蛋白原子, 与 pocket_pos 第一维对齐.
+        - pocket_nucleic_feature: (P, 15), 仅 RA 读取; 0:4 是 C/N/O/P 元素编码, 4:12 是 A/C/G/U/DA/DC/DG/DT 核苷酸编码, 12:15 依次表示碱基 base、糖基 sugar、磷酸基 phosphate; 蛋白原子全零.
         - pocket_pos: (P, 3), 与 pos_in 使用同一局部原点的口袋坐标, 单位 Å.
-        - pocket_knn_edge_index: int64, (2, E_p), 有向 kNN 边端点索引 pocket_pos 第一维; RA 使用蛋白与核酸联合图, RB 不跨蛋白与核酸类别连边, 批内不同实例由 PyG 图编号隔离; 同类不同受体链之间可以连边.
+        - pocket_knn_edge_index: int64, (2, E_p), 有向 kNN 边端点索引 pocket_pos 第一维; RA 使用蛋白与核酸联合图, 批内不同实例由 PyG 图编号隔离; 同一口袋内不同链及蛋白与核酸之间均可连边.
         - pocket_pos_batch: int64, (P,), 每个口袋原子所属图编号.
         - is_peptide: 0/1, (N,), 小分子构象/docking 为全 0; 若配置不请求该附加特征则不读取.
 
@@ -83,7 +82,7 @@ class PMAsymDenoiser(Module):
         - pred_pos: (N, 3), 每个配体原子的去噪局部坐标, 原点与 pos_in 相同, 单位 Å.
         - pred_halfedge: (H, num_edge_types), 每条无向半边的干净类别 logits; 正反向隐藏特征先求和再解码.
         - confidence_node: (N, 1), 原子主分类预测是否正确的二分类 logit, 未做 sigmoid.
-        - confidence_pos: (N, 1), 原始位置置信度输出, 与配体原子第一维对齐; 当前六配置由 ConfidenceLoss 以 sigmoid 后的数值拟合 0.2 ** 原子坐标误差_Å, 不是误差小于1 Å的分类概率.
+        - confidence_pos: (N, 1), 原始位置置信度输出, 与配体原子第一维对齐; 当前训练配置由 ConfidenceLoss 以 sigmoid 后的数值拟合 0.2 ** 原子坐标误差_Å, 不是误差小于1 Å的分类概率.
         - confidence_halfedge: (H, 1), 半边主分类预测是否正确的二分类 logit, 与无向半边第一维对齐.
 
     位置置信度的目标由外部 ConfidenceLoss 决定; 旧配置 prob_1A 不在(0,1)时直接回归负坐标误差, 本模型输出端不做 sigmoid.
@@ -100,10 +99,9 @@ class PMAsymDenoiser(Module):
         pocket_in_dim,
         **kwargs
     ):
-        """建立原配体去噪网络, 并按 config.nucleic_branch 增加核酸投影和可选独立编码器.
+        """建立原配体去噪网络, 并按 config.nucleic_branch 增加RA核酸投影, 共享原口袋编码器.
 
         输入参数及前向字段见类 Docstring. 原 pocket_embedder、pocket_encoder 和配体参数名保持不变.
-        RB 的 nucleic_encoder 先复制同结构实例; 新训练加载官方权重后, 调用方必须再将 pocket_encoder.state_dict() 复制到 nucleic_encoder, 从本项目 checkpoint 续训时不再次复制.
         """
         super().__init__()
         # ``config.pocket_dim``: int, 编码后口袋节点宽度.
@@ -154,14 +152,11 @@ class PMAsymDenoiser(Module):
         self.pocket_encoder = pocket_encoder_bb(pocket_dim, node_only=True, **config.pocket)
         # str|None, 缺省 None 是原模型兼容入口, 不增加核酸参数或读取核酸字段.
         self.nucleic_branch = config.get('nucleic_branch', None)
-        if self.nucleic_branch not in (None, 'RA', 'RB'):
+        if self.nucleic_branch not in (None, 'RA'):
             raise ValueError(f'Unknown nucleic_branch: {self.nucleic_branch}')
         if self.nucleic_branch is not None:
             # Linear, [P_na, 15] -> [P_na, pocket_dim]; P_na 是当前批次标准核酸原子数.
             self.nucleic_embedder = nn.Linear(15, pocket_dim)
-        if self.nucleic_branch == 'RB':
-            # 独立 Module, 参数不共享; 这里只建立同结构实例, 官方权重加载后的数值复制由训练入口执行.
-            self.nucleic_encoder = deepcopy(self.pocket_encoder)
         
         # Molecule embedding layers
         # ``self.addition_node_features``: list[str], 每个名称对应一个随后拼接的逐原子标量通道.
@@ -202,7 +197,7 @@ class PMAsymDenoiser(Module):
         if 'confidence' in self.add_output:
             # ``self.node_cfd``: MLP; [N, node_dim] -> [N, 1] 的原子类别置信度 logit 头.
             self.node_cfd = MLP(node_dim, 1, node_dim//2)
-            # ``self.pos_cfd``: MLP; [N, node_dim] -> [N, 1] 的原始位置置信度头; 当前六配置在loss内经sigmoid拟合0.2 ** 坐标误差_Å.
+            # ``self.pos_cfd``: MLP; [N, node_dim] -> [N, 1] 的原始位置置信度头; 当前训练配置在loss内经sigmoid拟合0.2 ** 坐标误差_Å.
             self.pos_cfd = MLP(node_dim, 1, node_dim//2)
             # ``self.edge_cfd``: MLP; [H, edge_dim] -> [H, 1] 的无向半边置信度 logit 头.
             self.edge_cfd = MLP(edge_dim, 1, edge_dim//2)
@@ -221,9 +216,9 @@ class PMAsymDenoiser(Module):
             - batch.fixed_halfedge: LongTensor|BoolTensor, 形状为 (H,), 1 表示半边类别是条件.
             - batch.fixed_halfdist: LongTensor|BoolTensor, 形状为 (H,), 1 表示半边端点距离是条件.
             - batch.node_type_batch: LongTensor, 形状为 (N,), 每个配体原子的图归属编号.
-            - batch.pocket_atom_feature: float32, (P, pocket_in_dim), 原 25 维蛋白输入特征, RA/RB 中核酸原子全零.
-            - batch.pocket_is_nucleic: bool, (P,), RA/RB 专用; True 标记标准核酸原子, 同时对应 pocket_atom_feature 中全零的原子特征.
-            - batch.pocket_nucleic_feature: float32, (P, 15), RA/RB 专用; 核酸的元素、核苷酸与组分编码按类 Docstring 的顺序拼接, 蛋白原子全零.
+            - batch.pocket_atom_feature: float32, (P, pocket_in_dim), 原 25 维蛋白输入特征, RA 中核酸原子全零.
+            - batch.pocket_is_nucleic: bool, (P,), RA 专用; True 标记标准核酸原子, 同时对应 pocket_atom_feature 中全零的原子特征.
+            - batch.pocket_nucleic_feature: float32, (P, 15), RA 专用; 核酸的元素、核苷酸与组分编码按类 Docstring 的顺序拼接, 蛋白原子全零.
             - batch.pocket_pos: FloatTensor, 形状为 (P, 3), 与配体同原点的口袋局部坐标, 单位 Å.
             - batch.pocket_knn_edge_index: LongTensor, 形状为 (2, E_p), 口袋内部有向 kNN 边端点.
             - batch.pocket_pos_batch: LongTensor, 形状为 (P,), 每个口袋原子的图归属编号.
@@ -273,7 +268,7 @@ class PMAsymDenoiser(Module):
             # ``h_node_in``: [N, self.nodetype_embedder.embedding_dim + 2] + [N, 1] -> [N, self.nodetype_embedder.embedding_dim + 3]; 追加 is_peptide 通道.
             h_node_in = torch.cat([h_node_in, is_peptide], dim=-1)
         
-        # (P, self.config.pocket_dim), 原 25 维蛋白特征的投影; RA/RB 随后用核酸投影替换核酸原子对应的位置.
+        # (P, self.config.pocket_dim), 原 25 维蛋白特征的投影; RA 随后用核酸投影替换核酸原子对应的位置.
         h_pocket = self.pocket_embedder(batch['pocket_atom_feature'])
         if self.nucleic_branch is not None:
             # bool, (P,), 同时切分口袋特征和坐标的原子维; 例如 [False, True] 表示蛋白原子后跟核酸原子.
@@ -281,51 +276,15 @@ class PMAsymDenoiser(Module):
             # [P_na, 15] -> [P_na, self.config.pocket_dim], 按原口袋原子编号写回, 不改变 pocket_pos_batch 的分子分组.
             h_pocket[is_nucleic] = self.nucleic_embedder(batch['pocket_nucleic_feature'][is_nucleic])
 
-        if self.nucleic_branch == 'RB':
-            # list[Tensor], 每项为(P_branch, pocket_dim), 保留编码器实际输出精度; AMP下投影可为bf16而编码结果为float32.
-            encoded_parts = []
-            # list[LongTensor], 每项为(P_branch,), 与对应编码结果对齐的共同口袋原子编号.
-            encoded_indices = []
-            # int64, (2, E_p), Dataset 只提供蛋白内部边和核酸内部边; 两类端点均使用共同 pocket_pos 原子编号.
-            pocket_edge_index = batch['pocket_knn_edge_index']
-            # 两次独立编码始终保留各类原子在 pocket_pos 中的相对顺序; 任一类别为空时跳过该编码器.
-            for branch_mask, encoder in ((~is_nucleic, self.pocket_encoder), (is_nucleic, self.nucleic_encoder)):
-                # int64, (P_branch,), 当前类别原子的共同口袋编号, P_branch 是该类别原子数.
-                node_index = torch.nonzero(branch_mask, as_tuple=False).flatten()
-                if node_index.numel() == 0:
-                    continue
-                # int64, (P,), 共同口袋编号到本类紧凑编号的映射; 例如 node_index=[1,3] 对应 [-1,0,-1,1], -1 属于另一类别且后续不读取.
-                branch_index = torch.full_like(is_nucleic, -1, dtype=torch.long)
-                branch_index[node_index] = torch.arange(node_index.numel(), device=node_index.device)
-                # bool, (E_p,), 仅保留两个端点均属于当前类别的边, 数值切分 pocket_edge_index 第二维.
-                edge_mask = branch_mask[pocket_edge_index[0]] & branch_mask[pocket_edge_index[1]]
-                # int64, (2, E_branch), E_branch 是本类内部有向边数; 两端编号压缩到本类坐标和隐藏特征的原子维.
-                branch_edge_index = branch_index[pocket_edge_index[:, edge_mask]]
-                # (P_branch, self.config.pocket_dim), 编码器只更新本类隐藏特征, 共同模型原点和原子坐标保持不变.
-                encoded_parts.append(encoder(
-                    h_node=h_pocket[node_index],
-                    pos_node=batch['pocket_pos'][node_index],
-                    edge_index=branch_edge_index,
-                    h_edge=None,
-                    node_extra=None,
-                    edge_extra=None,
-                ))
-                encoded_indices.append(node_index)
-            if encoded_parts:
-                # int64, (P,), 把先蛋白后核酸的拼接顺序还原为原pocket_pos顺序, 不量化编码器输出.
-                original_order = torch.cat(encoded_indices).argsort()
-                h_pocket = torch.cat(encoded_parts, dim=0)[original_order]
-            # 全空口袋保留原空投影; 非空结果为(P, pocket_dim), 与pocket_pos和pocket_pos_batch逐原子对齐.
-        else:
-            # (P, self.config.pocket_dim), 官方只编码蛋白图; RA 沿 Dataset 给出的联合 kNN 图共享同一编码器.
-            h_pocket = self.pocket_encoder(
-                h_node=h_pocket,
-                pos_node=batch['pocket_pos'],
-                edge_index=batch['pocket_knn_edge_index'],
-                h_edge=None,
-                node_extra=None,
-                edge_extra=None,
-            )
+        # (P, self.config.pocket_dim), 官方只编码蛋白图; RA 沿 Dataset 给出的联合 kNN 图共享同一编码器.
+        h_pocket = self.pocket_encoder(
+            h_node=h_pocket,
+            pos_node=batch['pocket_pos'],
+            edge_index=batch['pocket_knn_edge_index'],
+            h_edge=None,
+            node_extra=None,
+            edge_extra=None,
+        )
 
         # ``h_node``: FloatTensor, 形状为 (N, self.config.node_dim), 完成 ``self.config.denoiser.num_blocks`` 个联合 block 后的配体节点隐藏特征.
         # ``pos_node``: FloatTensor, 形状为 (N, 3), 完成 ``self.config.denoiser.num_blocks`` 个坐标增量后的配体局部坐标, 单位 Å.
