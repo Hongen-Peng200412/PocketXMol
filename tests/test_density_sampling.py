@@ -55,13 +55,16 @@ def test_cached_density_matches_reencoding_in_real_sampling(prepared_data, monke
 
     hook = model.density_encoder.register_forward_hook(record_encoding)
     monkeypatch.setattr(model, 'forward', compare_forward)
+    previous_matmul_precision = torch.get_float32_matmul_precision()
     try:
         # 本检查比较严格FP32参考; 不让cuDNN因编码批量不同而选择不同的TF32近似.
-        # 此上下文仅用于验收, 不改变正式训练或采样的精度设置.
+        # 显式固定matmul, 不受其它测试导入train_pl时的medium全局设置影响; 退出时恢复.
+        torch.set_float32_matmul_precision('highest')
         with torch.backends.cudnn.flags(allow_tf32=False):
             result = sample_occurrence(dataset, 0, model, noiser, featurizer, config, 'C5')
     finally:
         hook.remove()
+        torch.set_float32_matmul_precision(previous_matmul_precision)
     assert result['status'] == 'success', result
     assert compared_batches == [2, 2, 1, 1]
     assert encoding_calls == [1, 2, 2, 1, 1]

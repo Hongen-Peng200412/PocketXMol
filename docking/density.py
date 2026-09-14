@@ -46,6 +46,7 @@ def read_density_source(root, pdb_id):
     return grids[0], grids[1], *geometries[0], coordinates
 
 
+# ================================================================================================
 def load_density_input(root, pdb_id, query_center_xyz, model_center_xyz):
     """按实际定位中心直接切片, 返回一个配体实例的密度输入和局部几何.
 

@@ -45,6 +45,7 @@ def density_attention(query,key,value,query_pos,key_pos,beta,distance_bias,backe
     return result
 
 
+# ================================================================================================
 class DensityReadout(nn.Module):
     """为一个去噪块产生独立的四头密度残差, alpha 初始 0.1 且可学习.
 

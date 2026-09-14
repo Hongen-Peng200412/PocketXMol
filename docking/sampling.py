@@ -147,11 +147,13 @@ def sample_occurrence(dataset, index, model, noiser, featurizer, config, protoco
         if 'density_input' in data:
             stage = 'density_encode'
             encoding_started = time.perf_counter()
-            with torch.no_grad():
-                density_feature = model.density_encoder(data.density_input.to(config.device))
-            if sampling_device.type == 'cuda':
-                torch.cuda.synchronize(sampling_device)
-            inference_seconds += time.perf_counter() - encoding_started
+            try:
+                with torch.no_grad():
+                    density_feature = model.density_encoder(data.density_input.to(config.device))
+                if sampling_device.type == 'cuda':
+                    torch.cuda.synchronize(sampling_device)
+            finally:
+                inference_seconds += time.perf_counter() - encoding_started
             # 不为50个候选复制56通道原始裁块; 几何仍随候选拼批, 权重和裁块固定时编码可共用.
             del data.density_input
     except Exception as error:

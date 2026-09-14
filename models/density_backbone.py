@@ -61,6 +61,7 @@ class VolumeAttention(nn.Module):
         return result.transpose(1,2).reshape(batch,channels,depth,height,width)
 
 
+# ================================================================================================
 class DensityEncoder(nn.Module):
     """按 D1 或 D4 构造单次密度编码器, 不加载 Pocket_Plus 已训练参数.
 
