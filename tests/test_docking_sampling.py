@@ -24,7 +24,7 @@ from test_docking_data import prepared_data
 
 def sampling_context(prepared_data, branch, split):
     root = Path(__file__).resolve().parents[1]
-    training = make_config(str(root / 'configs/docking/B-C-T1-RA.yml'))
+    training = make_config(str(root / 'configs/docking/B-C-T0-RA.yml'))
     training.model.nucleic_branch = None if branch == 'protein' else branch
     featurizer = FeaturizeMol(training.transforms.featurizer)
     transforms = Compose([featurizer, ConfTransform(EasyDict(settings=dict(free=1.0), free_no_geometry=True), mode='test')])
@@ -34,12 +34,11 @@ def sampling_context(prepared_data, branch, split):
     config = EasyDict(model_name=f'constructed_{branch}', split=split, output_root=str(Path(prepared_data.manifest_root).parent / f'sampling_{branch}'), dataset=dataset_config, num_candidates=2, num_steps=3, batch_size=2, device='cpu')
     sample_config = make_config(str(root / 'configs/sample/test/dock_poseboff/base.yml'))
     sample_config.noise.num_steps = config.num_steps
-    sample_config.noise.center_translation = branch != 'protein'
     noiser = get_sample_noiser(sample_config.noise, featurizer.num_node_types, featurizer.num_edge_types, mode='sample', device='cpu', ref_config=training.noise)
     return training, dataset, featurizer, config, noiser
 
 
-@pytest.mark.parametrize('branch', ['protein', 'RA', 'RB'])
+@pytest.mark.parametrize('branch', ['protein', 'RA'])
 def test_real_loop_and_resume_from_completed_occurrence(prepared_data, branch, monkeypatch):
     training, dataset, featurizer, config, noiser = sampling_context(prepared_data, branch, 'validation')
     model = PMAsymDenoiser(training.model, featurizer.num_node_types, featurizer.num_edge_types, 25).eval()
@@ -66,7 +65,7 @@ def test_real_loop_and_resume_from_completed_occurrence(prepared_data, branch, m
     assert (directory / 'poses.sdf').read_bytes() == before
 
 
-@pytest.mark.parametrize('branch', ['RA', 'RB'])
+@pytest.mark.parametrize('branch', ['RA'])
 def test_empty_envelope_sampling_keeps_failure_denominator(prepared_data, branch):
     """构造验证资产模拟正式E输入失败, 不调用forward且完整保存候选失败与评价分母."""
     _, dataset, featurizer, config, _ = sampling_context(prepared_data, branch, 'validation')

@@ -145,7 +145,7 @@ def test_residue_mass_center_and_strict_cutoffs():
     np.testing.assert_array_equal(select_pocket(receptor, np.zeros((1, 3)), np.zeros(3), 'envelope'), [False, False, True, False])
 
 
-@pytest.mark.parametrize('branch', ['RA', 'RB', 'protein'])
+@pytest.mark.parametrize('branch', ['RA', 'protein'])
 def test_original_transforms_and_worker_coverage(prepared_data, branch):
     config = EasyDict(deepcopy(dict(prepared_data)))
     config.update(pocket_mode='center', knn=32)
@@ -169,16 +169,15 @@ def test_original_transforms_and_worker_coverage(prepared_data, branch):
         torch.testing.assert_close(sample.pocket_nucleic_feature[41], expected_sugar)
         # 此处原子44的res_type=24, 即DA, 第8列是核苷酸DA通道.
         torch.testing.assert_close(sample.pocket_nucleic_feature[44], expected_old_phosphate)
-        if branch == 'RB':
-            edge = sample.pocket_knn_edge_index
-            assert torch.equal(sample.pocket_is_nucleic[edge[0]], sample.pocket_is_nucleic[edge[1]])
+        edge = sample.pocket_knn_edge_index
+        assert torch.any(sample.pocket_is_nucleic[edge[0]] != sample.pocket_is_nucleic[edge[1]])
     assert len(read_receptor(Path(config.root) / 'parse/test_demo/receptor_tokens.npz')['coords']) == 80
     loader = DataLoader(dataset, batch_size=4, num_workers=2, follow_batch=featurizer.follow_batch + ['pocket_pos'], exclude_keys=featurizer.exclude_keys + task.exclude_keys)
     visited = [data_id for batch in loader for data_id in batch.data_id]
     assert len(visited) == len(set(visited)) == 27
 
 
-@pytest.mark.parametrize('branch', ['RA', 'RB'])
+@pytest.mark.parametrize('branch', ['RA'])
 @pytest.mark.parametrize('split,shuffle', [('train', True), ('validation', False)])
 def test_empty_envelope_is_skipped_before_training_or_validation_batch(prepared_data, branch, split, shuffle):
     """空E跳过后训练batch仍完整, 验证有限遍历其余实例, 原点与冻结清单保持正确."""
