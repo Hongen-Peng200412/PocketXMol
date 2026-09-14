@@ -1,7 +1,7 @@
 # D4-E-T0-RA 的密度训练配置, scripts/train_pl.py 读取 model、loss、noise、transforms、data、train.
 # 数据集从 model.density 派生唯一密度入口; 原 RA 图、dock 噪声、loss 与置信度保持既定契约.
 # attention_backend 控制瓶颈和无距离全局读出的内核; 启用距离时全局读出使用 FP32 几何和 SDPA 数学内核.
-# 以下加载进程、单卡批量、激活重算值是性能预实验起点, 最终资源配置按实际验收记录确定.
+# 批量和加载配置来自 A800 性能预实验; 持续 I/O 尚未达目标, 正式开训后继续复查.
 model:
   name: pm_asym_denoiser
   pocket_dim: 128
@@ -134,8 +134,10 @@ data:
     knn: 32
 train:
   seed: 2023
-  batch_size: 24
-  num_workers: 15
+  batch_size: 36
+  num_workers: 32
+  prefetch_factor: 1  # int, 每个加载进程预取一批; workers=0 时不传入 DataLoader.
+  cudnn_benchmark: true  # bool, Trainer 启用 cuDNN 卷积算法测速; 冷启动开销单独记录.
   pin_memory: true
   max_steps: 40000  # int, 优化器更新上限; 第三次学习率实际下降时可提前停止.
   val_check_interval: 800  # int, 每 800 次全局72实例的优化器更新计算原 val/loss.
@@ -161,7 +163,7 @@ train:
       min_lr: 0
       eps: 1.0e-08
   global_batch_size: 72  # int, 单卡批量×梯度累积×GPU数, 本阶段每模型一张GPU.
-  accumulate_grad_batches: 3
+  accumulate_grad_batches: 2
   log_every_n_steps: 50
   initial_checkpoint: /storage/penghongen/PocketXMol_official_test/extracted/data/trained_models/pxm/checkpoints/pocketxmol.ckpt
   wandb:

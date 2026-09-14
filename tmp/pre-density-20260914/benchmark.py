@@ -1,5 +1,5 @@
 """一次任务的真实训练性能探测；不保存正式模型或W&B，不读取test。"""
-import argparse,json,os,resource,signal,subprocess,threading,time,traceback
+import argparse,json,mmap,os,resource,signal,subprocess,threading,time,traceback
 from pathlib import Path
 from types import SimpleNamespace
 import numpy as np
@@ -16,16 +16,27 @@ from utils.misc import make_config
 
 
 class PilotDataset(Dataset):
- def __init__(self,source,indices,density):
+ def __init__(self,source,indices,density,madvise_random):
   self.source,self.indices,self.density=source,indices,density
+  self.madvise_random=madvise_random;self.advice_checked=False
  def __len__(self): return len(self.indices)*1000
  def __getitem__(self,cursor):
   original_density_loader=density_dataset.load_density_input
-  density_elapsed=0.
+  density_elapsed=0.;advice_verified=False
   def measured_density_loader(*args,**kwargs):
-   nonlocal density_elapsed
+   nonlocal density_elapsed,advice_verified
    begin=time.perf_counter()
+   expected=None
+   if self.madvise_random:
+    worker=torch.utils.data.get_worker_info()
+    if not self.advice_checked and (worker is None or worker.id==0):
+     expected=original_density_loader(*args,**kwargs)
+    for grid in read_density_source(str(args[0]),args[1])[:2]:
+     grid._mmap.madvise(mmap.MADV_RANDOM)
    result=original_density_loader(*args,**kwargs)
+   if expected is not None:
+    assert all(torch.equal(result[name],value) for name,value in expected.items()),'MADV_RANDOM改变了密度或几何数值'
+    self.advice_checked=True;advice_verified=True
    density_elapsed+=time.perf_counter()-begin
    return result
   density_dataset.load_density_input=measured_density_loader
@@ -36,6 +47,7 @@ class PilotDataset(Dataset):
   original_seconds=time.perf_counter()-begin
   data['pilot_source_seconds']=torch.tensor([original_seconds-density_elapsed])
   data['pilot_density_seconds']=torch.tensor([density_elapsed])
+  data['pilot_madvise_verified']=torch.tensor([int(advice_verified)])
   if self.density:
    pdb_id=self.source.records[index]['pdb_id']
    _,_,spacing,origin,receptor=read_density_source(str(self.source.root),pdb_id)
@@ -57,10 +69,13 @@ def main():
  p.add_argument('--prefetch',type=int,default=1);p.add_argument('--channels-last',type=int,default=0)
  p.add_argument('--readout-reference',type=int,default=0)
  p.add_argument('--sample-seed',type=int,default=2023)
+ p.add_argument('--madvise-random',type=int,default=0)
  p.add_argument('--deadline',type=float,required=True)
  args=p.parse_args()
  output=Path(args.output);output.mkdir(parents=True,exist_ok=False)
  report={'scope':'preexperiment_not_formal','arguments':vars(args),'started_at':time.time(),'status':'running','updates':[],'metrics':[]}
+ report['release_project_root']=os.environ.get('TASK_PROJECT_ROOT')
+ report['slurm_job_id']=os.environ.get('SLURM_JOB_ID')
  def timed_out(signum,frame): raise TimeoutError('预实验观察或整体预算到期')
  signal.signal(signal.SIGALRM,timed_out)
  signal.alarm(max(1,int(args.deadline-time.time())))
@@ -105,7 +120,7 @@ def main():
    indices=np.random.default_rng(args.sample_seed).integers(0,len(source.records),size=sample_count).tolist()
    report['sampling_scope']='完整训练清单按实例均匀有放回，固定随机种子；跨配置共用相同前缀'
   report['sample_ids']=[(source.records[i]['pdb_id'],source.records[i]['candidate_id']) for i in indices]
-  dataset=PilotDataset(source,indices,density)
+  dataset=PilotDataset(source,indices,density,args.madvise_random)
   loader=DataLoader(dataset,batch_size=args.batch,num_workers=args.workers,pin_memory=True,persistent_workers=args.workers>0,follow_batch=module.train_loader.follow_batch,exclude_keys=module.train_loader.exclude_keys,**({'prefetch_factor':args.prefetch} if args.workers else {}))
   model=PMAsymDenoiser(config.model,**module.get_in_dims())
   if args.readout_reference:
@@ -135,11 +150,12 @@ def main():
   torch.cuda.reset_peak_memory_stats()
   for update in range(args.updates):
    if time.time()>=args.deadline or (first_forward is not None and time.perf_counter()-first_forward>=args.seconds): break
-   times=dict(update=update,wall_start=time.time(),io_wait_seconds=0.,transfer_seconds=0.,forward_seconds=0.,backward_seconds=0.,optimizer_seconds=0.,source_cpu_seconds=0.,density_cpu_seconds=0.,atoms=0,pocket_atoms=0,loss=0.)
+   times=dict(update=update,wall_start=time.time(),io_wait_seconds=0.,transfer_seconds=0.,forward_seconds=0.,backward_seconds=0.,optimizer_seconds=0.,source_cpu_seconds=0.,density_cpu_seconds=0.,atoms=0,pocket_atoms=0,loss=0.,madvise_verified_samples=0)
    update_start=time.perf_counter();optimizer.zero_grad(set_to_none=True)
    for micro in range(accumulation):
     before=time.perf_counter();batch=next(iterator);times['io_wait_seconds']+=time.perf_counter()-before
     times['source_cpu_seconds']+=float(batch.pilot_source_seconds.sum());times['density_cpu_seconds']+=float(batch.pilot_density_seconds.sum())
+    times['madvise_verified_samples']+=int(batch.pilot_madvise_verified.sum())
     times['atoms']+=len(batch.node_type);times['pocket_atoms']+=len(batch.pocket_pos)
     before=time.perf_counter();batch=batch.to('cuda',non_blocking=True)
     if args.channels_last and density: batch.density_input=batch.density_input.contiguous(memory_format=torch.channels_last_3d)
