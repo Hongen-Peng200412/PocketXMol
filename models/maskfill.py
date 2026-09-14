@@ -3,6 +3,7 @@
 
 从 PMAsymDenoiser.forward 阅读主流程: PyG Batch 的带噪配体、fixed 条件标记和口袋图先成为隐藏特征, 再由原去噪网络更新配体原子、相互作用边及坐标.
 口袋编码保持官方蛋白入口; 可选 RA 在蛋白与核酸联合图中共享编码器.
+配置 model.density 时, 另将固定密度裁块编码为体素特征, 在配体去噪网络的各层读取该特征.
 本模块不落盘, 返回原子和半边的分类原始分数 logits、去噪坐标以及可选的原子类别、位置和半边置信度分数, 各字段形状见类 Docstring.
 本模块不读取时间步或任务名称, 构象与 docking 的任务条件由 fixed_*、带噪输入和口袋字段表达.
 """
@@ -46,6 +47,7 @@ class PMAsymDenoiser(Module):
     构造参数:
         - config.pocket_dim: int, 编码后口袋节点宽度.
         - config.nucleic_branch: None|str, None 保持官方蛋白编码; RA 在联合口袋图中共享编码器.
+        - config.density: 可选映射, 存在时构造密度编码器和逐层原子读出; 字段由 DensityEncoder、DensityReadout 读取, 缺省不增加密度参数或依赖.
         - config.node_dim: int, 拼接原子 Embedding、两维 fixed prompt 和附加节点特征后的总宽度.
         - config.edge_dim: int, 拼接半边 Embedding 与两维 fixed prompt 后的总宽度.
         - config.addition_node_features: list[str], 追加到节点表示的逐原子标量字段名; reduced 配置只含 ``is_peptide``.
@@ -75,6 +77,9 @@ class PMAsymDenoiser(Module):
         - pocket_pos: (P, 3), 与 pos_in 使用同一局部原点的口袋坐标, 单位 Å.
         - pocket_knn_edge_index: int64, (2, E_p), 有向 kNN 边端点索引 pocket_pos 第一维; RA 使用蛋白与核酸联合图, 批内不同实例由 PyG 图编号隔离; 同一口袋内不同链及蛋白与核酸之间均可连边.
         - pocket_pos_batch: int64, (P,), 每个口袋原子所属图编号.
+        - density_input: float32, (B, 56, 48, 48, 48), 仅密度模型读取; 固定裁块的全部56通道, 空间轴 ZYX.
+        - density_origin: float32, (B, 3), 实际裁块角点的局部 XYZ 坐标, 单位 Å, 与 pos_in 共用原点.
+        - density_basis: float32, (B, 3, 3), 三行依次为源 X、Y、Z 一个体素步长的局部向量, 单位 Å.
         - is_peptide: 0/1, (N,), 小分子构象/docking 为全 0; 若配置不请求该附加特征则不读取.
 
     前向输出字段:
@@ -88,7 +93,7 @@ class PMAsymDenoiser(Module):
     位置置信度的目标由外部 ConfidenceLoss 决定; 旧配置 prob_1A 不在(0,1)时直接回归负坐标误差, 本模型输出端不做 sigmoid.
 
     条件边界:
-        - 本网络没有 ``task``、``task_setting``、扩散时间步或连续噪声等级输入, 所有任务条件只来自 fixed prompt、带噪状态和口袋.
+        - 本网络没有 ``task``、``task_setting``、扩散时间步或连续噪声等级输入; 条件来自 fixed prompt、带噪状态、口袋和明确配置的密度裁块.
         - 无口袋构象生成传入 P=0 的空张量; 口袋编码器和上下文 kNN 后端必须支持空边路径.
     """
     
@@ -99,7 +104,7 @@ class PMAsymDenoiser(Module):
         pocket_in_dim,
         **kwargs
     ):
-        """建立原配体去噪网络, 并按 config.nucleic_branch 增加RA核酸投影, 共享原口袋编码器.
+        """建立原配体去噪网络, 按配置增加共享口袋编码的 RA 核酸投影和密度条件模块.
 
         输入参数及前向字段见类 Docstring. 原 pocket_embedder、pocket_encoder 和配体参数名保持不变.
         """
