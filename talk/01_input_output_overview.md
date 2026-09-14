@@ -246,3 +246,18 @@ pocket_* raw fields
     → h_pocket
     → dynamic molecule–pocket messages
 ```
+
+## 12. 当前密度分支增加的内存输入
+
+以上章节解释原版通用构象与对接入口。当前项目的冻结实例入口是`docking/dataset.py::OccurrenceDataset`；配置`model.density`时，在既定RA口袋、模型原点和原dock噪声链上增加下列数据流：
+
+```text
+源exp.npy / sim.npy及其几何元数据 + 完整原始受体坐标
+    → 固定48³裁块及ALL的56通道
+    → density_input / density_origin / density_basis
+    → D1的6³×256或D4的48³×48体素特征
+    → 每层配体原子的320维密度残差
+    → 原pred_pos、原置信度和self-ranking
+```
+
+数组空间轴为ZYX，坐标为XYZ、Å；裁块起点内缩不改变原模型原点。训练每次编码当前裁块，推理只在同一权重、同一实例和固定定位条件内复用编码。字段类型、形状、通道含义与索引公式见[密度接口说明](../models/README-density.md)。这些特征留在内存中；当前冻结实例采样仍通过`docking/sampling.py`保存`poses.sdf`、`candidates.json`、`confidence.npz`和`result.json`，不增加密度预测文件。

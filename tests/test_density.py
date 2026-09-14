@@ -95,6 +95,28 @@ def test_d4_outside_intersection_empty_and_rigid_invariance():
     torch.testing.assert_close(rotated,actual,rtol=1e-5,atol=1e-6)
 
 
+@pytest.mark.parametrize('mode', ['D1', 'D4'])
+def test_readout_preserves_individual_molecule_geometry(mode):
+    """用不同角点、旋转和间距的两个分子, 核对拼批与分别读出的全部残差."""
+    torch.manual_seed(84)
+    reader = DensityReadout(320, dict(mode=mode, attention_backend='reference', distance_bias=True))
+    channels, side = (256, 6) if mode == 'D1' else (48, 48)
+    feature = torch.randn(2, channels, side, side, side)
+    hidden = torch.randn(5, 320)
+    batch = torch.tensor([0, 0, 0, 1, 1])
+    origin = torch.tensor([[0., 0., 0.], [9., -4., 2.]])
+    rotation = torch.tensor([[0., -1., 0.], [1., 0., 0.], [0., 0., 1.]])
+    basis = torch.stack([torch.eye(3), torch.diag(torch.tensor([.9, 1.1, 1.2])) @ rotation])
+    indices = torch.tensor([[.2, .3, .4], [-2.5, .1, .1], [-5., .1, .1], [10.2, 9.8, 4.3], [51.1, 3., 3.]])
+    positions = origin[batch] + (indices[:, :, None] * basis[batch]).sum(-2)
+    actual = reader(hidden, positions, batch, feature, origin, basis)
+    expected = []
+    for molecule in (0, 1):
+        selected = batch == molecule
+        expected.append(reader(hidden[selected], positions[selected], torch.zeros(int(selected.sum()), dtype=torch.long), feature[molecule:molecule + 1], origin[molecule:molecule + 1], basis[molecule:molecule + 1]))
+    torch.testing.assert_close(actual, torch.cat(expected), rtol=1e-5, atol=1e-6)
+
+
 @pytest.mark.parametrize('mode',['D1','D4'])
 def test_batched_readout_keeps_variable_size_molecules_separate(mode):
     torch.manual_seed(92)

@@ -2,7 +2,7 @@
 
 本目录的密度模块把固定56通道、48³体素输入转换为配体节点的320维残差；不写模型、地图或预测文件。原去噪器继续预测坐标，密度残差插在其六个节点更新之后、边和坐标更新之前。
 
-按实际计算顺序阅读：`docking/density.py`确定裁块与几何，`docking/density_channels.py`构造56通道，`density_backbone.py`编码体素，`density_readout.py`按当前原子坐标读取特征，最后由`maskfill.py`和`graph_context.py`接入原网络。`density_blocks.py`保存复用自Pocket_Plus的三维残差卷积与解码门控。
+模块的调用关系和源码阅读顺序见[模块概览中的密度入口](../talk/02_module_structure_overview.md#10-密度分支的阅读入口)。本文件说明内存输入、编码输出和几何契约；`density_blocks.py`保存复用自Pocket_Plus的三维残差卷积与解码门控。
 
 ## 输入与输出
 
