@@ -41,6 +41,6 @@ Git仍在实现分支codex/pxm-receptor-baselines，共同基点0412824adbdd4e4f
 
 - [首个训练记录](../../../日志/第一类实验（不加密度信息）/1-B-C-T0-RA.md)：正式参数、命令、运行地址和状态。
 - [共同准备记录](../../../日志/实现与共同数据准备.md)：数据来源、所有准备作业、失败留证和测试命令。
-- [总日志](../../../日志/总日志.md)、[计划映射](../../../日志/计划执行映射.md)及其链接的三份最新规格。
+- [总日志](../../../日志/第一类实验（不加密度信息）/总日志&分析/总日志.md)、[计划映射](../../../日志/计划执行映射.md)及其链接的三份最新规格。
 - `/home/penghongen/Feedback/Pocket_Plus/allocations/371591/`：当前run_cmd、out、err、after_lock；try_lock在其父目录。该控制位置来自旧allocation，不能因Pocket_Plus名称而误操作其它作业。
 - `/storage/penghongen/PocketXMol/control/371591/train_B-C-T0-RA_start.json`：本次out／err起始字节360594／54949；同目录train_B-C-T0-RA_run_cmd.sh保存动态命令。当前after_lock保留，训练期间try_lock不存在，正常结束后控制器重建try_lock。

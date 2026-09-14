@@ -28,10 +28,10 @@ from test_docking_data import prepared_data
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason='需要实际授权的CUDA GPU')
-@pytest.mark.parametrize('branch', ['RA', 'RB'])
+@pytest.mark.parametrize('branch', ['RA'])
 def test_official_weights_native_bf16_training_and_stopped_restore(prepared_data, tmp_path, branch):
-    """核对原权重、RB复制、bf16原loss更新和完整已停止检查点恢复, 保留学到的核酸参数."""
-    config = make_config(str(Path(__file__).resolve().parents[1] / f'configs/docking/B-C-T1-{branch}.yml'))
+    """核对原权重、RA投影、bf16原loss更新和完整已停止检查点恢复, 保留学到的核酸参数."""
+    config = make_config(str(Path(__file__).resolve().parents[1] / f'configs/docking/B-C-T0-{branch}.yml'))
     config.data.dataset.update(root=prepared_data.root, derived_root=prepared_data.derived_root, manifest_root=prepared_data.manifest_root)
     config.train.update(batch_size=36, accumulate_grad_batches=2, num_workers=0, persistent_workers=False, val_check_interval=1)
     args = SimpleNamespace(num_gpus=1, multi_node=False, resume='')
@@ -43,9 +43,6 @@ def test_official_weights_native_bf16_training_and_stopped_restore(prepared_data
         if name.startswith('model.'):
             torch.testing.assert_close(model.state_dict()[name], value, rtol=0, atol=0)
     del official
-    if branch == 'RB':
-        for name, value in model.model.pocket_encoder.state_dict().items():
-            torch.testing.assert_close(model.model.nucleic_encoder.state_dict()[name], value, rtol=0, atol=0)
     # float32, (128,15), 保存核酸投影初值, 后面确认原loss确实训练新增参数.
     initial_nucleic_weight = model.model.nucleic_embedder.weight.detach().clone()
     checkpoint = DockingCheckpoint(str(tmp_path / 'checkpoints'), 'gpu-contract-check')
@@ -78,9 +75,9 @@ def test_official_weights_native_bf16_training_and_stopped_restore(prepared_data
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason='需要实际授权的CUDA GPU')
-@pytest.mark.parametrize('experiment', ['B-C-T0-RA', 'B-C-T1-RB', 'B-E-T0-RA'])
+@pytest.mark.parametrize('experiment', ['B-C-T0-RA', 'B-E-T0-RA'])
 def test_real_data_training_and_sampling_budget(tmp_path, monkeypatch, experiment):
-    """用真实非test资产检查C0/T0、C5/T1和E训练的显存、原损失及采样评价, 不设姿态质量通过阈值."""
+    """用真实非test资产检查中心C0和包络E训练的显存、原损失及采样评价, 不设姿态质量通过阈值."""
     root = Path(__file__).resolve().parents[1]
     config = make_config(str(root / f'configs/docking/{experiment}.yml'))
     pl.seed_everything(config.train.seed, workers=True)
@@ -114,7 +111,6 @@ def test_real_data_training_and_sampling_budget(tmp_path, monkeypatch, experimen
     sampling = EasyDict(model_name=f'gate_{experiment}', split='validation', output_root=str(tmp_path / 'sampling'), dataset=config.data.dataset, num_candidates=2, num_steps=3, batch_size=2, device='cuda')
     noise_config = make_config(str(root / 'configs/sample/test/dock_poseboff/base.yml')).noise
     noise_config.num_steps = 3
-    noise_config.center_translation = config.noise.individual[0].center_translation
     noiser = get_sample_noiser(noise_config, featurizer.num_node_types, featurizer.num_edge_types, mode='sample', device='cuda', ref_config=config.noise)
     result = sample_occurrence(dataset, 0, model.model, noiser, featurizer, sampling, protocol)
     assert result['success_count'] == 2, result

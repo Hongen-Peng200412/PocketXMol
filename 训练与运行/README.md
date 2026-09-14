@@ -1,8 +1,8 @@
 # PocketXMol 训练与运行
 
-本目录提供 PocketXMol 的共同 CPU 准备、六个无密度实验和候选评价入口。资源申请复用现有通用提交器；实验定义由 `configs/docking/` 中的明确配置决定。
+本目录提供PocketXMol共同CPU准备、RA＋T0中心／包络训练及候选评价入口，资源申请复用通用提交器，实验定义由configs/docking/中的明确配置决定。
 
-2026-09-12更新的本任务goal只负责六个无密度模型的训练、测试、评价与报告；下文官方接口保留为已有程序的使用说明，不是本任务待办，不跟踪其他任务。
+当前无密度运行已完成，本次只整理本地代码与记录，不提交或修改服务器作业。以下命令是接口用法，不表示新增运行授权；旧六模型实际命令和配置来源保存在[非密度总日志](../日志/第一类实验（不加密度信息）/总日志&分析/总日志.md)及逐模型日志。密度正式实验需另行讨论与许可。
 
 `submit_task.sh → sbatch/task.sbatch → sh/具体任务.sh` 是正式提交链。执行器在实际运行前生成完整代码副本 release，并保存该次命令与资源信息 launch。原 Pocket_Plus 的旧任务脚本保留为历史基础设施，此项目不运行它们。
 
@@ -27,7 +27,9 @@ bash 训练与运行/submit_task.sh --sh prepare.sh --resource cpu --cpus 8 -- f
 
 ### 单模型训练
 
-六个实验名称分别为 `B-C-T0-RA`、`B-C-T1-RA`、`B-E-T0-RA`、`B-C-T0-RB`、`B-C-T1-RB`、`B-E-T0-RB`。C为中心模式，E为包络模式；中心T0训练及原val/loss使用C0真实中心，中心T1训练使用动态C5、原val/loss使用冻结C5并保留对应整体平移，包络T0使用E。该选择只读取已有center_translation，RA/RB为两种核酸编码构造。每份配置从同一官方权重开始，完整评价仍保留中心C0/C5和包络E。
+当前训练配置为B-C-T0-RA与B-E-T0-RA。C是中心模式，E是包络；中心训练和val/loss固定C0真中心，包络固定E，均只使用原dock噪声。RA在联合蛋白／核酸图中共享编码器。完整测试为中心C0/C5、包络E。退役RB/T1及F-5/F-6配置保存在Git基点463d590，当前configs/docking不再暴露它们；保留旧结果不意味着用当前源码重跑旧机制。
+
+历史运行的续训、补采样或再次评价须使用该运行冻结的release及原配置。收口删除了旧center_translation字段，历史run.json和checkpoint中仍保留原字段；当前严格配置检查会拒绝把新配置写入旧运行。下列含旧目录的命令仅说明历史入口和来源，不是本次待执行命令。未来获准的新运行使用独立目录及新配置，不修改旧元数据或绕过检查；已完成的正确T0不重训。
 
 在已明确获准申请新 A800 时，可按以下形式提交；它是调用格式，不代表本项目自动拥有新增 GPU 申请权：
 
@@ -41,14 +43,14 @@ bash 训练与运行/submit_task.sh --sh train_docking.sh --resource a800 --gpus
 bash 训练与运行/sh/train_docking.sh B-C-T0-RA
 ```
 
-一个 GPU 顺序执行实验，不在同一卡并行挤入六个训练。获得额外明确 GPU 授权时，不同卡各运行独立实验。无密度正式训练优先使用单卡72、累积1，nominal global batch仍为72；必要时在该模型YAML中成对改为36×2、24×3、18×4或12×6，并记录实际配置。保留原loss和偶发OOM的原reduce_batch，不增加补样本机制。
+一个 GPU 顺序执行实验，不在同一卡并行挤入多个训练。获得额外明确 GPU 授权时，不同卡各运行独立实验。无密度正式训练优先使用单卡72、累积1，nominal global batch仍为72；必要时在该模型YAML中成对改为36×2、24×3、18×4或12×6，并记录实际配置。保留原loss和偶发OOM的原reduce_batch，不增加补样本机制。
 
 每 800 次优化器更新计算原 `val/loss`。原 ReduceLROnPlateau 使用 1% 相对改善阈值、patience=5；第三次实际下降立即停止，最多 40000 次更新。best 按最低原验证损失，last 保存恢复状态，定期 checkpoint 均保留。输出为 `/storage/penghongen/PocketXMol/training/<实验名称>/`，包含配置、源码副本、checkpoint、W&B 记录；不把训练退出一概当作科学停止条件完成。
 
 自己的中断检查点恢复示例：
 
 ```bash
-bash 训练与运行/sh/train_docking.sh B-C-T1-RA --resume /storage/penghongen/PocketXMol/training/B-C-T1-RA/checkpoints/last.ckpt
+bash 训练与运行/sh/train_docking.sh B-C-T0-RA --logdir /storage/penghongen/PocketXMol/training/B-C-T0-RA-C0 --resume /storage/penghongen/PocketXMol/training/B-C-T0-RA-C0/checkpoints/last.ckpt
 ```
 
 恢复沿用同一实验目录、W&B run id、优化器与调度状态。已因第三次下降或更新上限完成的 checkpoint 不能通过普通 resume 继续。多 worker 从相同均匀有放回分布继续，不宣称预取队列中断前后逐样本完全同序。
@@ -57,17 +59,17 @@ bash 训练与运行/sh/train_docking.sh B-C-T1-RA --resume /storage/penghongen/
 
 ### 训练后直接完整测试
 
-采样和评价的 Python 入口分别为 `scripts/sample_docking.py`、`scripts/evaluate_docking.py`，每次读取一份明确配置。六模型的 best 路径必须在运行时根据实际训练产物写入配置；官方对照固定读取原 pxm 权重，不搜索多个 checkpoint 猜测选择。
+采样和评价的 Python 入口分别为 `scripts/sample_docking.py`、`scripts/evaluate_docking.py`，每次读取一份明确配置。模型的best路径必须在运行时根据实际训练产物写入配置；官方对照固定读取原 pxm 权重，不搜索多个 checkpoint 猜测选择。
 
 每实例每协议50个候选、100步，推理batch_size优先50。中心模型评C0/C5，包络评E，官方评C0/C5/E；三个测试视图共用候选。更大的有效批量确能提速时可用100；当前单实例入口实际最多组批50个候选，单改为100不会增大有效批量。正式采样配置及实际命令在训练结果确定后记录到对应实验日志，不能拿smoke配置代替。
 
-每张GPU上，训练完一个模型后立即用best完成其测试集全部规定协议的采样、CPU评价和结果记录，再启动该卡下一模型。用户2026-09-12指定371591继续当前B-C-T1-RA及第3个B-E-T0-RA、第4个B-C-T0-RB，378693负责第5个B-C-T1-RB、第6个B-E-T0-RB，两张A800独立推进。评价可直接使用各GPU作业已分配的16核CPU；现有配置启用8个评价进程，不另申请CPU。训练期间保留原val/loss验证、调度及best选择；训练后不再提交完整验证集采样或评价。旧validation候选及配置仅保留历史记录。
+正式运行获准后，每张GPU训练完一个模型就完成best的规定测试、CPU评价与记录，再启动下一个获准模型。评价可用该GPU作业自带CPU；现有配置8个评价进程。训练保留原val/loss、调度及best，训练后不提交完整验证集采样或评价。旧validation配置与候选仅作历史，不继续执行；已有正确T0结果不因本次收口重训。
 
 在获准A800的同一冻结release中，先完成采样，再通过同一作业动态命令执行评价，例如：
 
 ```bash
-bash 训练与运行/sh/sample_docking.sh B-C-T1-RA-test
-bash 训练与运行/sh/evaluate_docking.sh B-C-T1-RA-test
+bash 训练与运行/sh/sample_docking.sh B-C-T0-RA-test
+bash 训练与运行/sh/evaluate_docking.sh B-C-T0-RA-test
 ```
 
 评价脚本关闭CUDA，使用该作业CPU配额，after_lock保持；两条命令各自保存launch与实际记录。
@@ -140,8 +142,10 @@ bash ops/run_docking_gpu_checks.sh -k official_weights
 bash ops/run_docking_gpu_checks.sh -k real_data
 ```
 
-前者核对RA/RB/T1、bf16原loss、36×2=72、官方参数加载与已停止检查点恢复。后者覆盖中心T0-RA、中心T1-RB和包络T0-RA的输入装配与资源验收，各运行2次更新、1个验证批，再为首条validation生成2个3步候选并完整评价；不设姿态质量阈值，不读取test划分。后者保持实际配置的batch与累积乘积为72，OOM会明确失败，便于在正式训练前按已批准的成对设置调整。两者均关闭W&B，产物只在每次launch独立的pytest临时目录，不能进入正式结果表。
+前者核对RA、bf16原loss、36×2=72、官方参数加载与已停止检查点恢复。后者覆盖中心T0-RA与包络T0-RA，各运行2次更新、1个验证批，再对首条validation生成2个3步候选并评价；不设姿态质量阈值、不读test划分，global batch仍为72，OOM明确失败。两者关闭W&B，产物仅在独立pytest临时目录；本次收口未获授权修改服务器作业，因而不自动提交这些GPU门控。
 
 真实资产门控记录整个短fit的耗时和GPU峰值显存；该耗时包含初次读取及验证，不能当作稳定每步速度。全部必要验收通过后才接入正式训练；不因一次epoch或一次验证成功而宣称完整任务完成。
 
-实际正式命令、release、launch、job id、产物、测试结果和失败处理统一写入[总日志](../日志/总日志.md)及其链接的独立实验记录。W&B使用 `pencounkdual-111/PocketXmol_raw`，默认online；私密API key不写入配置或日志。密度实验仍等待无密度完整结果后的用户选择。
+实际正式命令、release、launch、job id、产物、测试结果和失败处理统一写入[总日志](../日志/第一类实验（不加密度信息）/总日志&分析/总日志.md)及其链接的独立实验记录。W&B使用 `pencounkdual-111/PocketXmol_raw`，默认online；私密API key不写入配置或日志。后续RA＋T0已定，密度配置和正式运行仍须讨论及许可。
+
+本地T0官方等价检查使用`tests/test_docking_official.py`与`tests/test_docking_centers.py`，从本地Git对象读取官方提交65488cf，无需网络下载。真实非测试副本通过环境变量PXM_ACCEPTANCE_ASSETS指定；具体环境、命令、结果和资产来源见[收口记录](../日志/第一类实验（不加密度信息）/总日志&分析/非密度收口记录.md)，不与正式训练／采样命令混记。

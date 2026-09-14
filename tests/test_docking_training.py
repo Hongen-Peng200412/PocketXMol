@@ -141,7 +141,7 @@ def test_update_cap_runs_final_validation_and_stopped_resume_does_not_update():
     assert callback.stop_reason == "max_steps"
 
 
-@pytest.mark.parametrize('changed_experiment', ['B-C-T1-RA', 'B-E-T0-RA'])
+@pytest.mark.parametrize('changed_experiment', ['B-E-T0-RA'])
 def test_cli_rejects_resume_with_changed_science(tmp_path, monkeypatch, capsys, changed_experiment):
     root = Path(__file__).resolve().parents[1]
     saved_config = make_config(str(root / 'configs/docking/B-C-T0-RA.yml'))

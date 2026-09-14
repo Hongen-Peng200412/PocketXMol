@@ -72,7 +72,7 @@ class DataModule(pl.LightningDataModule):
 
     构造参数:
         - config.data.dataset: Mapping; name=adaligand 时含 root、derived_root、manifest_root、pocket_mode、knn, 由 OccurrenceDataset 读取冻结实例清单和只读资产.
-        - config.model.nucleic_branch: str, adaligand 模型的 RA/RB 核酸分支.
+        - config.model.nucleic_branch: str, adaligand 模型的 RA 核酸构造.
         - config.transforms: Mapping, 配体特征及 task 变换配置; 旧 LMDB 路径还可包含 featurizer_pocket 与 cut_peptide.
         - config.noise: Mapping, 原任务噪声器配置; adaligand 仅选择 dock.
         - config.train: Mapping, batch_size、num_workers、pin_memory、persistent_workers 决定加载器资源.
@@ -94,7 +94,7 @@ class DataModule(pl.LightningDataModule):
         - pocket_pos_batch: int64, (P,), 每个受体原子所属的批内样本编号.
         - task: list[str], 长度为批内样本数 B; adaligand 全部为 dock.
 
-    adaligand 的训练清单按 occurrence 均匀有放回抽样, 验证完整遍历 validation.jsonl. 已有 dock.center_translation 同时确定中心模型的训练与监督验证条件: False 的T0用C0, True 的T1用C5; 包络固定E. C5训练动态抽偏移, C5验证读取冻结向量. 数据集先完成受体编码与定位, 本类只接原 FeaturizeMol、任务变换与训练噪声器.
+    adaligand 的训练清单按 occurrence 均匀有放回抽样, 验证完整遍历 validation.jsonl. 中心训练及监督验证固定C0真中心, 包络固定E; 两者都沿原dock高斯噪声链, 不抽取中心偏移. 数据集先完成受体编码与定位, 本类只接原 FeaturizeMol、任务变换与训练噪声器.
     """
 
     def __init__(self, config):
@@ -148,11 +148,8 @@ class DataModule(pl.LightningDataModule):
         train_cfg = self.config.train
         if self.is_docking:
             follow_batch = list(dict.fromkeys(follow_batch + ['pocket_pos']))
-            protocol = 'E'
-            if data_cfg.dataset.pocket_mode == 'center':
-                # 已有dock噪声配置决定整套T0/T1科学条件, 不另设训练偏移开关; 正式采样仍独立接收C0/C5.
-                dock_noise = next(item for item in self.config.noise.individual if item.name == 'dock')
-                protocol = 'C5' if dock_noise.center_translation else 'C0'
+            # 中心训练和原val/loss均使用真中心C0; 包络使用E, 评测C5只在采样入口提供.
+            protocol = 'C0' if data_cfg.dataset.pocket_mode == 'center' else 'E'
             train_set = OccurrenceDataset(data_cfg.dataset, 'train', self.transforms, self.config.model.nucleic_branch, protocol, True)
             val_set = OccurrenceDataset(data_cfg.dataset, 'validation', self.transforms, self.config.model.nucleic_branch, protocol, False)
             batch_size = train_cfg.batch_size
@@ -242,7 +239,7 @@ class ModelLightning(pl.LightningModule):
         """构造原主干及 loss, 新实验只加载官方 model 权重, 自己续训交给 Lightning 恢复.
 
         config.train.initial_checkpoint 是 adaligand 首次训练的官方检查点路径; args.resume 非空时跳过该路径. num_node_types/num_edge_types 为配体类别数, kwargs.pocket_in_dim 保持蛋白25维.
-        官方参数去掉 model. 前缀后严格匹配旧主干, 只允许新 nucleic_embedder/nucleic_encoder 参数缺失. RB 随后从已加载的 pocket_encoder 复制核酸编码器初值; 恢复自己检查点时不执行这一步.
+        官方参数去掉 model. 前缀后严格匹配旧主干, 只允许新 nucleic_embedder 参数缺失; RA共享原pocket_encoder. 恢复自己检查点时不执行官方初始化.
         """
         super().__init__()
         self.config = config
@@ -261,11 +258,9 @@ class ModelLightning(pl.LightningModule):
             model_state = {key[6:]: value for key, value in ckpt['state_dict'].items() if key.startswith('model.')}
             if self.is_docking:
                 incompatible = self.model.load_state_dict(model_state, strict=False)
-                missing = [key for key in incompatible.missing_keys if not key.startswith(('nucleic_embedder.', 'nucleic_encoder.'))]
+                missing = [key for key in incompatible.missing_keys if not key.startswith('nucleic_embedder.')]
                 if missing or incompatible.unexpected_keys:
                     raise RuntimeError(f'官方权重与原模型不匹配: missing={missing}, unexpected={incompatible.unexpected_keys}')
-                if self.config.model.nucleic_branch == 'RB':
-                    self.model.nucleic_encoder.load_state_dict(self.model.pocket_encoder.state_dict())
             else:
                 self.model.load_state_dict(model_state)
             print('Load pretrained model from', initial_checkpoint)
