@@ -75,7 +75,7 @@ class DataModule(pl.LightningDataModule):
         - config.model.nucleic_branch: str, adaligand 模型的 RA 核酸构造.
         - config.transforms: Mapping, 配体特征及 task 变换配置; 旧 LMDB 路径还可包含 featurizer_pocket 与 cut_peptide.
         - config.noise: Mapping, 原任务噪声器配置; adaligand 仅选择 dock.
-        - config.train: Mapping, batch_size、num_workers、pin_memory、persistent_workers 决定加载器资源.
+        - config.train: Mapping, batch_size、num_workers、pin_memory、persistent_workers 决定加载器资源; 可选 prefetch_factor 指每个加载进程预取的批数.
 
     批次字段:
         - node_type: int64, (N,), 拼接后N个配体原子的干净类别.
@@ -168,8 +168,11 @@ class DataModule(pl.LightningDataModule):
             num_samplers_args['num_workers'] = val_workers
             val_set = ForeverTaskDataset(data_cfg.dataset, data_cfg.task_db_weights, 'val', transforms=self.transforms, shuffle=False, **num_samplers_args)
             batch_size = 40 if is_vscode else train_cfg.batch_size
-        self.train_loader = DataLoader(train_set, batch_size=batch_size, num_workers=train_cfg.num_workers, pin_memory=train_cfg.pin_memory, follow_batch=follow_batch, exclude_keys=exclude_keys, persistent_workers=train_cfg.persistent_workers)
-        self.val_loader = DataLoader(val_set, batch_size=batch_size, num_workers=val_workers, pin_memory=train_cfg.pin_memory, follow_batch=follow_batch, exclude_keys=exclude_keys, persistent_workers=train_cfg.persistent_workers)
+        # 只有多进程加载才接受预取批数; 未配置时保留 PyTorch 默认, 单进程仍直接读取当前批.
+        train_prefetch = {'prefetch_factor': train_cfg.prefetch_factor} if train_cfg.num_workers > 0 and 'prefetch_factor' in train_cfg else {}
+        val_prefetch = {'prefetch_factor': train_cfg.prefetch_factor} if val_workers > 0 and 'prefetch_factor' in train_cfg else {}
+        self.train_loader = DataLoader(train_set, batch_size=batch_size, num_workers=train_cfg.num_workers, pin_memory=train_cfg.pin_memory, follow_batch=follow_batch, exclude_keys=exclude_keys, persistent_workers=train_cfg.persistent_workers, **train_prefetch)
+        self.val_loader = DataLoader(val_set, batch_size=batch_size, num_workers=val_workers, pin_memory=train_cfg.pin_memory, follow_batch=follow_batch, exclude_keys=exclude_keys, persistent_workers=train_cfg.persistent_workers, **val_prefetch)
 
     def train_dataloader(self):
         """向 Lightning 提供无限训练实例流, 由优化器更新数或 Plateau 停止条件结束."""
@@ -888,7 +891,7 @@ if __name__ == '__main__':
             for compared_config in (saved_config, requested_config):
                 if 'resume' in compared_config:
                     compared_config.pop('resume')
-                for resource_key in ('batch_size', 'accumulate_grad_batches', 'num_workers', 'pin_memory', 'persistent_workers', 'log_every_n_steps'):
+                for resource_key in ('batch_size', 'accumulate_grad_batches', 'num_workers', 'pin_memory', 'persistent_workers', 'prefetch_factor', 'cudnn_benchmark', 'log_every_n_steps'):
                     compared_config.train.pop(resource_key, None)
                 compared_config.train.wandb.pop('mode', None)
             if saved_config != requested_config:
@@ -932,6 +935,7 @@ if __name__ == '__main__':
         max_steps=config.train.max_steps,
         callbacks=[checkpoint_callback],
         precision=config.train.precision,
+        benchmark=config.train.get('cudnn_benchmark'),  # bool|None, 密度可启用 cuDNN 卷积算法测速; None 保留 Lightning 默认行为.
         check_val_every_n_epoch=None,
         log_every_n_steps=config.train.log_every_n_steps if is_docking else config.train.val_check_interval,
         val_check_interval=config.train.val_check_interval,

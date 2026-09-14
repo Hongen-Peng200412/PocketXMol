@@ -38,14 +38,16 @@ def test_density_dataset_preserves_input_origin(prepared_data, protocol):
     assert 'density_input' not in plain
 
 
-def test_datamodule_uses_model_density_setting(prepared_data):
+@pytest.mark.parametrize('workers', [0, 2])
+def test_datamodule_uses_model_density_setting(prepared_data, workers):
     config = make_config(str(Path(__file__).resolve().parents[1] / 'configs/docking/B-C-T0-RA.yml'))
     config.data.dataset.update(root=prepared_data.root, derived_root=prepared_data.derived_root, manifest_root=prepared_data.manifest_root)
     config.model.density = {'mode': 'D1'}
-    config.train.update(num_workers=0, persistent_workers=False, batch_size=1)
+    config.train.update(num_workers=workers, persistent_workers=False, batch_size=1, prefetch_factor=1)
     module = DataModule(config)
     module.setup('fit')
     for loader in (module.train_loader, module.val_loader):
+        assert loader.prefetch_factor == (1 if workers else None)
         assert loader.dataset.density_config == config.model.density
         assert loader.dataset.protocol == 'C0'
         assert loader.dataset[0].density_input.shape == (1, 56, 48, 48, 48)
