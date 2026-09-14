@@ -69,14 +69,16 @@ class DensityReadout(nn.Module):
             voxel_features = feature[molecule].flatten(1).transpose(0,1)
             query = self.query(h_node[atom_ids]).reshape(-1,4,64)
             if self.mode == 'D1':
-                voxel_pos = origin[molecule]+self.voxel_xyz.to(basis.dtype)@basis[molecule]
+                with torch.autocast(device_type=pos_node.device.type,enabled=False):
+                    voxel_pos = origin[molecule].float()+self.voxel_xyz.float()@basis[molecule].float()
                 key = self.key(voxel_features).reshape(1,-1,4,64).transpose(1,2)
                 value = self.value(voxel_features).reshape(1,-1,4,64).transpose(1,2)
                 attended = density_attention(query.transpose(0,1)[None],key,value,atom_pos[None],voxel_pos[None],self.beta,self.distance_bias,self.backend)[0].transpose(0,1).reshape(-1,256)
                 result[atom_ids] = self.alpha*self.output(attended)
             else:
                 # floor定义home，保留越界索引后取交集；禁止把原子夹到边缘。
-                home = torch.floor((atom_pos-origin[molecule])@torch.linalg.inv(basis[molecule].float())).long()
+                with torch.autocast(device_type=pos_node.device.type,enabled=False):
+                    home = torch.floor((atom_pos.float()-origin[molecule].float())@torch.linalg.inv(basis[molecule].float())).long()
                 neighborhood = home[:,None]+self.offsets[None]
                 inside = ((neighborhood>=0)&(neighborhood<48)).all(-1)
                 linear = neighborhood[...,2]*48*48+neighborhood[...,1]*48+neighborhood[...,0]
@@ -85,7 +87,8 @@ class DensityReadout(nn.Module):
                 value = self.value(selected).reshape(len(atom_ids),343,4,64).permute(0,2,1,3)
                 scores = (query.permute(0,1,2)[:,:,None]*key).sum(-1)/8
                 if self.distance_bias:
-                    voxel_pos = origin[molecule]+(neighborhood.to(basis.dtype)+0.5)@basis[molecule]
+                    with torch.autocast(device_type=pos_node.device.type,enabled=False):
+                        voxel_pos = origin[molecule].float()+(neighborhood.float()+0.5)@basis[molecule].float()
                     squared = (atom_pos[:,None]-voxel_pos).square().sum(-1)/100
                     scores = scores-F.softplus(self.beta)[None,:,None]*squared[:,None]
                 scores = scores.masked_fill(~inside[:,None],float('-inf'))
