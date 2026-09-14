@@ -1,5 +1,15 @@
 # 7-official
 
+**当前：官方芳香键编码下的C0/C5/E复验已获准，等待SMILES新入口验收；尚未启动。** 使用378693和原官方冻结pxm权重，不训练模型。新产物根为`/storage/penghongen/PocketXMol/sampling/official-SMILES/test`，配置为`configs/docking/sample-official-SMILES-test.yml`；新W&B及指标尚未产生。
+
+## 正式运行命令
+
+验收后依次执行`bash 训练与运行/sh/sample_docking.sh official-SMILES-test`与`bash 训练与运行/sh/evaluate_docking.sh official-SMILES-test`，当前未执行。每协议446实例、每实例50候选、100步；使用已有冻结C5和视图。
+
+## 之前的尝试：旧配体编码对照
+
+2026-09-14输入契约补查：本日志的“官方”指官方冻结权重；该实验由`sample-official-377793-test.yml`通过项目OccurrenceDataset读取ligand_object原始键数组。新核查确认，该数组的芳香键表示与官方RDKit解析存在偏差。因此以下结果是“官方冻结权重＋旧配体编码”的历史成绩，不能称为完整复现官方配体解析。指标、候选及失败历史保持不变，未重新采样；用户已批准修正后的官方对照复验。证据见[SMILES日志](../预实验（一 --二之间）/1-SMILES构图与GPU验收.md#官方解析与精度的补充核查)。
+
 **官方原始冻结模型的C0／C5／E完整测试和CPU评价已完成。** 有效运行是377793，三个协议的ALL Top-1成功率为44.84%／31.17%／63.90%。每协议446实例，其中445实例成功生成并评价全部50候选，9qkz/0的50个预处理失败记录保留在分母中。
 
 更新核查：2026-09-13 11:09（服务器 master，UTC+8），已只读确认最终summary.json及W&B身份存在；正式结果完成于2026-09-12。依据 [科学契约](../../想法/方案草稿/9-8-科学契约.md)，本文件统一保存官方测评的有效结果和中断尝试。全实验进度见 [总日志](总日志&分析/总日志.md)。本次没有重新运行官方推理或评价。

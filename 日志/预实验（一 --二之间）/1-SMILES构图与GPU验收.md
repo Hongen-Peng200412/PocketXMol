@@ -4,7 +4,23 @@
 
 ## 当前状态与产物
 
-**状态：预实验未通过，等待用户确定科学口径。** 新链仅存在于隔离实现分支和隔离验收源码中，没有提交正式训练或测试集采样。发现问题后停止扩大GPU验收，没有耗满三小时、没有改变正式归约精度、没有自动排除42.84%的实例。
+**状态：公共SMILES图与官方解析的离散输入全量一致；新链集成及完整GPU验收仍未完成。** 2026-09-14补查确认，下述42.84%是相对旧ligand_object接入的差异，不能称为SMILES构图不支持率。官方行为核查及历史对照的影响见下节。新链已从隔离提交5f7bd8e集成至主实现分支0f8dc3e，未提交正式训练或测试集采样。20:04通过371591真实锁协议提交非测试GPU门控；单步前向、loss和梯度已通过部分输入，3jbv/0的C5在两条100步终点比较中最大差约0.64，当前正在核对同路径重复及逐步差值，不能宣称整链通过。门控失败后try_lock与after_lock均保留。
+
+### 官方解析与精度的补充核查
+
+固定官方版本为`65488cf635c856101dbe703ac97e2f10f58e005c`。官方训练预处理通过默认化学检查的RDKit分子调用`utils/parser.py:parse_3d_mol`；官方SMILES推理入口经过`MolFromSmiles`与去氢，再调用同一解析函数。函数读取`GetBondType()`，把RDKit芳香键12映射为模型类别4。旧`docking/dataset.py`却从源`bonds`数组取类别，不使用`read_template`中经过`SanitizeMol`的分子的键。这是历史接入与官方解析的偏差，不能以保持旧输入为由要求新管线复现它。
+
+本次在服务器用只读CPU命令执行该Git版本提取的原函数，逐精确SMILES比较公共包与官方解析的元素、排序后的双向键端点及键类别：1979个SMILES全部一致，失败0个，其中1360个包含芳香键，覆盖现有66878实例。检查仅涉及离散图，不使用测试坐标、不进行GPU运算、不改服务器文件，不能替代局部坐标、噪声、梯度及完整采样验收。证据保存于本地`tmp/density-preexperiments/official-input-audit-20260914.json`。
+
+本地作者权重包`model_weights.tar.gz`中的`data/trained_models/pxm/train_config/train.yml`第548行明确为`precision: bf16-mixed`，与固定官方源码公开训练配置一致。官方`sample_use.py`及`sample_drug3d.py`直接构造模型、加载权重并`eval()`，未包裹混合精度autocast；但二者导入`train_pl`会设置`torch.set_float32_matmul_precision('medium')`。因此推理是FP32张量路径，不能称为所有乘加均严格FP32。用户已接受正式训练沿用官方bf16混合精度、推理沿用官方FP32张量路径；严格数学等价诊断可另外使用highest FP32，不能把诊断设置冒充官方默认。
+
+历史六模型及官方冻结权重对照都通过旧Dataset取配体键类别。旧结果保留，但其解释限定为旧编码条件；新旧成绩差异可能同时包含编码修正。用户已批准修正后的无密度中心／包络RA＋T0重训及官方冻结权重C0/C5/E测试，专用资源378693已按实际kill_lock接管；旧源码、产物和资源after_lock均保留。之前“接受偏离官方的芳香编码”的提问不成立；后续应以官方解析为新链的离散输入参照。
+
+核查命令属于只读验收：`git show 65488cf635c856101dbe703ac97e2f10f58e005c:utils/parser.py`、同版本`process/utils_process.py`与训练／推理入口读取；作者压缩包由本地Python `tarfile`只读打开。实际全量图命令由`Invoke-ProjectSsh.ps1 -Command`传入`/storage/penghongen/PocketXMol/runtime/venv/bin/python -B -c`，在内存执行固定官方函数与比较脚本。首次传入整个parser超过Windows命令长度，未执行远端检查；缩小为实际函数后完成。无正式运行命令。
+
+当前GPU门控证据根为`/storage/penghongen/tmp/pxm_formal_smiles_20260914/gates-smiles`，首轮日志`gate-v1.out`、`gate-v1.err`，冻结源为`source_5f7bd8e`。该命令属于验收，不是正式训练或测试集采样。
+
+### 原先以旧接入为参照的检查记录
 
 | 检查 | 实际覆盖与结论 |
 |---|---|
