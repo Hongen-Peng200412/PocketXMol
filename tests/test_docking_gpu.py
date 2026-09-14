@@ -75,7 +75,7 @@ def test_official_weights_native_bf16_training_and_stopped_restore(prepared_data
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason='需要实际授权的CUDA GPU')
-@pytest.mark.parametrize('experiment', ['B-C-T0-RA', 'B-E-T0-RA'])
+@pytest.mark.parametrize('experiment', ['B-C-T0-RA', 'B-E-T0-RA', 'D1-C-T0-RA', 'D1-E-T0-RA', 'D4-C-T0-RA', 'D4-E-T0-RA', 'D2-C-T0-RA', 'D2-E-T0-RA', 'D3-C-T0-RA', 'D3-E-T0-RA'])
 def test_real_data_training_and_sampling_budget(tmp_path, monkeypatch, experiment):
     """用真实非test资产检查中心C0和包络E训练的显存、原损失及采样评价, 不设姿态质量通过阈值."""
     root = Path(__file__).resolve().parents[1]
@@ -99,6 +99,9 @@ def test_real_data_training_and_sampling_budget(tmp_path, monkeypatch, experimen
     torch.cuda.synchronize()
     elapsed = time.perf_counter() - started
     assert trainer.global_step == 2 and torch.isfinite(trainer.callback_metrics['val/loss'])
+    assert all(torch.isfinite(parameter).all() for parameter in model.parameters())
+    if config.model.get('density', {}).get('mode') == 'D3':
+        assert torch.isfinite(trainer.callback_metrics['val/density_weighted'])
     # 此耗时包含首次真实资产读取与1批验证, 不能当成稳定每步训练速度.
     report = dict(experiment=experiment, scope='gate_not_formal', global_batch=72, batch_size=config.train.batch_size, accumulation=config.train.accumulate_grad_batches, updates=2, fit_elapsed_seconds=elapsed, peak_memory_allocated_bytes=torch.cuda.max_memory_allocated(), peak_memory_reserved_bytes=torch.cuda.max_memory_reserved(), val_loss=float(trainer.callback_metrics['val/loss']))
     report.update(training_protocol=data_module.train_dataloader().dataset.protocol, supervised_validation_protocol=data_module.val_dataloader().dataset.protocol)
@@ -107,7 +110,7 @@ def test_real_data_training_and_sampling_budget(tmp_path, monkeypatch, experimen
     featurizer = FeaturizeMol(config.transforms.featurizer)
     task = ConfTransform(EasyDict(settings=dict(free=1.0), free_no_geometry=True), mode='test')
     protocol = 'C5' if config.data.dataset.pocket_mode == 'center' else 'E'
-    dataset = OccurrenceDataset(config.data.dataset, 'validation', Compose([featurizer, task]), config.model.nucleic_branch, protocol, False)
+    dataset = OccurrenceDataset(config.data.dataset, 'validation', Compose([featurizer, task]), config.model.nucleic_branch, protocol, False, density_config=config.model.get('density'))
     sampling = EasyDict(model_name=f'gate_{experiment}', split='validation', output_root=str(tmp_path / 'sampling'), dataset=config.data.dataset, num_candidates=2, num_steps=3, batch_size=2, device='cuda')
     noise_config = make_config(str(root / 'configs/sample/test/dock_poseboff/base.yml')).noise
     noise_config.num_steps = 3
