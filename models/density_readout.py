@@ -28,7 +28,7 @@ def density_attention(query,key,value,query_pos,key_pos,beta,distance_bias,backe
         coefficient = F.softplus(beta)[None,:,None,None]
         query_position = query_pos[:,None].expand(-1,query.shape[1],-1,-1)
         key_position = key_pos[:,None].expand(-1,key.shape[1],-1,-1)
-        extra_query = torch.cat((query_position*coefficient*0.16,-coefficient.expand(-1,-1,query.shape[2],-1)*0.08),dim=-1)
+        extra_query = torch.cat((query_position*coefficient*0.16,-coefficient.expand(query.shape[0],-1,query.shape[2],-1)*0.08),dim=-1)
         extra_key = torch.cat((key_position,key_position.square().sum(-1,keepdim=True)),dim=-1)
         query = F.pad(torch.cat((query,extra_query.to(query.dtype)),dim=-1),(0,4))
         key = F.pad(torch.cat((key,extra_key.to(key.dtype)),dim=-1),(0,4))
