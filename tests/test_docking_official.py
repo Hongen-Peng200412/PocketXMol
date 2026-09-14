@@ -35,7 +35,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def reference_modules(revision):
     """从Git提交revision载入参照模块, 返回以仓库相对文件名为键的dict[str, ModuleType]."""
     modules = {}
-    for path in ('utils/prior.py', 'utils/info_level.py', 'utils/sample_noise.py', 'models/sample.py', 'utils/transforms.py', 'models/maskfill.py'):
+    for path in ('utils/prior.py', 'utils/info_level.py', 'utils/sample_noise.py', 'models/sample.py', 'utils/transforms.py', 'models/maskfill.py', 'utils/parser.py'):
         source = subprocess.check_output(['git', 'show', f'{revision}:{path}'], cwd=ROOT).decode('utf-8')
         module = ModuleType('reference_' + path.replace('/', '_'))
         exec(compile(source, f'{revision}:{path}', 'exec'), module.__dict__)
@@ -64,12 +64,32 @@ def clean_sample(assets, split, protocol):
     assets提供root/derived_root/manifest_root路径; split是构造清单名; protocol为C0/C5/E. Data的node_pos为(N,3)局部XYZ、Å, pocket_center为(1,3)世界原点.
     """
     config = make_config(str(ROOT / 'configs/docking/B-C-T0-RA.yml'))
-    config.data.dataset.update(root=assets.root, derived_root=assets.derived_root, manifest_root=assets.manifest_root)
+    config.data.dataset.update(root=assets.root, derived_root=assets.derived_root, manifest_root=assets.manifest_root, smiles_root=assets.smiles_root, smiles_coords_root=assets.smiles_coords_root)
     config.data.dataset.pocket_mode = 'envelope' if protocol == 'E' else 'center'
     featurizer = FeaturizeMol(config.transforms.featurizer)
     task = ConfTransform(config.transforms.task.individual[0], mode='test')
     dataset = OccurrenceDataset(config.data.dataset, split, Compose([featurizer, task]), 'RA', protocol, False)
     return config, featurizer, task, dataset[0]
+
+
+@pytest.mark.parametrize('split', ['train', 'validation', 'calibration'])
+def test_public_smiles_input_matches_fixed_official_parser(prepared_data, official, split):
+    """元素和双向键端点/类别直接与固定官方解析比较, 覆盖芳香和非芳香构造分子."""
+    from rdkit import Chem
+    from docking.smiles import read_smiles_graph
+
+    _, _, _, data = clean_sample(prepared_data, split, 'C0')
+    graph = read_smiles_graph(prepared_data.smiles_root, data.prepared_smiles)
+    molecule = Chem.RemoveAllHs(Chem.MolFromSmiles(data.prepared_smiles))
+    expected = official['utils/parser.py'].parse_3d_mol(molecule, not_pos=True)
+    np.testing.assert_array_equal(graph['element'], expected['element'])
+    edges = np.concatenate([graph['bond_index'], graph['bond_index'][::-1]], axis=1)
+    kinds = np.concatenate([graph['bond_type'], graph['bond_type']])
+    order = (edges[0] * len(graph['element']) + edges[1]).argsort()
+    np.testing.assert_array_equal(edges[:, order], expected['bond_index'])
+    np.testing.assert_array_equal(kinds[order], expected['bond_type'])
+    assert len(graph['element']) == expected['num_atoms']
+    assert len(graph['bond_type']) == expected['num_bonds']
 
 
 @pytest.mark.parametrize('protocol', ['C0', 'C5', 'E'])
@@ -184,7 +204,7 @@ def test_real_train_t0_against_official(experiment, official):
     """以冻结训练实例5ftl/0核对完整DataModule装配, 只把末端噪声器替换成官方参照."""
     assets = Path(os.environ['PXM_ACCEPTANCE_ASSETS'])
     config = make_config(str(ROOT / f'configs/docking/{experiment}.yml'))
-    config.data.dataset.update(root=str(assets / 'source'), derived_root=str(assets / 'derived'), manifest_root=str(assets / 'manifests'))
+    config.data.dataset.update(root=str(assets / 'source'), derived_root=str(assets / 'derived'), manifest_root=str(assets / 'manifests'), smiles_root=str(assets / 'smiles_assets'), smiles_coords_root=str(assets / 'smiles_coords'))
     module = DataModule(config)
     module.setup('fit')
     dataset = module.train_dataloader().dataset

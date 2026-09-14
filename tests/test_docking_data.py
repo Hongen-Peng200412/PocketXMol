@@ -14,6 +14,7 @@ from torch_geometric.transforms import Compose
 
 from docking.assets import BOND_TYPES, CHIRAL_TYPES, read_receptor, read_template, select_pocket
 from docking.dataset import EmptyEnvelopePocketError, OccurrenceDataset
+from docking.smiles import read_coordinate_archive
 from docking.preparation import prepare, prepare_object, prepare_pdb, read_jsonl, write_jsonl
 from utils.transforms import ConfTransform, FeaturizeMol
 
@@ -32,6 +33,42 @@ def write_template(root, object_key, smiles):
         bonds[index]['type'][BOND_TYPES.index(bond.GetBondType())] = True
     np.savez_compressed(root / 'ligand_objects' / (object_key.replace(':', '_') + '.npz'), atoms=atoms, bonds=bonds, atom_names=np.array([f'C{i}' for i in range(len(atoms))]), smiles=smiles)
     return molecule
+
+
+def write_public_smiles(config, molecules):
+    """仅构造测试夹具公共包, 用明确 RDKit 分子同时产生原子与排列字段."""
+    root = Path(config.smiles_root)
+    root.mkdir(parents=True)
+    atoms, charges, edges, kinds, offsets, bond_offsets = [], [], [], [], [0], [0]
+    smiles_values, shapes, matches, match_offsets = [], [], [], [0]
+    for smiles in sorted({Chem.MolToSmiles(m, isomericSmiles=False) for m in molecules.values()}):
+        mol = Chem.RemoveHs(Chem.MolFromSmiles(smiles))
+        smiles_values.append(smiles)
+        atoms.extend(a.GetAtomicNum() for a in mol.GetAtoms())
+        charges.extend(a.GetFormalCharge() for a in mol.GetAtoms())
+        edges.extend((b.GetBeginAtomIdx(), b.GetEndAtomIdx()) for b in mol.GetBonds())
+        kinds.extend(BOND_TYPES.index(b.GetBondType()) for b in mol.GetBonds())
+        offsets.append(len(atoms)); bond_offsets.append(len(edges))
+        full = np.array(mol.GetSubstructMatches(mol, uniquify=False, useChirality=True, maxMatches=10000), dtype=np.int32)
+        compact = full[:, (full != np.arange(mol.GetNumAtoms())).any(0)]
+        shapes.append(compact.shape); matches.extend(compact.ravel()); match_offsets.append(len(matches))
+    np.savez_compressed(root / 'smiles_graphs_v1.npz', schema_version=np.int64(1), smiles=np.array(smiles_values), atom_offsets=np.array(offsets,dtype=np.int64), element=np.array(atoms,dtype=np.int16), charge=np.array(charges,dtype=np.int8), atom_in_ring=np.zeros((len(atoms),4),bool), bond_offsets=np.array(bond_offsets,dtype=np.int64), bond_index=np.array(edges,dtype=np.int32).T, bond_type=np.array(kinds,dtype=np.uint8), bond_in_ring=np.zeros((len(edges),4),bool))
+    np.savez_compressed(root / 'smiles_symmetries_v1.npz',schema_version=np.int64(1),smiles=np.array(smiles_values),atom_count=np.diff(offsets).astype(np.int32),matches_shape=np.array(shapes,dtype=np.int32),matches_offsets=np.array(match_offsets,dtype=np.int64),matches_iso=np.array(matches,dtype=np.int32))
+
+
+def refresh_smiles_coords(config, pdb_id):
+    """只为测试将修改过的构造坐标同步到公共顺序包, 随后清除读取缓存."""
+    root = Path(config.root)
+    prepared_path = root / 'stage1_preparation_box_pool_2/ligand_language_models/prepared' / pdb_id / 'prepared_smiles.jsonl'
+    prepared = {r['candidate_id']:r['smiles'] for r in read_jsonl(prepared_path)}
+    with np.load(root / 'parse' / pdb_id / 'ligand_coords.npz') as archive:
+        ids=sorted(int(k.split('_')[1]) for k in archive.files if k.startswith('coords_'))
+        coords=[archive[f'coords_{cid}'] for cid in ids]
+    # 测试新增的远离受体实例沿用第一个实例的化学图, 坐标单独修改.
+    strings=[prepared.get(cid,prepared[0]) for cid in ids]
+    target=Path(config.smiles_coords_root);target.mkdir(parents=True,exist_ok=True)
+    np.savez_compressed(target/f'{pdb_id}.npz',schema_version=np.int64(1),candidate_ids=np.array(ids,dtype=np.int64),prepared_smiles=np.array(strings),coord_offsets=np.r_[0,np.cumsum([len(c) for c in coords])].astype(np.int64),coords=np.concatenate(coords).astype(np.float32))
+    read_coordinate_archive.cache_clear()
 
 
 def write_pdb(config, pdb_id, object_keys, molecules):
@@ -53,6 +90,9 @@ def write_pdb(config, pdb_id, object_keys, molecules):
         np.savez_compressed(language_dir / f'candidate_{candidate_id}.npz', pdb_id=pdb_id, candidate_id=candidate_id, object_key=object_key, model_name='SMI-TED Light 289M', prepared_smiles=normalized, model_smiles=normalized, embedding=np.ones(768, dtype=np.float32))
     write_jsonl(parse_dir / 'occurrences.jsonl', occurrences)
     write_jsonl(language_dir / 'results.jsonl', languages)
+    prepared_path = root / 'stage1_preparation_box_pool_2/ligand_language_models/prepared' / pdb_id
+    prepared_path.mkdir(parents=True)
+    write_jsonl(prepared_path / 'prepared_smiles.jsonl', [dict(candidate_id=r['candidate_id'], smiles=r['prepared_smiles']) for r in languages])
     np.savez_compressed(parse_dir / 'ligand_coords.npz', **coordinates)
     np.savez_compressed(density_dir / 'ligand_area.npz', **labels)
     # 40个标准蛋白、40个标准RNA/DNA和1个UNK; 分别保留供不同受体分支检查.
@@ -75,8 +115,11 @@ def prepared_data(tmp_path):
     root = tmp_path / 'source'
     (root / 'ligand_objects').mkdir(parents=True)
     config = EasyDict(root=str(root), derived_root=str(tmp_path / 'derived'), manifest_root=str(tmp_path / 'manifests'), language_root=str(root / 'language'), split_root=str(root / 'split'), test_split=str(root / 'test.json'), workers=1, freeze_seed=3407, sampling_seed=10831)
+    config.smiles_root=str(root/'smiles_assets')
+    config.smiles_coords_root=str(root/'smiles_assets/SMILE_coords/v1')
     Path(config.split_root).mkdir()
     molecules = {key: write_template(root, key, smiles) for key, smiles in [('CCD:ETH', 'CCO'), ('CCD:BEN', 'C1=CC=CC=C1'), ('CCD:ACE', 'CC(C)=O')]}
+    write_public_smiles(config, molecules)
     train = write_pdb(config, 'train_demo', ['CCD:ETH'] * 4, molecules)
     validation = write_pdb(config, 'val_demo', ['CCD:BEN'], molecules)
     calibration = write_pdb(config, 'cal_demo', ['CCD:ACE'], molecules)
@@ -101,6 +144,14 @@ def prepared_data(tmp_path):
     for shard in range(2):
         prepare(config, 'samples', shard, 2)
     prepare(config, 'freeze', 0, 2)
+    # 公共图迁移仅为本测试夹具补字符串和坐标, 正式冻结成员/视图仍由旧准备输出定义.
+    for split, pdb_id in [('train','train_demo'),('validation','val_demo'),('calibration','cal_demo'),('test','test_demo')]:
+        refresh_smiles_coords(config, pdb_id)
+        path = Path(config.manifest_root) / f'{split}.jsonl'
+        records = read_jsonl(path)
+        for record in records:
+            record['prepared_smiles'] = Chem.MolToSmiles(molecules[record['object_key']], isomericSmiles=False)
+        write_jsonl(path, records)
     return config
 
 
@@ -132,9 +183,9 @@ def test_views_keep_six_to_ten_and_freeze_once(prepared_data):
     assert sum('HF10_TO5' in item['views'] for item in records) == 21
     assert all(len(item['views']) == 3 for item in records if item['object_key'] in {'CCD:BEN', 'CCD:ACE'})
     assert all('CAP10' in item['views'] for item in records if 'HF10_TO5' in item['views'])
-    before = (root / 'test.jsonl').read_bytes()
+    historical = [{key:value for key,value in record.items() if key != 'prepared_smiles'} for record in records]
     prepare(prepared_data, 'freeze', 0, 2)
-    assert before == (root / 'test.jsonl').read_bytes()
+    assert historical == read_jsonl(root / 'test.jsonl')
     assert all(0 <= np.linalg.norm(item['center_offset_xyz_A']) <= 5 for item in records)
 
 
@@ -192,6 +243,7 @@ def test_empty_envelope_is_skipped_before_training_or_validation_batch(prepared_
     coords[f'coords_{empty_id}'] = coords['coords_0'] + 1000
     coords[f'present_{empty_id}'] = np.ones(len(coords['coords_0']), dtype=bool)
     np.savez_compressed(coordinate_path, **coords)
+    refresh_smiles_coords(config, records[0]['pdb_id'])
     records.append(dict(records[0], candidate_id=empty_id))
     write_jsonl(manifest, records)
     frozen_manifest = manifest.read_bytes()
