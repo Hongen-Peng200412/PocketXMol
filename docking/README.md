@@ -25,6 +25,9 @@
 
 /storage/penghongen/Adaligand_Build/Ori_Data/pocketxmol/ligand_area/
 └── 9v7o/0.npy                   # 原occurrence 0的源ZYX体素标签，继续复用
+
+/storage/penghongen/AdaLigand/Ori_Data/stage1_preparation_box_pool_2/ligand_language_models/smi_ted_289m/
+└── 5irx/candidate_0.npz         # D3读取的冻结语言向量，路径由dataset.language_root决定
 ```
 
 ### 其他文件
@@ -115,6 +118,10 @@
 
 继续复用已有int32 `(K,3)` 源体素ZYX索引，只包含当前occurrence。例：源`[25,30,40]`减裁块起点`[20,20,20]`得到块内`[5,10,20]`；运行时只保留三分量均在`[0,48)`的索引。K可为0，不补其他实例标签，实际体素尺寸读取地图元数据。
 
+### `language_root/{pdb_id}/candidate_{candidate_id}.npz`
+
+D3每个实例读取一份既有NPZ。`prepared_smiles`是标量精确字符串，须与冻结实例记录一致；`embedding`为float32 `(768,)`冻结SMI-TED向量。例如构造实例`train_demo/0`的字符串为`CCO`，读取`language_root/train_demo/candidate_0.npz`中的对应向量。Dataset增加首维为`(1,768)`，PyG按实例拼成`(B,768)`；模型内使用`detach()`，不更新语言模型。D3训练和采样均读取该向量，只有训练与val/loss读取配体区域标签。
+
 ## 历史准备入口
 
 `preparation.py`与`scripts/prepare_docking.py`保留原来的`index、objects、samples、freeze`流程，供追溯旧清单、旧模板对称排列和既有视图定义。其源模板编码不是新模型输入。当前生产入口直接读取`data/smiles-v1/frozen`，不运行历史准备、重新筛选或重新冻结；特别是CAP10与HF10_TO5成员仍由原模板身份分组时冻结的清单决定，不按合并后的SMILES身份重新分组。
@@ -129,7 +136,7 @@ RA的E口袋为空时，`OccurrenceDataset.__getitem__` 在求均值前抛出 `E
 
 `DataModule.setup`按pocket_mode确定中心C0或包络E，训练与原val/loss条件相同。完整配体世界坐标为X*，g=mean(X*)；中心以g选袋并定模型原点，局部目标X*−g的质心为0。原GaussianExplodePrior加噪后直接执行原同构重分配和固定字段恢复，不增加共享平移，不读取center_translation。
 
-旧运行仍保存含center_translation字段的配置。当前续训、采样和评价的严格配置检查不会把已删除字段自动视为等价；需要读取历史运行时，使用其冻结release与原配置。当前入口服务新的获准运行，使用独立产物目录；现有正确T0结果继续有效，不更改其run.json、checkpoint或W&B。
+旧运行仍保存含center_translation字段的配置。当前续训、采样和评价的严格配置检查不会把已删除字段自动视为等价；需要读取历史运行时，使用其冻结release与原配置。历史结果与其旧输入编码条件一并保留；本次修正编码复验使用独立目录，不更改旧run.json、checkpoint或W&B。
 
 C0/C5仅是评测提供的实际中心不同，两者使用同一T0推理入口。实际中心c用于选袋及原点C，轨迹中固定；首步原纯高斯先验，后续局部预测Z加s*sigma(N)*epsilon，其中s=1−level_dict['pos']。没有中心相关重新加噪，不强制候选实际质心归零；定位后不读取GT中心或GT偏移，最终只加回C一次。
 

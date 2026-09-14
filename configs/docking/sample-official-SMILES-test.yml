@@ -7,13 +7,15 @@ checkpoint: /storage/penghongen/PocketXMol_official_test/extracted/data/trained_
 # str, OccurrenceDataset仅保留标准蛋白输入; 标准核酸仍参加独立评价的完整受体碰撞检查.
 receptor_branch: protein
 dataset:
-  # str, 只读AdaLigand基础图、沉积坐标、受体、语言向量与地图资产根.
+  # str, 只读AdaLigand原资产根, 本官方配置读取其中的受体.
   root: /storage/penghongen/AdaLigand/Ori_Data
-  # str, 共同CPU准备写入的共享对称排列和逐实例ligand-area索引根.
+  # str, 既有逐实例ligand-area索引根, 本无密度官方配置不读取标签.
   derived_root: /storage/penghongen/Adaligand_Build/Ori_Data/pocketxmol
-  # str, 共同CPU准备冻结的实例清单、中心偏移与测试视图根.
+  # str, 精确SMILES的公共重原子图及同顺序自同构排列根.
   smiles_root: /storage/penghongen/AdaLigand/Ori_Data/smiles_assets
+  # str, 按公共SMILES原子顺序迁移的逐PDB沉积坐标包根.
   smiles_coords_root: /storage/penghongen/AdaLigand/Ori_Data/smiles_assets/SMILE_coords/v1
+  # str, 保留原实例成员、C5偏移、种子及视图的迁移冻结清单根.
   manifest_root: /storage/penghongen/PocketXMol/data/smiles-v1/frozen
   # int, OccurrenceDataset构造模型输入受体图的近邻上限.
   knn: 32
@@ -28,7 +30,7 @@ num_candidates: 50
 # int, 原sample_loop3对每个候选执行的循环步数.
 num_steps: 100
 device: cuda
-# ALL/CAP10/HF10_TO5读取同一份冻结实例与候选; 评价使用377793已有的8核.
+# ALL/CAP10/HF10_TO5读取同一份冻结实例与候选; 评价使用同一获准作业的8个CPU进程.
 # int, evaluate_docking的CPU进程数, 不另申请GPU.
 evaluation_workers: 8
 wandb:

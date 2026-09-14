@@ -43,7 +43,7 @@ def sample_occurrence(dataset, index, model, noiser, featurizer, config, protoco
         - protocol: str, C0、C5 或 E, 决定定位条件和输出子目录.
 
     产物位于 <output_root>/<split>/<protocol>/<pdb_id>/<occurrence_id>/:
-        - poses.sdf: 多分子 SDF, 仅包含成功候选(跑通就算成功, 不是RMSD<2埃); 每个分子的 sample_index 属性保存原候选编号, 如3, 拓扑和原子顺序来自完整模板, 坐标为世界 XYZ、Å.
+        - poses.sdf: 多分子 SDF, 仅包含成功候选(跑通就算成功, 不是RMSD<2埃); 每个分子的 sample_index 属性保存原候选编号, 如3, 拓扑和原子顺序来自prepared_smiles对应的公共重原子图, 坐标为世界 XYZ、Å.
         - candidates.json: list[dict], 长度为 num_candidates, 包括每个失败候选; 各项字段如下.
             - pdb_id: str, 当前结构编号, 如9v7o.
             - occurrence_id: int, 原 candidate_id, 如0.
@@ -62,8 +62,8 @@ def sample_occurrence(dataset, index, model, noiser, featurizer, config, protoco
         - confidence.npz: 仅存在成功候选时写出; K 为成功候选数, N 为完整配体重原子数, H=N*(N-1)/2, T=num_steps.
             - sample_index: int64, (K,), 成功候选原编号, 如[0,2,3], 与SDF分子顺序及下列数组首轴对齐.
             - confidence_pos_traj: float32, (K,N,T), 每个原子每步的原始位置置信度, 无 sigmoid.
-            - confidence_pos: float32, (K,N,1), 最后一步原始位置置信度, 原子顺序与完整模板一致.
-            - confidence_node: float32, (K,N,1), 最后一步原子类别置信度原始输出, 原子顺序与模板一致.
+            - confidence_pos: float32, (K,N,1), 最后一步原始位置置信度, 原子轴N按prepared_smiles对应公共重原子图的顺序.
+            - confidence_node: float32, (K,N,1), 最后一步原子类别置信度原始输出, 原子轴N按prepared_smiles对应公共重原子图的顺序.
             - confidence_halfedge: float32, (K,H,1), 最后一步半边类别置信度原始输出, 半边按原完全图上三角顺序排列.
 
         - result.json: dict, 全部候选尝试和产物写入完成后保存, 返回值为同一字典.
