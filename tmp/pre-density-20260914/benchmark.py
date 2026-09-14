@@ -1,5 +1,5 @@
 """一次任务的真实训练性能探测；不保存正式模型或W&B，不读取test。"""
-import argparse,json,os,signal,subprocess,threading,time,traceback
+import argparse,json,os,resource,signal,subprocess,threading,time,traceback
 from pathlib import Path
 from types import SimpleNamespace
 import numpy as np
@@ -55,12 +55,15 @@ def main():
  p.add_argument('--checkpoint',type=int,default=1);p.add_argument('--seconds',type=int,default=180)
  p.add_argument('--updates',type=int,default=30);p.add_argument('--samples',type=int,default=0)
  p.add_argument('--prefetch',type=int,default=1);p.add_argument('--channels-last',type=int,default=0)
+ p.add_argument('--readout-reference',type=int,default=0)
+ p.add_argument('--sample-seed',type=int,default=2023)
  p.add_argument('--deadline',type=float,required=True)
  args=p.parse_args()
  output=Path(args.output);output.mkdir(parents=True,exist_ok=False)
  report={'scope':'preexperiment_not_formal','arguments':vars(args),'started_at':time.time(),'status':'running','updates':[],'metrics':[]}
  def timed_out(signum,frame): raise TimeoutError('预实验观察或整体预算到期')
  signal.signal(signal.SIGALRM,timed_out)
+ signal.alarm(max(1,int(args.deadline-time.time())))
  def save(): (output/'result.json').write_text(json.dumps(report,ensure_ascii=False,indent=2,allow_nan=False)+'\n')
  save()
  os.environ['OMP_NUM_THREADS']='1';torch.set_num_threads(1)
@@ -75,11 +78,16 @@ def main():
     rss=sum(x.memory_info().rss for x in [process,*children] if x.is_running())
     cpu=sum(sum(x.cpu_times()[:2]) for x in [process,*children] if x.is_running())
     query=subprocess.check_output(['nvidia-smi','--id=GPU-adbf8fc8-5a4a-87e3-853b-c9cadcbdf74b','--query-gpu=utilization.gpu,utilization.memory,memory.used','--format=csv,noheader,nounits'],text=True).strip()
-    report['metrics'].append(dict(wall=time.time(),rss_bytes=rss,cpu_seconds=cpu,gpu=query))
+    io=[x.io_counters() for x in [process,*children] if x.is_running()]
+    report['metrics'].append(dict(wall=time.time(),rss_bytes=rss,cpu_seconds=cpu,gpu=query,read_bytes=sum(x.read_bytes for x in io),read_chars=sum(x.read_chars for x in io),write_bytes=sum(x.write_bytes for x in io)))
    except (psutil.Error,subprocess.SubprocessError): pass
    stop.wait(1)
  thread=threading.Thread(target=monitor,daemon=True);thread.start()
  try:
+  report['memory_available_bytes']=psutil.virtual_memory().available
+  report['cpu_affinity_count']=len(os.sched_getaffinity(0))
+  memory_limit=Path('/sys/fs/cgroup/memory/slurm/uid_1351/job_379402/memory.limit_in_bytes')
+  if memory_limit.exists(): report['job_memory_limit_bytes']=int(memory_limit.read_text())
   config=make_config(args.config)
   density='density' in config.model
   if density: config.model.density.update(attention_backend=args.backend,distance_bias=bool(args.distance),checkpoint=bool(args.checkpoint))
@@ -91,12 +99,19 @@ def main():
    report['sampling_scope']='固定子集循环，仅计算及缓存热态基线'
   else:
    sample_count=args.updates*72+args.workers*args.batch*max(args.prefetch,1)+72
-   indices=np.random.default_rng(2023).integers(0,len(source.records),size=sample_count).tolist()
+   indices=np.random.default_rng(args.sample_seed).integers(0,len(source.records),size=sample_count).tolist()
    report['sampling_scope']='完整训练清单按实例均匀有放回，固定随机种子；跨配置共用相同前缀'
   report['sample_ids']=[(source.records[i]['pdb_id'],source.records[i]['candidate_id']) for i in indices]
   dataset=PilotDataset(source,indices,density)
   loader=DataLoader(dataset,batch_size=args.batch,num_workers=args.workers,pin_memory=True,persistent_workers=args.workers>0,follow_batch=module.train_loader.follow_batch,exclude_keys=module.train_loader.exclude_keys,**({'prefetch_factor':args.prefetch} if args.workers else {}))
   model=PMAsymDenoiser(config.model,**module.get_in_dims())
+  if args.readout_reference:
+   from reference_density_readout import DensityReadout as ReferenceReadout
+   with torch.random.fork_rng(devices=[]):
+    for index,reader in enumerate(model.denoiser.density_readers):
+     reference=ReferenceReadout(reader.output.out_features,config.model.density)
+     reference.load_state_dict(reader.state_dict())
+     model.denoiser.density_readers[index]=reference
   official=torch.load(config.train.initial_checkpoint,map_location='cpu',weights_only=False)
   state={k[6:]:v for k,v in official['state_dict'].items() if k.startswith('model.')}
   missing=model.load_state_dict(state,strict=False)
@@ -111,7 +126,7 @@ def main():
   optimizer=torch.optim.AdamW(model.parameters(),lr=opt.lr,weight_decay=opt.weight_decay,betas=(opt.beta1,opt.beta2),eps=opt.eps)
   accumulation=72//args.batch
   assert args.batch*accumulation==72
-  report.update(mode=config.model.get('density',{}).get('mode','D0'),global_batch=72,accumulation=accumulation,torch_version=torch.__version__,cuda_version=torch.version.cuda,gpu_name=torch.cuda.get_device_name(),parameter_count=sum(p.numel() for p in model.parameters()))
+  report.update(mode=config.model.get('density',{}).get('mode','D0'),global_batch=72,accumulation=accumulation,torch_version=torch.__version__,cuda_version=torch.version.cuda,gpu_name=torch.cuda.get_device_name(),parameter_count=sum(p.numel() for p in model.parameters()),file_descriptor_limits=resource.getrlimit(resource.RLIMIT_NOFILE))
   iterator=iter(loader)
   first_forward=None
   torch.cuda.reset_peak_memory_stats()
@@ -142,10 +157,11 @@ def main():
    if density and update==0:
     report['density_gradients']={}
     for prefix in ('density_encoder.','denoiser.density_readers.'):
-     selected=[(name,param) for name,param in model.named_parameters() if name.startswith(prefix)]
+     inactive=[name for name,param in model.named_parameters() if name.startswith(prefix) and name.endswith('.beta') and not args.distance]
+     selected=[(name,param) for name,param in model.named_parameters() if name.startswith(prefix) and name not in inactive]
      missing=[name for name,param in selected if param.grad is None]
      assert not missing,missing
-     report['density_gradients'][prefix]={'tensors':len(selected),'l2_norm':float(torch.stack([param.grad.float().square().sum() for _,param in selected]).sum().sqrt()),'all_finite':all(bool(torch.isfinite(param.grad).all()) for _,param in selected)}
+     report['density_gradients'][prefix]={'active_tensors':len(selected),'inactive_parameters':inactive,'l2_norm':float(torch.stack([param.grad.float().square().sum() for _,param in selected]).sum().sqrt()),'all_finite':all(bool(torch.isfinite(param.grad).all()) for _,param in selected)}
    before=time.perf_counter();optimizer.step();torch.cuda.synchronize();times['optimizer_seconds']=time.perf_counter()-before
    times['total_seconds']=time.perf_counter()-update_start;times['grad_norm']=float(norm)
    times['wall_end']=time.time()
