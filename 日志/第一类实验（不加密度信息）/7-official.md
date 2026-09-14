@@ -1,11 +1,6 @@
 # 7-official
 
-最新执行边界：前置集成及验收收口后先汇报，正式复验等待用户再次明确允许；本次新运行尚未启动。
-**当前：官方芳香键编码下的C0/C5/E复验已获准，前置验收完成，等待用户再次允许；尚未启动。** 使用378693和原官方冻结pxm权重，不训练模型。新产物根为`/storage/penghongen/PocketXMol/sampling/official-SMILES/test`，配置为`configs/docking/sample-official-SMILES-test.yml`；新W&B及指标尚未产生。
-
-## 正式运行命令
-
-用户再次明确允许后依次执行`bash 训练与运行/sh/sample_docking.sh official-SMILES-test`与`bash 训练与运行/sh/evaluate_docking.sh official-SMILES-test`，当前未执行。每协议446实例、每实例50候选、100步；使用已有冻结C5和视图。
+本文件保留旧配体编码的历史结果与尝试，不再承载本次修正编码复验的进度。当前复验见[独立实验日志](../RA-T0第二次严格消融/3-official-SMILES.md)。
 
 ## 之前的尝试：旧配体编码对照
 
