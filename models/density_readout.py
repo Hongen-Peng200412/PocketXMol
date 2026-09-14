@@ -10,6 +10,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
+from torch_geometric.utils import to_dense_batch
 
 
 def density_attention(query,key,value,query_pos,key_pos,beta,distance_bias,backend):
@@ -23,7 +24,7 @@ def density_attention(query,key,value,query_pos,key_pos,beta,distance_bias,backe
         - key_pos: (B, K, 3), 体素中心局部 XYZ 坐标, 与 query_pos 共用模型原点, 单位 Å.
         - beta: (heads,), 可学习距离参数; softplus(beta) 为非负系数, 每头独立.
         - distance_bias: bool, True 时分数为 qk/8-softplus(beta)*||(x-p)/10 Å||², False 时仅为 qk/8.
-        - backend: str, reference 显式构造分数用于验收; 无距离偏置时 flash 强制 Flash, sdpa 允许 PyTorch 选择内核.
+        - backend: str, reference 显式构造分数用于验收; 无距离偏置时 flash 强制 Flash, sdpa 允许 PyTorch 选择内核; flash 接收 FP32 投影时仅在内核入口转为 bf16, 返回时恢复原 value 类型.
     输出形状为 (B, heads, N, 64), softmax 及求和沿 K 个体素进行.
     距离偏置在禁用 autocast 的几何段计算, 正式输入使用 FP32, float64 验收输入保持 float64; 该分支显式使用 SDPA 数学内核.
     """
@@ -40,9 +41,12 @@ def density_attention(query,key,value,query_pos,key_pos,beta,distance_bias,backe
             bias = -F.softplus(beta.to(geometry_dtype))[None,:,None,None]*squared[:,None]  # (B, heads, N, K), 逐头系数广播到同分子的原子-体素距离.
             with sdpa_kernel(SDPBackend.MATH):
                 return F.scaled_dot_product_attention(query,key,value,attn_mask=bias,dropout_p=0,scale=1/8)
+    original_dtype = value.dtype
+    if backend == 'flash' and query.dtype not in (torch.float16,torch.bfloat16):
+        query,key,value = query.bfloat16(),key.bfloat16(),value.bfloat16()
     with sdpa_kernel(SDPBackend.FLASH_ATTENTION) if backend == 'flash' else sdpa_kernel([SDPBackend.FLASH_ATTENTION,SDPBackend.EFFICIENT_ATTENTION,SDPBackend.MATH]):
         result = F.scaled_dot_product_attention(query,key,value,dropout_p=0,scale=1/8)
-    return result
+    return result.to(original_dtype)
 
 
 # ================================================================================================
@@ -55,6 +59,7 @@ class DensityReadout(nn.Module):
     前向输入输出见 forward; 六个去噪块各持有一套参数, 不共享 alpha、beta 或投影层, 额外门控恒为 1.
     """
     def __init__(self,node_dim,config):
+        """建立一个块的独立投影; node_dim 当前为320, config 固定D1/D4与数值内核."""
         super().__init__()
         self.mode = config['mode']
         self.backend = config['attention_backend']
@@ -73,54 +78,61 @@ class DensityReadout(nn.Module):
         self.register_buffer('offsets',torch.stack(torch.meshgrid(offsets,offsets,offsets,indexing='ij'),dim=-1).reshape(-1,3),persistent=False)
 
     def forward(self,h_node,pos_node,batch_node,feature,origin,basis):
-        """逐分子从固定密度特征读取当前原子邻域, 返回 (N, node_dim) 残差.
+        """批量读取每个原子的当前密度邻域, 返回 (N, node_dim) 残差.
 
         输入参数:
-            - h_node: (N, node_dim), 此批全部 N 个配体原子的当前隐藏特征.
+            - h_node: (N, node_dim), 此批全部 N 个配体原子的当前隐藏特征; 输出恢复其原始类型.
             - pos_node: (N, 3), 与 h_node 逐原子对齐的当前局部 XYZ 坐标, 单位 Å; 每个去噪块重新读取.
-            - batch_node: int64, (N,), 每个原子所属的分子编号, 如 [0, 0, 1], 索引 feature、origin、basis 的首维.
-            - feature: D1 为 (B, 256, 6, 6, 6), D4 为 (B, 48, 48, 48, 48), B 个分子的编码密度, 空间轴为 ZYX.
+            - batch_node: int64, (N,), 按 PyG 拼批顺序排列的分子编号, 如 [0, 0, 1], 索引 feature、origin、basis 首维.
+            - feature: D1 为 (B, 256, 6, 6, 6), D4 为 (B, 48, 48, 48, 48), B 个分子的编码密度, 空间轴 ZYX.
             - origin: float32, (B, 3), 实际裁块角点的模型局部 XYZ 坐标, 单位 Å.
             - basis: float32, (B, 3, 3), 三行依次为源 X、Y、Z 一个体素步长在局部坐标系的向量, 单位 Å.
-        D4 的 home 是连续 XYZ 体素坐标向下取整后的索引; 邻域与裁块求交集, 不把越界原子夹到边缘, 空交集返回零残差.
+        投影和残差乘法使用参数类型, 正式混合精度训练的参数为 FP32; 普通 D1 Flash 的内核入口例外见 density_attention.
+        几何使用 FP32 逐元素乘加, 避免全局 medium 矩阵精度改变 floor 边界; D4 邻域与裁块取交集, 空交集返回零残差.
         """
-        result = torch.zeros_like(h_node)
-        # 按分子切分, 任何读出都不混用其它分子的密度或原子.
-        for molecule in range(feature.shape[0]):
-            atom_ids = torch.nonzero(batch_node==molecule,as_tuple=False).flatten()
-            if atom_ids.numel()==0:
-                continue
-            atom_pos = pos_node[atom_ids]
-            voxel_features = feature[molecule].flatten(1).transpose(0,1)  # [channels, Z, Y, X] -> [K, channels], X 索引变化最快.
-            query = self.query(h_node[atom_ids]).reshape(-1,4,64)  # (N_mol, 4, 64), 当前分子的原子查询分为四头.
+        original_dtype = h_node.dtype
+        with torch.autocast(device_type=h_node.device.type,enabled=False):
+            h_node = h_node.to(self.query.weight.dtype)
             if self.mode == 'D1':
+                # query: (B, N_max, 256), valid: (B, N_max); 只补齐变长查询, 不增加密度体素或跨分子混合.
+                query,valid = to_dense_batch(self.query(h_node),batch_node,batch_size=feature.shape[0])
+                atom_pos,_ = to_dense_batch(pos_node,batch_node,batch_size=feature.shape[0])
+                query = query.reshape(feature.shape[0],-1,4,64).transpose(1,2)
+                # (B, 256, 6, 6, 6) -> (B, 216, 256), X 索引变化最快; 全批量共享投影运算而不共享分子特征.
+                voxel_features = feature.flatten(2).transpose(1,2).to(self.key.weight.dtype)
+                key = self.key(voxel_features).reshape(feature.shape[0],-1,4,64).transpose(1,2)
+                value = self.value(voxel_features).reshape(feature.shape[0],-1,4,64).transpose(1,2)
                 with torch.autocast(device_type=pos_node.device.type,enabled=False):
-                    voxel_pos = origin[molecule].float()+self.voxel_xyz.float()@basis[molecule].float()
-                key = self.key(voxel_features).reshape(1,-1,4,64).transpose(1,2)
-                value = self.value(voxel_features).reshape(1,-1,4,64).transpose(1,2)
-                attended = density_attention(query.transpose(0,1)[None],key,value,atom_pos[None],voxel_pos[None],self.beta,self.distance_bias,self.backend)[0].transpose(0,1).reshape(-1,256)
-                result[atom_ids] = (self.alpha*self.output(attended)).to(result.dtype)
-            else:
-                # floor 定义 home, 保留越界索引后取交集; 禁止把原子夹到边缘.
+                    voxel_pos = origin[:,None].float()+(self.voxel_xyz[None,:,:,None].float()*basis[:,None].float()).sum(-2)
+                attended = density_attention(query,key,value,atom_pos,voxel_pos,self.beta,self.distance_bias,self.backend)
+                attended = attended.transpose(1,2).reshape(feature.shape[0],-1,256)[valid]
+                # (B, N_max, 256) 按 valid 恢复原 N 个原子; alpha 在 FP32 中参与乘法和标量梯度归约.
+                return (self.alpha*self.output(attended).to(self.alpha.dtype)).to(original_dtype)
+            # 全批次原子一次索引; 每个原子使用自己分子的角点和体素基向量.
+            with torch.autocast(device_type=pos_node.device.type,enabled=False):
+                atom_origin = origin.float()[batch_node]
+                atom_basis = basis.float()[batch_node]
+                inverse = torch.linalg.inv(basis.float())[batch_node]
+                home = torch.floor(((pos_node.float()-atom_origin)[:,:,None]*inverse).sum(-2)).long()
+            neighborhood = home[:,None]+self.offsets[None]  # int64, (N, 343, 3), 各原子周围 7³ 体素的 XYZ 索引, 可越界.
+            inside = ((neighborhood>=0)&(neighborhood<48)).all(-1)  # bool, (N, 343), True 表示落在此分子裁块内.
+            linear = neighborhood[...,2]*48*48+neighborhood[...,1]*48+neighborhood[...,0]
+            linear = linear.masked_fill(~inside,0)+batch_node[:,None]*(48**3)  # (N, 343), 加分子偏移后索引全批 ZYX 展平体素; 无效占位随后屏蔽.
+            voxel_features = feature.permute(0,2,3,4,1).reshape(-1,48)
+            selected = voxel_features[linear].to(self.key.weight.dtype)
+            query = self.query(h_node).reshape(-1,4,64)
+            key = self.key(selected).reshape(len(h_node),343,4,64).permute(0,2,1,3)
+            value = self.value(selected).reshape(len(h_node),343,4,64).permute(0,2,1,3)
+            scores = (query[:,:,None]*key).sum(-1)/8
+            if self.distance_bias:
                 with torch.autocast(device_type=pos_node.device.type,enabled=False):
-                    home = torch.floor((atom_pos.float()-origin[molecule].float())@torch.linalg.inv(basis[molecule].float())).long()
-                neighborhood = home[:,None]+self.offsets[None]  # int64, (N_mol, 343, 3), 各原子周围 7³ 个体素的 XYZ 索引, 可越界.
-                inside = ((neighborhood>=0)&(neighborhood<48)).all(-1)  # bool, (N_mol, 343), True 对应裁块内可用体素.
-                linear = neighborhood[...,2]*48*48+neighborhood[...,1]*48+neighborhood[...,0]  # (N_mol, 343), XYZ 索引转为 ZYX 数组展平后的体素编号.
-                selected = voxel_features[linear.masked_fill(~inside,0)]
-                key = self.key(selected).reshape(len(atom_ids),343,4,64).permute(0,2,1,3)
-                value = self.value(selected).reshape(len(atom_ids),343,4,64).permute(0,2,1,3)
-                scores = (query.permute(0,1,2)[:,:,None]*key).sum(-1)/8
-                if self.distance_bias:
-                    with torch.autocast(device_type=pos_node.device.type,enabled=False):
-                        voxel_pos = origin[molecule].float()+(neighborhood.float()+0.5)@basis[molecule].float()
-                    squared = (atom_pos[:,None]-voxel_pos).square().sum(-1)/100
-                    scores = scores-F.softplus(self.beta)[None,:,None]*squared[:,None]
-                scores = scores.masked_fill(~inside[:,None],float('-inf'))
-                nonempty = inside.any(-1)
-                scores = torch.where(nonempty[:,None,None],scores,torch.zeros_like(scores))
-                weights = scores.softmax(-1)*inside[:,None]  # (N_mol, 4, 343), 沿邻域归一化, 空交集再置零以屏蔽无效取值.
-                attended = (weights[...,None]*value).sum(-2).reshape(-1,256)
-                residual = self.alpha*self.output(attended)
-                result[atom_ids] = (residual*nonempty[:,None]).to(result.dtype)
-        return result
+                    voxel_pos = atom_origin[:,None]+((neighborhood.float()+0.5)[...,None]*atom_basis[:,None]).sum(-2)
+                squared = (pos_node[:,None]-voxel_pos).square().sum(-1)/100
+                scores = scores-F.softplus(self.beta)[None,:,None]*squared[:,None]
+            scores = scores.masked_fill(~inside[:,None],float('-inf'))
+            nonempty = inside.any(-1)
+            scores = torch.where(nonempty[:,None,None],scores,torch.zeros_like(scores))
+            weights = scores.softmax(-1)*inside[:,None]  # (N, 4, 343), 沿各原子的有效邻域归一化; 空交集权重全零.
+            attended = (weights[...,None]*value).sum(-2).reshape(-1,256)
+            residual = self.alpha*self.output(attended).to(self.alpha.dtype)
+            return (residual*nonempty[:,None]).to(original_dtype)
