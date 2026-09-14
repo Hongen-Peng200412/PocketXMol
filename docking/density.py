@@ -71,7 +71,7 @@ def load_density_input(root, pdb_id, query_center_xyz, model_center_xyz):
     requested = np.rint(((query - origin) / spacing)[::-1] - 24).astype(np.int64)
     start = np.clip(requested, 0, np.asarray(exp.shape) - 48)
     region = tuple(slice(int(s), int(s) + 48) for s in start)
-    corner = origin + start[::-1] * spacing  # (3,), 实际裁块边界角点的世界 XYZ 坐标, 单位 Å.
+    corner = origin + start[::-1].astype(np.float32) * spacing  # float32, (3,), 实际裁块边界角点的世界 XYZ 坐标, 单位 Å.
     local = (receptor - corner) / spacing
     inside = np.all((local >= 0) & (local < 48), axis=1)  # bool, (N,), 标记完整受体中落入此裁块的原子.
     home = np.floor(local[inside]).astype(np.int64)  # int64, (K, 3), K 个块内受体原子所在体素的 XYZ 索引.
