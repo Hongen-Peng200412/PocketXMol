@@ -7,8 +7,7 @@ train_config: /storage/penghongen/PocketXMol/training/B-C-T0-RA-C0/train_config/
 checkpoint: /storage/penghongen/PocketXMol/training/B-C-T0-RA-C0/checkpoints/step=21600.ckpt
 # str, 模型和OccurrenceDataset均使用RA联合受体图及共享口袋编码器.
 receptor_branch: RA
-# bool, False保留原高斯采样; C5给定中心不被真实中心覆盖, 不增加整体平移.
-center_translation: false
+# T0固定使用原高斯采样; C5给定中心不被真实中心覆盖, 不增加整体平移.
 dataset:
   # str, 原图、沉积坐标及标准受体资产根, 只读.
   root: /storage/penghongen/AdaLigand/Ori_Data

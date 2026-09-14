@@ -518,7 +518,6 @@ class ConfSampleNoiser(BaseSampleNoiser):
         - recenter: str, free 构象加噪后的整体刚体处理; ``norotate`` 额外用 Kabsch 移除全局旋转.
         - spring_in: dict|False, 继承自基类的可选键长弹簧配置.
         - reassign_in: bool, 是否在训练加噪后选择最接近真值的同构原子排列.
-        - center_translation: bool, 缺省 False 保持原噪声; True 仅在 dock/free 的非先验步加入 T1 整分子平移, 强度为真实信息等级对应的 1-level_dict['pos'].
 
     运动模式 ``batch.task_setting``:
         - free: 每个原子独立三维位移; level 字段 ``pos`` 与 N 个原子对齐.
@@ -529,7 +528,6 @@ class ConfSampleNoiser(BaseSampleNoiser):
     构象与 docking 的关键差异:
         - ``task=conf`` 在先验前后按图减去配体几何中心, 消除无意义的整体平移.
         - ``task=dock`` 不重居中, 因而保留配体相对口袋的整体平移与旋转作为待预测自由度.
-        - T1 在原高斯加噪后加入 s*(given_center_local-当前干净配体质心), 首步 from_prior=True 不加入; 训练的当前干净坐标是真值, 采样后续步是上次模型预测.
 
     模型输出契约:
         - outputs.pred_pos: float, (N, 3), 网络直接预测坐标, 单位 Å.
@@ -541,7 +539,7 @@ class ConfSampleNoiser(BaseSampleNoiser):
         mode='sample', device='cpu', ref_config=None, task_name='conf',
         **kwargs
     ):
-        """装配坐标先验、信息等级和可选 T1 平移开关, 其余预处理与输出约束保持原配置.
+        """装配原坐标先验与信息等级, 预处理、同构重分配和固定字段恢复保持原配置.
 
         config 字段及自由度含义见类 Docstring; num_node_types、num_edge_types 是原离散词表大小, 坐标任务不增加类别噪声.
         mode 决定训练或采样的信息等级来源, device 决定先验张量设备; ref_config 仅用于原有 prior='from_train' 配置读取.
@@ -562,8 +560,6 @@ class ConfSampleNoiser(BaseSampleNoiser):
 
         # ``self.level``: MolInfoLevel, 将训练随机采样或采样 step 转为各自由度的 [0, 1] 信息保留量.
         self.level = MolInfoLevel(config.level, device=device, mode=mode)
-        # bool, False 保持原版输入分布; T1 只在 add_noise 的 dock/free 非先验分支使用.
-        self.center_translation = config.get('center_translation', False)
         
         # ``self.pre_process``: str|None, 在先验之后、fixed 硬恢复之前约束输入坐标; 锚点先验使用 ``fix_closest``.
         self.pre_process = config.get('pre_process', None)
@@ -670,14 +666,13 @@ class ConfSampleNoiser(BaseSampleNoiser):
             - batch.task: str|list[str], ``conf`` 或 ``dock``.
             - batch.task_setting: str|list[str], ``free``、``flexible``、``torsional`` 或 ``rigid``.
             - batch.node_type_batch: int64, (N,), 可选; 每个原子所属图号, 范围 0..B-1.
-            - batch.given_center_local: float32, (B, 3), T1 专用; 给定 docking 中心的模型局部 XYZ 坐标, 单位 Å, 与 node_pos 共用本次旋转后的坐标轴和模型原点; 中心模式为全零, 单样本 B=1.
             - batch.tor_bonds_anno: int64, (T, 3), ``[BFS 序号, 远端轴原子, 近端轴原子]``.
             - batch.twisted_nodes_anno: int64, (W, 2), ``[扭转行号, 随该键转动的原子]``.
             - batch.domain_node_index: int64, (2, N_d), ``[刚性域号, 域内原子]``; 结构化先验据此按域展开变换.
             - batch.num_nodes: int, 单个 Data 不含 node_type_batch 时使用的原子数.
             - from_prior: bool, True 从先验初始化; False 在当前坐标周围按 level 加噪.
             - level_dict: dict[str, Tensor], 键和形状由 ``sample_level`` 定义.
-            - level_dict.pos: float, (N,), free 模式的真实信息保留量; 同一分子的原子共享数值, T1 使用 s=1-level_dict.pos, 不用采样步号代替.
+            - level_dict.pos: float, (N,), free 模式的真实信息保留量; 同一分子的原子共享数值, 实际噪声强度为s=1-level_dict.pos, 不用采样步号代替.
 
         传给 ``MolPrior`` 的附加字段:
             - node_type: None, 明确关闭原子类别先验输入.
@@ -692,9 +687,7 @@ class ConfSampleNoiser(BaseSampleNoiser):
             - pos: float, (N, 3), 加噪、必要时重居中并可选去全局旋转后的坐标, 单位 Å.
             - halfedge: int64, (H,), 与输入 halfedge_type 相同.
 
-        T1 执行边界:
-            - 仅 center_translation=True、task=dock、task_setting=free、from_prior=False 时加入整分子平移; 不改变高斯噪声的分子尺寸缩放和裁限.
-            - 质心从本次 node_pos 沿每个分子的原子维取算术平均, 不读取独立真值字段; 本函数返回后, BaseSampleNoiser.__call__ 再执行同构重排和 fixed 恢复.
+        本函数返回后, BaseSampleNoiser.__call__再执行原同构重分配与fixed恢复; dock不对候选质心作额外调整.
         """
         # ``task``: str, 决定是否在加噪前后移除配体整体平移; conf 会, dock 不会.
         task = self._get_task(batch)
@@ -746,20 +739,6 @@ class ConfSampleNoiser(BaseSampleNoiser):
         # ``pos_in``: FloatTensor, 形状为 (N, 3); 按 free 或 trans/rot/tor 先验生成的坐标, 单位 Å.
         pos_in = self.prior.add_noise(node_pos=node_pos.clone(), level_dict=level_dict,
                                       from_prior=from_prior, **additional_kwargs,)
-
-        if self.center_translation and task == 'dock' and setting == 'free' and not from_prior:
-            # int64, (N,), 每个配体原子所属分子编号; 训练单样本没有 PyG batch 向量时全部属于分子 0.
-            batch_node = batch['node_type_batch'] if 'node_type_batch' in batch else torch.zeros_like(node_type)
-            # (B, 3), 给定 docking 中心的模型局部 XYZ 坐标, 单位 Å; 中心模式原点本身即给定中心.
-            given_center_local = batch['given_center_local']
-            # [N, 3] -> [B, 3], 按分子对当前干净配体坐标取算术平均; 训练使用真值坐标, 迭代采样使用上次干净预测.
-            clean_center = scatter_mean(node_pos, batch_node, dim=0, dim_size=given_center_local.shape[0])
-            # [B, 3] -> [N, 3], 每个原子共享所属分子的指向给定中心的平移向量, 单位 Å.
-            center_shift = (given_center_local - clean_center)[batch_node]
-            # (N,), 真实信息等级对应的噪声权重 s; 同一分子取相同值, s=0 时完全不平移.
-            noise_weight = 1 - level_dict['pos']
-            # [N, 1] * [N, 3] -> [N, 3], 广播 XYZ 轴并加入 s 倍整体平移; 不额外抽取随机偏移.
-            pos_in = pos_in + noise_weight[:, None] * center_shift
 
         # # recenter after add_noise
         if (task == 'conf'):

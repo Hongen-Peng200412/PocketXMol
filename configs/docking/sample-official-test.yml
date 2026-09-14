@@ -5,8 +5,6 @@ train_config: /storage/penghongen/PocketXMol_official_test/extracted/data/traine
 checkpoint: /storage/penghongen/PocketXMol_official_test/extracted/data/trained_models/pxm/checkpoints/pocketxmol.ckpt
 # str, OccurrenceDataset仅保留标准蛋白输入; 标准核酸仍参加独立评价的完整受体碰撞检查.
 receptor_branch: protein
-# bool, sample_docking关闭T1附加平移, 保留原官方高斯采样.
-center_translation: false
 dataset:
   # str, 只读AdaLigand基础图、沉积坐标、受体、语言向量与地图资产根.
   root: /storage/penghongen/AdaLigand/Ori_Data

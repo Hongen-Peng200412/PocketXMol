@@ -1,6 +1,6 @@
 """使用原 free docking 采样循环生成冻结实例的候选坐标和原始置信度.
 
-先读 sample_occurrence 的单实例生成与保存, 再读 sample_docking 的模型和全量清单装配. 官方模型和 RA/RB 模型使用同一候选预算、噪声调度和结果格式.
+先读 sample_occurrence 的单实例生成与保存, 再读 sample_docking 的模型和全量清单装配. 官方模型和 RA 模型使用同一候选预算、噪声调度和结果格式.
 输出根由 config.output_root 决定. <split>/<protocol>/<pdb_id>/<occurrence_id>/ 下的 poses.sdf 保存成功候选世界坐标, candidates.json 保存全部候选的状态和置信度汇总, confidence.npz 保存成功候选的原始置信度.
 result.json 在其他产物写完后才原子写入, 表示该实例的全部候选已经尝试, 成功数可以为零. 未出现该文件的实例在续跑时按冻结种子重新执行.
 """
@@ -35,7 +35,7 @@ def sample_occurrence(dataset, index, model, noiser, featurizer, config, protoco
     输入参数:
         - dataset: OccurrenceDataset, 已完成累计筛选的实例清单, 按当前 protocol 装配原子和口袋.
         - index: int, 索引 dataset.records 中的当前 occurrence.
-        - model: 已加载明确 checkpoint 的 PMAsymDenoiser, eval 模式, 官方蛋白或 RA/RB 分支.
+        - model: 已加载明确 checkpoint 的 PMAsymDenoiser, eval 模式, 官方蛋白或 RA 分支.
         - noiser: 原 DockSamplNoiser, mode=sample, 使用 config.num_steps 个步骤.
         - featurizer: 原 FeaturizeMol, 将模型坐标加回实际 pocket_center 后解码.
         - config: EasyDict, 完整字段见 sample_docking.
@@ -278,8 +278,7 @@ def sample_docking(config):
         - model_name: str, 稳定实验名称, 如 B-C-T0-RA.
         - train_config: str, 对应模型明确的训练YAML路径, 提供 model、transforms.featurizer 和 noise.
         - checkpoint: str, 明确的官方或训练 best 路径; 不搜索相邻目录猜测权重.
-        - receptor_branch: str, protein保持官方25维蛋白入口, RA/RB启用对应核酸构造.
-        - center_translation: bool, 中心T1为True, 其它为False; 包络始终不施加T1.
+        - receptor_branch: str, protein保持官方25维蛋白入口, RA启用联合受体图与共享编码器.
         - dataset: Mapping, root、derived_root、manifest_root、knn与OccurrenceDataset相同; pocket_mode按当前协议设置.
         - protocols: list[str], 中心模型为[C0,C5], 包络为[E], 官方为[C0,C5,E].
         - split: str, validation或test, 两个划分分别保存完成标记.
@@ -328,7 +327,7 @@ def sample_docking(config):
         temporary_run.replace(run_path)
     task_transform = get_transforms(EasyDict(name="dock", settings={"free": 1}, free_no_geometry=True), mode="test")
     transforms = Compose([featurizer, task_transform])
-    # 原 docking 测试配置定义 advance 调度, 直接复用该成熟配置, 只接入已批准的步数与T1开关.
+    # 原 docking 测试配置定义 advance 调度, 直接复用该成熟配置, 只接入已批准的步数; C0/C5使用同一T0噪声公式.
     sample_config = make_config(str(Path(__file__).resolve().parents[1] / "configs/sample/test/dock_poseboff/base.yml"))
     for protocol in config.protocols:
         dataset_config = deepcopy(config.dataset)
@@ -338,7 +337,6 @@ def sample_docking(config):
 
         noise_config = deepcopy(sample_config.noise)
         noise_config.num_steps = config.num_steps
-        noise_config.center_translation = bool(config.center_translation and protocol != "E")
         noiser = get_sample_noiser(noise_config, featurizer.num_node_types, featurizer.num_edge_types, mode="sample", device=config.device, ref_config=train_config.noise)
         for index in range(len(dataset.records)):
             result = sample_occurrence(dataset, index, model, noiser, featurizer, config, protocol)

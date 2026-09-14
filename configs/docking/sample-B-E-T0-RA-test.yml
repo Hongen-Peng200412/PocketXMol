@@ -7,7 +7,6 @@ train_config: /storage/penghongen/PocketXMol/training/B-E-T0-RA-nonemptyE/train_
 checkpoint: /storage/penghongen/PocketXMol/training/B-E-T0-RA-nonemptyE/checkpoints/step=21600.ckpt
 # str, 模型和OccurrenceDataset均使用RA联合受体图及共享口袋编码器.
 receptor_branch: RA
-center_translation: false  # bool, 包络T0始终保持原dock高斯噪声链, 不增加整分子平移.
 dataset:
   # str, 原图、沉积坐标及标准受体资产根, 只读.
   root: /storage/penghongen/AdaLigand/Ori_Data
