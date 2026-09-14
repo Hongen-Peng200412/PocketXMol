@@ -44,6 +44,7 @@ class Bottleneck(nn.Module):
         checkpoint=False,
         **kwargs,
     ):
+        """建立三层瓶颈卷积及通道/步长匹配的残差投影, 参数见类说明."""
         super().__init__()
         self.activation_fn = activation_class()
         self.conv1 = conv_class(
@@ -81,9 +82,7 @@ class Bottleneck(nn.Module):
 
 
     def forward_normal(self, x):
-        """
-        普通前向传播
-        """
+        """把 x=(B, in_planes, D, H, W) 经过三层卷积与残差, 返回类说明中的下采样特征."""
         out = self.activation_fn(self.norm1(self.conv1(x)))
         out = self.activation_fn(self.norm2(self.conv2(out)))
         out = self.norm3(self.conv3(out))
@@ -92,9 +91,7 @@ class Bottleneck(nn.Module):
         return out
 
     def forward_checkpoint(self, x):
-        """
-        带梯度检查点的前向传播(节省显存)
-        """
+        """对 forward_normal 的相同输入输出启用反向重算, 不改变张量契约."""
         return torch_checkpoint(self.forward_normal, x, preserve_rng_state=False)
 
 
@@ -112,6 +109,7 @@ class ConvBuildingBlock(nn.Module):
     前向输入 x 为 (B, in_channels, D, H, W), 输出为 (B, out_channels, D, H, W).
     """
     def __init__(self, in_channels:int, out_channels:int, activate_class:nn.Module=nn.ReLU):
+        """建立两层3³卷积和匹配输出通道的残差投影, 参数见类说明."""
         super().__init__()
         self.activate_function = activate_class()
         self.conv1 = nn.Sequential(
@@ -133,6 +131,7 @@ class ConvBuildingBlock(nn.Module):
             )
     
     def forward(self,x:torch.Tensor):
+        """把 (B, in_channels, D, H, W) 的 x 映射为同空间尺寸的 out_channels 通道."""
         return self.activate_function(self.conv1(x) + self.shortcut_conv(x))
 
 
@@ -146,12 +145,14 @@ class ShortConv(nn.Module):
     前向输入 x 为 (B, in_channels, D, H, W), 输出为 (B, out_channels, D, H, W).
     """
     def __init__(self,in_channels:int,out_channels:int):
+        """建立指定输入/输出通道的单层卷积、实例归一化和ReLU."""
         super().__init__()
         self.conv1 = nn.Conv3d(in_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False)
         self.norm1 = nn.InstanceNorm3d(out_channels,affine=True)
         self.relu1 = nn.ReLU()
     
     def forward(self,x:torch.Tensor):
+        """返回 x 的单层投影; 输入输出空间尺寸不变, 通道形状见类说明."""
         y = self.norm1(self.conv1(x))
         y = self.relu1(y)
         return y
@@ -173,6 +174,7 @@ class ShortConvAdd(nn.Module):
     前向输出为 (B, output_channels, D, H, W); x1 虽为零, norm2 的可学习仿射偏置仍参与前向和训练.
     """
     def __init__(self, input_channels, output_channels: int):
+        """建立第一路卷积及两路归一化; 第二路通道数等于 output_channels."""
         super().__init__()
         self.output_channels = output_channels
         if input_channels is None:
@@ -185,6 +187,7 @@ class ShortConvAdd(nn.Module):
         self.relu1 = nn.ELU()
     
     def forward(self,x0,x1):
+        """对 x0 投影后加上 x1 的归一化结果并激活; 两路形状和全零约定见类说明."""
         y = self.norm1(self.conv1(x0))
         y = self.relu1( y + self.norm2(x1))
         return y
@@ -206,6 +209,7 @@ class Res2NetBlock(nn.Module):
     当前调用的前向输入 x 为 (B, in_channels, D, H, W), 输出为 (B, out_channels, D, H, W).
     """
     def __init__(self, in_channels, out_channels, stride=1, scale=4,activate_class:nn.Module=nn.ReLU):
+        """建立 scale 组级联卷积及残差投影; 当前编码器的 stride 始终为1."""
         super(Res2NetBlock, self).__init__()
         self.scale = scale
         self.conv1 = nn.Sequential(nn.Conv3d(in_channels, out_channels*self.scale, kernel_size=1, stride=1, padding=0, bias=False), nn.InstanceNorm3d(out_channels*self.scale, affine=True))
@@ -225,6 +229,7 @@ class Res2NetBlock(nn.Module):
             )
     
     def forward(self, x):
+        """沿通道拆分 x 的投影, 逐组融合后恢复输出通道; 输入输出形状见类说明."""
         # x_list: tuple of torch tensors, 每个元素形状为(B, out_channels, D, H, W)
         x_list = self.activate_class(self.conv1(x)).chunk(self.scale,dim=1)  # 将扩展后的特征在通道维度上分割成scale份
         # y_list: list of torch tensors, 存储级联卷积的输出
@@ -260,6 +265,7 @@ class AttentionGate(nn.Module):
         - forward返回: torch, (B, out_features, D, H, W), 融合后的特征图
     """
     def __init__(self, down_features:int, up_features:int, out_features:int, attention_features:int=64, attention_heads:int=8):
+        """建立两路查询/键投影、分组门控和输出残差卷积, 参数见类说明."""
         super(AttentionGate, self).__init__()
         self.dfz = down_features
         self.ufz = up_features

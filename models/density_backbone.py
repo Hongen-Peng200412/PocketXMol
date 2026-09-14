@@ -22,6 +22,7 @@ class VolumeAttention(nn.Module):
     三条数组索引轴分别生成旋转相位, 不使用世界 XYZ 或新增物理位置通道; DensityEncoder 连续组合四层.
     """
     def __init__(self, backend):
+        """建立固定八头的投影、RoPE频率与前馈层; backend 的取值见类说明."""
         super().__init__()
         self.backend = backend
         self.q = nn.Linear(256,1536)
@@ -70,6 +71,7 @@ class DensityEncoder(nn.Module):
     前向 voxel 为 (B, 56, 48, 48, 48), 不接收上一轮特征; 返回形状见 mode 定义.
     """
     def __init__(self, config):
+        """按 config.mode 建立所需编码与解码层; 参数和输出形状见类说明."""
         super().__init__()
         self.mode = config['mode']
         if self.mode not in ('D1','D4'):
