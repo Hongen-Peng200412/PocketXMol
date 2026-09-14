@@ -24,8 +24,6 @@ from models.ipa import ContextGAEdgeNet, GAEncoder
 from models.common import *
 from models.corrector import correct_pos, get_dihedral_batch
 from models.diffusion import *
-from models.density_backbone import DensityEncoder
-from models.density_readout import DensityReadout
 
 
 class PMAsymDenoiser(Module):
@@ -188,6 +186,9 @@ class PMAsymDenoiser(Module):
                             context_dim=pocket_dim, **config.denoiser)
         self.density_encoder = None
         if 'density' in config:
+            # 仅密度模型加载其卷积依赖, 既有无密度配置不要求安装 einops.
+            from models.density_backbone import DensityEncoder
+            from models.density_readout import DensityReadout
             self.density_encoder = DensityEncoder(config.density)
             self.denoiser.density_readers = nn.ModuleList([
                 DensityReadout(node_dim,config.density) for _ in range(config.denoiser.num_blocks)

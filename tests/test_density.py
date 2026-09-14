@@ -111,8 +111,8 @@ def test_cuda_bf16_preserves_home_at_crop_intersection_boundary():
 @pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA自动混合精度距离输出及梯度验收')
 @pytest.mark.parametrize('distance_bias',[False,True])
 def test_cuda_bf16_attention_against_fp32_reference(distance_bias):
-    if not distance_bias and not torch.backends.cuda.is_flash_attention_available():
-        pytest.skip('当前PyTorch构建未包含Flash；指定A800/Linux环境必须执行此检查')
+    if not distance_bias and not getattr(torch.backends.cuda, 'is_flash_attention_available', lambda: False)():
+        pytest.skip('当前PyTorch未报告Flash可用；指定A800/Linux环境必须执行此检查')
     torch.manual_seed(64)
     inputs=[torch.randn(2,4,n,64,device='cuda',dtype=torch.bfloat16,requires_grad=True) for n in (30,216,216)]
     inputs += [torch.randn(2,n,3,device='cuda',requires_grad=True)*10 for n in (30,216)]
