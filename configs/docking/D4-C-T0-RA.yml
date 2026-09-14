@@ -1,0 +1,165 @@
+# 密度mode和attention实现由PMAsymDenoiser读取；三维源裁块固定56通道。
+# flash强制PyTorch Flash内核；distance_bias启用逐头可学习平方物理距离偏置。
+# checkpoint仅重算激活节省显存；batch24×累积3保持每次更新72实例。
+model:
+  name: pm_asym_denoiser
+  pocket_dim: 128
+  node_dim: 320
+  addition_node_features:
+  - is_peptide
+  add_output:
+  - confidence
+  edge_dim: 96
+  pocket:
+    edge_dim: 32
+    hidden_dim: 128
+    num_blocks: 4
+    dist_cfg:
+      num_gaussians: 32
+  denoiser:
+    hidden_dim: 320
+    num_blocks: 6
+    dist_cfg:
+      stop: 15
+      num_gaussians: 64
+    gate_dim: 2
+    context_cfg:
+      edge_dim: 128
+      knn: 32
+      dist_cfg:
+        stop: 20
+        num_gaussians: 64
+        type_: linear
+  nucleic_branch: RA
+  density:
+    mode: D4
+    attention_backend: flash
+    distance_bias: true
+    checkpoint: true
+loss:
+  name: individual_tasks
+  weights:
+    node: 1.5
+    pos: 2.5
+    edge: 1.5
+    dist: 0.0005
+    dih: 0.0005
+    fixed_node: 0.1
+    fixed_pos: 0.1
+    fixed_edge: 0.1
+    fixed_dist: 0.0005
+  tasks:
+  - denovo
+  - conf
+  - sbdd
+  - dock
+  - maskfill
+  - fbdd
+  - pepdesign
+  confidence:
+    prob_1A: 0.2
+    weights:
+      node: 1
+      pos: 20
+      edge: 1
+noise:
+  name: mixed
+  individual:
+  - name: dock
+    reassign_in: true
+    prior:
+      pos:
+        name: allpos
+        pos:
+          name: gaussian_simple
+          sigma_func: sqrt
+          sigma_max: 1.0
+        translation:
+          name: translation
+          ve: false
+          mean: 0
+          std: 1
+        rotation:
+          name: rotation
+          sigma_max: 0.0002
+        torsional:
+          name: torsional
+          sigma_max: 0.2
+    level:
+      name: uniform
+      min: 0.0
+      max: 1.0
+transforms:
+  featurizer:
+    use_mask_node: true
+    use_mask_edge: true
+    chem:
+      atomic_numbers:
+      - 6
+      - 7
+      - 8
+      - 9
+      - 15
+      - 16
+      - 17
+      - 5
+      - 35
+      - 53
+      - 34
+      mol_bond_types:
+      - 1
+      - 2
+      - 3
+      - 4
+  task:
+    name: mixed
+    individual:
+    - name: dock
+      settings:
+        free: 1.0
+      free_no_geometry: true
+data:
+  dataset:
+    name: adaligand
+    root: /storage/penghongen/AdaLigand/Ori_Data
+    derived_root: /storage/penghongen/Adaligand_Build/Ori_Data/pocketxmol
+    manifest_root: /storage/penghongen/PocketXMol/data
+    pocket_mode: center
+    knn: 32
+train:
+  seed: 2023
+  batch_size: 24
+  num_workers: 15
+  pin_memory: true
+  max_steps: 40000
+  val_check_interval: 800
+  precision: bf16-mixed
+  persistent_workers: true
+  optimizer:
+    type: adamw
+    lr: 0.0001
+    weight_decay: 0.001
+    beta1: 0.99
+    beta2: 0.999
+    eps: 1.0e-08
+  scheduler:
+    warmup_step: 0
+    instance:
+      type: plateau
+      mode: min
+      threshold_mode: rel
+      threshold: 0.01
+      patience: 5
+      factor: 0.2
+      cooldown: 0
+      min_lr: 0
+      eps: 1.0e-08
+  global_batch_size: 72
+  accumulate_grad_batches: 3
+  log_every_n_steps: 50
+  initial_checkpoint: /storage/penghongen/PocketXMol_official_test/extracted/data/trained_models/pxm/checkpoints/pocketxmol.ckpt
+  wandb:
+    entity: pencounkdual-111
+    project: PocketXmol_density
+    name: D4-C-T0-RA
+    mode: online

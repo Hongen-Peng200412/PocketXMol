@@ -62,6 +62,8 @@ class DensityEncoder(nn.Module):
     def __init__(self, config):
         super().__init__()
         self.mode = config['mode']
+        if self.mode not in ('D1','D4'):
+            raise ValueError(f'密度模式{self.mode}尚未实现；当前只能显式选择D1或D4。')
         self.use_checkpoint = config['checkpoint']
         self.input_projection = ShortConvAdd(56,64)
         self.stem = ShortConv(64,256)

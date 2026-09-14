@@ -1,0 +1,39 @@
+# 密度编码与逐原子读出
+
+本目录的密度模块把固定56通道、48³体素输入转换为配体节点的320维残差；不写模型、地图或预测文件。原去噪器继续预测坐标，密度残差插在其六个节点更新之后、边和坐标更新之前。
+
+按实际计算顺序阅读：`docking/density.py`确定裁块与几何，`docking/density_channels.py`构造56通道，`density_backbone.py`编码体素，`density_readout.py`按当前原子坐标读取特征，最后由`maskfill.py`和`graph_context.py`接入原网络。`density_blocks.py`保存复用自Pocket_Plus的三维残差卷积与解码门控。
+
+## 输入与输出
+
+| 字段 | 类型、形状和含义 | 构造示例 |
+|---|---|---|
+| density_input | float32 `(B,56,48,48,48)`；B个实例，最后三维ZYX；只在裁块上计算通道 | 第0通道为未经归一化/后处理的exp，第55通道为posdiff_clipnorm_smooth2 |
+| density_origin | float32 `(B,3)`；裁块角点在模型局部XYZ坐标系的位置，Å | `[-24.0,-25.0,-24.5]` |
+| density_basis | float32 `(B,3,3)`；三行是源XYZ单位体素在模型坐标系的向量，Å | 未旋转且间距1 Å时为3×3单位矩阵 |
+| density_start_zyx | int64 `(B,3)`；源地图实际裁块起点 | `[12,8,20]` |
+| D1编码输出 | `(B,256,6,6,6)`；三次下采样和四层三维RoPE注意力后的体素特征 | 原数组XYZ粗索引0对应源连续坐标0.5，而非4 |
+| D4编码输出 | `(B,48,48,48,48)`；完整U-Net高分辨率特征 | XYZ索引`[2,3,4]`对应数组ZYX`[4,3,2]` |
+| 密度残差 | `(N,320)`；批次N个配体原子的特征增量 | 空查询邻域对应全零320维向量 |
+
+体素XYZ位置为`density_origin+(i+0.5)@density_basis`。D1中的i为`8*j`，j是6³特征的整数XYZ编号。原子连续体素坐标为`(pos-density_origin)@inverse(density_basis)`，home取floor。几何逆矩阵、矩阵乘法和floor明确使用FP32，避免混合精度改变边界体素归属。共同刚体增强同时变换origin、旋转basis并变换原子，源密度数组不旋转插值。
+
+## 固定56通道
+
+先用`rint`计算请求起点，再内缩到三轴均完整容纳48体素的范围；任一轴少于48时报错，不补零。exp和sim使用同一起点和源元数据，不重新重采样。
+
+通道顺序为运算`exp、sim、diff、posdiff`在外，归一化`nonorm、clipnorm`居中，后处理`nopost、gauss1、gauss2、DoG1、DoG2、smooth1、smooth2`在内。diff为`exp-(a*sim+b)`，posdiff为非负截断。clipnorm对当前运算结果的全48³裁块取0.001/0.999分位截断，再按均值和`std+1e-8`标准化；nonorm不改变数值，不再对最终56通道统一归一化。
+
+拟合优先使用两张图高密度候选与受体占据掩码的交集；掩码由整个原始受体的块内原子按floor占据生成，包括UNK，不读取GT配体。RA图仍只用标准蛋白和标准RNA/DNA。高斯reflect边界；DoG为`G(1.6σ)-G(σ)`；smooth按最近占据体素距离产生σ1/2、半径2体素的局部扣除强度。成熟拟合与空掩码数值行为保留，函数不返回边界有效体素mask。
+
+## 编码和注意力
+
+`model.density`存在才启用密度。`mode=D1`只构建并执行三次下采样，48³→24³→12³→6³；全分辨率编码通道256，下采样后均256。`mode=D4`保留第四次下采样至3³、完整解码及3³/5³/7³多尺度输出，最终48维。单次前向，不读取或输出上一轮特征。新参数随机初始化，原图网络从官方权重加载，不加载Pocket_Plus训练权重。
+
+瓶颈保留4层8头，每头192维三维RoPE。`attention_backend=reference`显式分数用于等价验收；`sdpa`允许PyTorch选择内核；`flash`强制Flash内核，不能静默回退。`checkpoint=true`在反向时重算重型块以节省显存。
+
+每个去噪块有独立4头×64维Q/K/V及320维输出投影，alpha可学习且初始0.1，额外门控g恒为1。D1每原子读取全部216特征。D4每个更新块按当前原子home周围各轴±3取邻域，与实际裁块求交集；完全空的交集给零残差，不把越界原子夹到边缘。
+
+`distance_bias=true`的分数为`qk/8-softplus(beta)*||(x-p)/10Å||²`，每头beta初始化使softplus为1。D1增广Q/K到72维、显式保持scale=1/8，省去只依赖query的softmax常数；D4直接计算局部距离。数值与梯度验收见`tests/test_density.py`；真实性能与选择证据见[预实验二](<../日志/预实验（一 --二之间）/2-密度I_O与GPU性能.md>)。
+
+D2并集与D3预测top-K尚未接入；不得把未实现模式当作D4运行。正式D2/D3应在实现对应接口并完成独立验收后再启用。

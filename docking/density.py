@@ -49,7 +49,7 @@ def load_density_input(root, pdb_id, query_center_xyz, model_center_xyz):
     requested = np.rint(((query - origin) / spacing)[::-1] - 24).astype(np.int64)
     start = np.clip(requested, 0, np.asarray(exp.shape) - 48)
     region = tuple(slice(int(s), int(s) + 48) for s in start)
-    corner = origin + start[::-1] * spacing
+    corner = origin + start[::-1].astype(np.float32) * spacing
     local = (receptor - corner) / spacing
     inside = np.all((local >= 0) & (local < 48), axis=1)
     home = np.floor(local[inside]).astype(np.int64)
