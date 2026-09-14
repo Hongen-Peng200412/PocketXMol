@@ -9,6 +9,7 @@ import torch
 from torch import nn
 from torch.nn import functional as F
 from torch.nn.attention import SDPBackend, sdpa_kernel
+from torch_geometric.utils import to_dense_batch
 
 
 def density_attention(query,key,value,query_pos,key_pos,beta,distance_bias,backend):
@@ -30,14 +31,18 @@ def density_attention(query,key,value,query_pos,key_pos,beta,distance_bias,backe
             bias = -F.softplus(beta.to(geometry_dtype))[None,:,None,None]*squared[:,None]
             with sdpa_kernel(SDPBackend.MATH):
                 return F.scaled_dot_product_attention(query,key,value,attn_mask=bias,dropout_p=0,scale=1/8)
+    original_dtype = value.dtype
+    if backend == 'flash' and query.dtype not in (torch.float16,torch.bfloat16):
+        query,key,value = query.bfloat16(),key.bfloat16(),value.bfloat16()
     with sdpa_kernel(SDPBackend.FLASH_ATTENTION) if backend == 'flash' else sdpa_kernel([SDPBackend.FLASH_ATTENTION,SDPBackend.EFFICIENT_ATTENTION,SDPBackend.MATH]):
         result = F.scaled_dot_product_attention(query,key,value,dropout_p=0,scale=1/8)
-    return result
+    return result.to(original_dtype)
 
 
 class DensityReadout(nn.Module):
     """单个去噪块的独立4头密度读出；alpha可学习，初始0.1，额外门控恒为1。"""
     def __init__(self,node_dim,config):
+        """建立一个块的独立投影；node_dim当前为320，config固定D1/D4与数值内核。"""
         super().__init__()
         self.mode = config['mode']
         self.backend = config['attention_backend']
@@ -56,43 +61,53 @@ class DensityReadout(nn.Module):
         self.register_buffer('offsets',torch.stack(torch.meshgrid(offsets,offsets,offsets,indexing='ij'),dim=-1).reshape(-1,3),persistent=False)
 
     def forward(self,h_node,pos_node,batch_node,feature,origin,basis):
-        result = torch.zeros_like(h_node)
-        # 按分子切分，保证任何读出都不混用其它分子的密度或原子。
-        for molecule in range(feature.shape[0]):
-            atom_ids = torch.nonzero(batch_node==molecule,as_tuple=False).flatten()
-            if atom_ids.numel()==0:
-                continue
-            atom_pos = pos_node[atom_ids]
-            voxel_features = feature[molecule].flatten(1).transpose(0,1)
-            query = self.query(h_node[atom_ids]).reshape(-1,4,64)
+        """读取当前位置；返回(N,320)残差，PyG节点按分子编号排列。
+
+        h_node为(N,320)，pos_node为局部XYZ(N,3)，batch_node为(N,)；
+        feature为(B,C,Z,Y,X)，origin为(B,3)，basis为(B,3,3)源体素基向量。
+        """
+        original_dtype = h_node.dtype
+        with torch.autocast(device_type=h_node.device.type,enabled=False):
+            h_node = h_node.to(self.query.weight.dtype)
             if self.mode == 'D1':
+                # 只对变长原子查询暂时补齐；所有分子的216个真实密度体素保持原样。
+                query,valid = to_dense_batch(self.query(h_node),batch_node,batch_size=feature.shape[0])
+                atom_pos,_ = to_dense_batch(pos_node,batch_node,batch_size=feature.shape[0])
+                query = query.reshape(feature.shape[0],-1,4,64).transpose(1,2)
+                voxel_features = feature.flatten(2).transpose(1,2).to(self.key.weight.dtype)
+                key = self.key(voxel_features).reshape(feature.shape[0],-1,4,64).transpose(1,2)
+                value = self.value(voxel_features).reshape(feature.shape[0],-1,4,64).transpose(1,2)
                 with torch.autocast(device_type=pos_node.device.type,enabled=False):
-                    voxel_pos = origin[molecule].float()+self.voxel_xyz.float()@basis[molecule].float()
-                key = self.key(voxel_features).reshape(1,-1,4,64).transpose(1,2)
-                value = self.value(voxel_features).reshape(1,-1,4,64).transpose(1,2)
-                attended = density_attention(query.transpose(0,1)[None],key,value,atom_pos[None],voxel_pos[None],self.beta,self.distance_bias,self.backend)[0].transpose(0,1).reshape(-1,256)
-                result[atom_ids] = (self.alpha*self.output(attended)).to(result.dtype)
-            else:
-                # floor定义home，保留越界索引后取交集；禁止把原子夹到边缘。
+                    voxel_pos = origin[:,None].float()+(self.voxel_xyz[None,:,:,None].float()*basis[:,None].float()).sum(-2)
+                attended = density_attention(query,key,value,atom_pos,voxel_pos,self.beta,self.distance_bias,self.backend)
+                attended = attended.transpose(1,2).reshape(feature.shape[0],-1,256)[valid]
+                # alpha在混合精度下仍为FP32；先提升投影再乘，避免标量梯度在bf16中归约。
+                return (self.alpha*self.output(attended).to(self.alpha.dtype)).to(original_dtype)
+            # 全批次原子一次gather；全局索引包含分子偏移，不会跨分子读取密度。
+            with torch.autocast(device_type=pos_node.device.type,enabled=False):
+                atom_origin = origin.float()[batch_node]
+                atom_basis = basis.float()[batch_node]
+                inverse = torch.linalg.inv(basis.float())[batch_node]
+                home = torch.floor(((pos_node.float()-atom_origin)[:,:,None]*inverse).sum(-2)).long()
+            neighborhood = home[:,None]+self.offsets[None]
+            inside = ((neighborhood>=0)&(neighborhood<48)).all(-1)
+            linear = neighborhood[...,2]*48*48+neighborhood[...,1]*48+neighborhood[...,0]
+            linear = linear.masked_fill(~inside,0)+batch_node[:,None]*(48**3)
+            voxel_features = feature.permute(0,2,3,4,1).reshape(-1,48)
+            selected = voxel_features[linear].to(self.key.weight.dtype)
+            query = self.query(h_node).reshape(-1,4,64)
+            key = self.key(selected).reshape(len(h_node),343,4,64).permute(0,2,1,3)
+            value = self.value(selected).reshape(len(h_node),343,4,64).permute(0,2,1,3)
+            scores = (query[:,:,None]*key).sum(-1)/8
+            if self.distance_bias:
                 with torch.autocast(device_type=pos_node.device.type,enabled=False):
-                    home = torch.floor((atom_pos.float()-origin[molecule].float())@torch.linalg.inv(basis[molecule].float())).long()
-                neighborhood = home[:,None]+self.offsets[None]
-                inside = ((neighborhood>=0)&(neighborhood<48)).all(-1)
-                linear = neighborhood[...,2]*48*48+neighborhood[...,1]*48+neighborhood[...,0]
-                selected = voxel_features[linear.masked_fill(~inside,0)]
-                key = self.key(selected).reshape(len(atom_ids),343,4,64).permute(0,2,1,3)
-                value = self.value(selected).reshape(len(atom_ids),343,4,64).permute(0,2,1,3)
-                scores = (query.permute(0,1,2)[:,:,None]*key).sum(-1)/8
-                if self.distance_bias:
-                    with torch.autocast(device_type=pos_node.device.type,enabled=False):
-                        voxel_pos = origin[molecule].float()+(neighborhood.float()+0.5)@basis[molecule].float()
-                    squared = (atom_pos[:,None]-voxel_pos).square().sum(-1)/100
-                    scores = scores-F.softplus(self.beta)[None,:,None]*squared[:,None]
-                scores = scores.masked_fill(~inside[:,None],float('-inf'))
-                nonempty = inside.any(-1)
-                scores = torch.where(nonempty[:,None,None],scores,torch.zeros_like(scores))
-                weights = scores.softmax(-1)*inside[:,None]
-                attended = (weights[...,None]*value).sum(-2).reshape(-1,256)
-                residual = self.alpha*self.output(attended)
-                result[atom_ids] = (residual*nonempty[:,None]).to(result.dtype)
-        return result
+                    voxel_pos = atom_origin[:,None]+((neighborhood.float()+0.5)[...,None]*atom_basis[:,None]).sum(-2)
+                squared = (pos_node[:,None]-voxel_pos).square().sum(-1)/100
+                scores = scores-F.softplus(self.beta)[None,:,None]*squared[:,None]
+            scores = scores.masked_fill(~inside[:,None],float('-inf'))
+            nonempty = inside.any(-1)
+            scores = torch.where(nonempty[:,None,None],scores,torch.zeros_like(scores))
+            weights = scores.softmax(-1)*inside[:,None]
+            attended = (weights[...,None]*value).sum(-2).reshape(-1,256)
+            residual = self.alpha*self.output(attended).to(self.alpha.dtype)
+            return (residual*nonempty[:,None]).to(original_dtype)

@@ -95,15 +95,37 @@ def test_d4_outside_intersection_empty_and_rigid_invariance():
     torch.testing.assert_close(rotated,actual,rtol=1e-5,atol=1e-6)
 
 
+@pytest.mark.parametrize('mode',['D1','D4'])
+def test_batched_readout_keeps_variable_size_molecules_separate(mode):
+    torch.manual_seed(92)
+    reader=DensityReadout(320,dict(mode=mode,attention_backend='sdpa',checkpoint=False,distance_bias=True))
+    side,channels=(6,256) if mode=='D1' else (48,48)
+    feature=torch.randn(2,channels,side,side,side)
+    hidden=torch.randn(5,320)
+    positions=torch.randn(5,3)+2
+    batch=torch.tensor([0,0,0,1,1])
+    origin=torch.tensor([[0.,0.,0.],[-2.,1.,-.5]])
+    basis=torch.eye(3).repeat(2,1,1)
+    actual=reader(hidden,positions,batch,feature,origin,basis)
+    expected=torch.cat([reader(hidden[batch==i],positions[batch==i],torch.zeros(int((batch==i).sum()),dtype=torch.long),feature[i:i+1],origin[i:i+1],basis[i:i+1]) for i in range(2)])
+    torch.testing.assert_close(actual,expected,rtol=1e-5,atol=1e-6)
+
+
 @pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA自动混合精度几何验收')
-def test_cuda_bf16_preserves_home_at_crop_intersection_boundary():
+@pytest.mark.parametrize('matmul_precision',['highest','medium'])
+def test_cuda_bf16_preserves_home_at_crop_intersection_boundary(matmul_precision):
     reader=DensityReadout(320,dict(mode='D4',attention_backend='reference',checkpoint=False,distance_bias=True)).cuda()
     feature=torch.randn(1,48,48,48,48,device='cuda')
     hidden=torch.randn(2,320,device='cuda')
     # 第一个home=50，其-3邻居47仍在块内；第二个home=51，全部邻居在块外。
     positions=torch.tensor([[50.9999*.7,3.2*.7,3.2*.7],[51.0001*.7,3.2*.7,3.2*.7]],device='cuda')
-    with torch.autocast('cuda',dtype=torch.bfloat16):
-        result=reader(hidden,positions,torch.zeros(2,dtype=torch.long,device='cuda'),feature,torch.zeros(1,3,device='cuda'),torch.eye(3,device='cuda')[None]*.7)
+    previous_precision=torch.get_float32_matmul_precision()
+    try:
+        torch.set_float32_matmul_precision(matmul_precision)
+        with torch.autocast('cuda',dtype=torch.bfloat16):
+            result=reader(hidden,positions,torch.zeros(2,dtype=torch.long,device='cuda'),feature,torch.zeros(1,3,device='cuda'),torch.eye(3,device='cuda')[None]*.7)
+    finally:
+        torch.set_float32_matmul_precision(previous_precision)
     assert result[0].abs().sum()>0
     assert torch.count_nonzero(result[1])==0
 
@@ -111,7 +133,7 @@ def test_cuda_bf16_preserves_home_at_crop_intersection_boundary():
 @pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA自动混合精度距离输出及梯度验收')
 @pytest.mark.parametrize('distance_bias',[False,True])
 def test_cuda_bf16_attention_against_fp32_reference(distance_bias):
-    if not distance_bias and not torch.backends.cuda.is_flash_attention_available():
+    if not distance_bias and not getattr(torch.backends.cuda,'is_flash_attention_available',lambda:False)():
         pytest.skip('当前PyTorch构建未包含Flash；指定A800/Linux环境必须执行此检查')
     torch.manual_seed(64)
     inputs=[torch.randn(2,4,n,64,device='cuda',dtype=torch.bfloat16,requires_grad=True) for n in (30,216,216)]
