@@ -152,8 +152,8 @@ class DataModule(pl.LightningDataModule):
             protocol = 'C0' if data_cfg.dataset.pocket_mode == 'center' else 'E'
             # Mapping|None, 与模型的密度配置共用唯一入口; 无密度配置不读地图、不改变原数据链.
             density_config = self.config.model.get('density')
-            train_set = OccurrenceDataset(data_cfg.dataset, 'train', self.transforms, self.config.model.nucleic_branch, protocol, True, density_config=density_config)
-            val_set = OccurrenceDataset(data_cfg.dataset, 'validation', self.transforms, self.config.model.nucleic_branch, protocol, False, density_config=density_config)
+            train_set = OccurrenceDataset(data_cfg.dataset, 'train', self.transforms, self.config.model.nucleic_branch, protocol, True, density_config=density_config, density_supervision=True)
+            val_set = OccurrenceDataset(data_cfg.dataset, 'validation', self.transforms, self.config.model.nucleic_branch, protocol, False, density_config=density_config, density_supervision=True)
             batch_size = train_cfg.batch_size
             val_workers = train_cfg.num_workers
         else:
@@ -264,7 +264,7 @@ class ModelLightning(pl.LightningModule):
             if self.is_docking:
                 incompatible = self.model.load_state_dict(model_state, strict=False)
                 # 新参数按模型自身初始化; 官方原主干和置信度参数仍须完整匹配, 不接受其他缺失.
-                missing = [key for key in incompatible.missing_keys if not key.startswith(('nucleic_embedder.', 'density_encoder.', 'denoiser.density_readers.'))]
+                missing = [key for key in incompatible.missing_keys if not key.startswith(('nucleic_embedder.', 'density_encoder.', 'density_selection.', 'denoiser.density_readers.'))]
                 if missing or incompatible.unexpected_keys:
                     raise RuntimeError(f'官方权重与原模型不匹配: missing={missing}, unexpected={incompatible.unexpected_keys}')
             else:
@@ -458,92 +458,102 @@ class ModelLightning(pl.LightningModule):
 
     def training_step(self, batch, batch_idx):
         """
-        对一个多任务 PyG 批次执行前向、损失计算和 OOM 裁剪重试。
+        对一个多任务 PyG 批次执行前向、损失计算和原OOM裁剪重试.
 
         输入参数:
-            - batch.node_in: LongTensor，形状为 (N,)，带噪原子类别。
-            - batch.pos_in: FloatTensor，形状为 (N, 3)，带噪配体局部坐标，单位 Å。
-            - batch.halfedge_in: LongTensor，形状为 (H,)，带噪半边类别。
-            - batch.halfedge_index: LongTensor，形状为 (2, H)，完全图半边端点。
-            - batch.fixed_node: LongTensor|BoolTensor，形状为 (N,)，原子类别条件掩码。
-            - batch.fixed_pos: LongTensor|BoolTensor，形状为 (N,)，坐标条件掩码。
-            - batch.fixed_halfedge: LongTensor|BoolTensor，形状为 (H,)，半边类别条件掩码。
-            - batch.fixed_halfdist: LongTensor|BoolTensor，形状为 (H,)，半边距离条件掩码。
+            - batch.node_in: LongTensor, 形状为 (N,), 带噪原子类别.
+            - batch.pos_in: FloatTensor, 形状为 (N, 3), 带噪配体局部坐标, 单位 Å.
+            - batch.halfedge_in: LongTensor, 形状为 (H,), 带噪半边类别.
+            - batch.halfedge_index: LongTensor, 形状为 (2, H), 完全图半边端点.
+            - batch.fixed_node: LongTensor|BoolTensor, 形状为 (N,), 原子类别条件掩码.
+            - batch.fixed_pos: LongTensor|BoolTensor, 形状为 (N,), 坐标条件掩码.
+            - batch.fixed_halfedge: LongTensor|BoolTensor, 形状为 (H,), 半边类别条件掩码.
+            - batch.fixed_halfdist: LongTensor|BoolTensor, 形状为 (H,), 半边距离条件掩码.
 
-            - batch.node_type_batch: LongTensor，形状为 (N,)，逐原子图归属编号。
-            - batch.halfedge_type_batch: LongTensor，形状为 (H,)，逐半边图归属编号。
+            - batch.node_type_batch: LongTensor, 形状为 (N,), 逐原子图归属编号.
+            - batch.halfedge_type_batch: LongTensor, 形状为 (H,), 逐半边图归属编号.
 
-            - batch.pocket_atom_feature: FloatTensor，形状为 (P, D_p_raw)，口袋输入特征。
-            - batch.pocket_pos: FloatTensor，形状为 (P, 3)，口袋局部坐标，单位 Å。
-            - batch.pocket_knn_edge_index: LongTensor，形状为 (2, E_p)，口袋 kNN 有向边端点。
-            - batch.pocket_pos_batch: LongTensor，形状为 (P,)，逐口袋原子图归属编号。
+            - batch.pocket_atom_feature: FloatTensor, 形状为 (P, D_p_raw), 口袋输入特征.
+            - batch.pocket_pos: FloatTensor, 形状为 (P, 3), 口袋局部坐标, 单位 Å.
+            - batch.pocket_knn_edge_index: LongTensor, 形状为 (2, E_p), 口袋 kNN 有向边端点.
+            - batch.pocket_pos_batch: LongTensor, 形状为 (P,), 逐口袋原子图归属编号.
 
-            - batch.node_type: LongTensor，形状为 (N,)，干净原子类别监督。
-            - batch.node_pos: FloatTensor，形状为 (N, 3)，干净配体局部坐标监督，单位 Å。
-            - batch.halfedge_type: LongTensor，形状为 (H,)，干净半边类别监督。
+            - batch.node_type: LongTensor, 形状为 (N,), 干净原子类别监督.
+            - batch.node_pos: FloatTensor, 形状为 (N, 3), 干净配体局部坐标监督, 单位 Å.
+            - batch.halfedge_type: LongTensor, 形状为 (H,), 干净半边类别监督.
 
-            - batch.task: list[str]，长度为 B，逐图任务名。
-            - batch.domain_node_index: LongTensor，形状为 (2, K)，刚体域—原子归属索引。
-            - batch.tor_bonds_anno: LongTensor，形状为 (T, 3)，扭转层级与轴端点。
-            - batch.dihedral_pairs_anno: LongTensor，形状为 (Q, 3)，扭转行号与二面角外侧端点。
-            - batch_idx: int, 当前 epoch 内批次编号；本实现不参与数值计算。
+            - batch.task: list[str], 长度为 B, 逐图任务名.
+            - batch.domain_node_index: LongTensor, 形状为 (2, K), 刚体域—原子归属索引.
+            - batch.tor_bonds_anno: LongTensor, 形状为 (T, 3), 扭转层级与轴端点.
+            - batch.dihedral_pairs_anno: LongTensor, 形状为 (Q, 3), 扭转行号与二面角外侧端点.
+            - batch_idx: int, 当前 epoch 内批次编号; 本实现不参与数值计算.
 
         中间结构:
-            - outputs.pred_node: FloatTensor，形状为 (N, C_n)，干净原子类别 logits。
-            - outputs.pred_pos: FloatTensor，形状为 (N, 3)，干净配体坐标预测，单位 Å。
-            - outputs.pred_halfedge: FloatTensor，形状为 (H, C_e)，干净半边类别 logits。
-            - outputs.confidence_node: FloatTensor，形状为 (N, 1)，可选原子 confidence 原始输出。
-            - outputs.confidence_pos: FloatTensor，形状为 (N, 1)，可选坐标 confidence 原始输出。
-            - outputs.confidence_halfedge: FloatTensor，形状为 (H, 1)，可选半边 confidence 原始输出。
+            - outputs.pred_node: FloatTensor, 形状为 (N, C_n), 干净原子类别 logits.
+            - outputs.pred_pos: FloatTensor, 形状为 (N, 3), 干净配体坐标预测, 单位 Å.
+            - outputs.pred_halfedge: FloatTensor, 形状为 (H, C_e), 干净半边类别 logits.
+            - outputs.confidence_node: FloatTensor, 形状为 (N, 1), 可选原子 confidence 原始输出.
+            - outputs.confidence_pos: FloatTensor, 形状为 (N, 1), 可选坐标 confidence 原始输出.
+            - outputs.confidence_halfedge: FloatTensor, 形状为 (H, 1), 可选半边 confidence 原始输出.
 
-            - loss_dict.<scope>/node: 标量 Tensor，待恢复原子类别损失。
-            - loss_dict.<scope>/fixed_node: 标量 Tensor，条件原子类别损失。
-            - loss_dict.<scope>/pos: 标量 Tensor，待恢复坐标损失。
-            - loss_dict.<scope>/fixed_pos: 标量 Tensor，条件坐标损失。
-            - loss_dict.<scope>/edge: 标量 Tensor，待恢复半边类别损失。
-            - loss_dict.<scope>/fixed_edge: 标量 Tensor，条件半边类别损失。
-            - loss_dict.<scope>/dist: 标量 Tensor，同域待恢复距离损失。
-            - loss_dict.<scope>/fixed_dist: 标量 Tensor，条件距离损失。
-            - loss_dict.<scope>/dih: 标量 Tensor，二面角周期损失。
-            - loss_dict.<scope>/total: 标量 Tensor，当前 scope 加权损失和。
-            - loss_dict.mixed/cfd_total: 标量 Tensor，可选 confidence 总损失。
-            - loss_dict.mixed/cfd_node: 标量 Tensor，可选原子 confidence BCE。
-            - loss_dict.mixed/cfd_pos: 标量 Tensor，可选坐标 confidence MSE。
-            - loss_dict.mixed/cfd_edge: 标量 Tensor，可选半边 confidence BCE。
-            - loss_dict.mixed/p_dist: 标量 Tensor，可选配体—口袋距离损失。
+            - loss_dict.<scope>/node: 标量 Tensor, 待恢复原子类别损失.
+            - loss_dict.<scope>/fixed_node: 标量 Tensor, 条件原子类别损失.
+            - loss_dict.<scope>/pos: 标量 Tensor, 待恢复坐标损失.
+            - loss_dict.<scope>/fixed_pos: 标量 Tensor, 条件坐标损失.
+            - loss_dict.<scope>/edge: 标量 Tensor, 待恢复半边类别损失.
+            - loss_dict.<scope>/fixed_edge: 标量 Tensor, 条件半边类别损失.
+            - loss_dict.<scope>/dist: 标量 Tensor, 同域待恢复距离损失.
+            - loss_dict.<scope>/fixed_dist: 标量 Tensor, 条件距离损失.
+            - loss_dict.<scope>/dih: 标量 Tensor, 二面角周期损失.
+            - loss_dict.<scope>/total: 标量 Tensor, 当前 scope 加权损失和.
+            - loss_dict.mixed/cfd_total: 标量 Tensor, 可选 confidence 总损失.
+            - loss_dict.mixed/cfd_node: 标量 Tensor, 可选原子 confidence BCE.
+            - loss_dict.mixed/cfd_pos: 标量 Tensor, 可选坐标 confidence MSE.
+            - loss_dict.mixed/cfd_edge: 标量 Tensor, 可选半边 confidence BCE.
+            - loss_dict.mixed/p_dist: 标量 Tensor, 可选配体—口袋距离损失.
+
+        D3附加字段与日志:
+            - batch.density_target: int64, (B,48,48,48), 当前B个实例的配体区域标签, 与各自密度裁块ZYX索引一致.
+            - outputs.density_logits: (B,2,48,48,48), 密度概率头预测的背景/配体区域logits, 只交给辅助监督.
+            - density_losses: dict[str, scalar Tensor], focal为全块焦点损失、dice为前景Dice-Tversky、weighted为0.1*(0.7*focal+0.3*dice), 分别记录为train/density_<key>.
 
         返回值:
-            - loss: 标量 Tensor；优先取 ``loss_dict['loss']``，当前 ``IndividualTasksLoss`` 路径取 ``loss_dict['mixed/total']``，由 Lightning 自动反向传播。
+            - loss: 标量 Tensor, 优先取loss_dict['loss'], 当前IndividualTasksLoss路径取loss_dict['mixed/total']; D3再加density_losses['weighted'], 由Lightning自动反向传播.
 
         OOM 分支:
-            - 仅捕获消息含 ``out of memory`` 的 ``RuntimeError``，调用 ``reduce_batch`` 后重试；其他异常原样抛出。
+            - 消息含out of memory的RuntimeError调用原reduce_batch后重试; 其它异常原样抛出, 偶发裁批按既定契约记录.
         """
 
         while True:
             try:
-                # ``outputs.pred_node``：FloatTensor，形状为 (N, C_n)，原子类别 logits。
-                # ``outputs.pred_pos``：FloatTensor，形状为 (N, 3)，配体局部坐标预测，单位 Å。
-                # ``outputs.pred_halfedge``：FloatTensor，形状为 (H, C_e)，半边类别 logits。
-                # ``outputs.confidence_node``：FloatTensor，形状为 (N, 1)，可选原子 confidence 原始输出。
-                # ``outputs.confidence_pos``：FloatTensor，形状为 (N, 1)，可选坐标 confidence 原始输出。
-                # ``outputs.confidence_halfedge``：FloatTensor，形状为 (H, 1)，可选半边 confidence 原始输出。
+                # ``outputs.pred_node``: FloatTensor, 形状为 (N, C_n), 原子类别 logits.
+                # ``outputs.pred_pos``: FloatTensor, 形状为 (N, 3), 配体局部坐标预测, 单位 Å.
+                # ``outputs.pred_halfedge``: FloatTensor, 形状为 (H, C_e), 半边类别 logits.
+                # ``outputs.confidence_node``: FloatTensor, 形状为 (N, 1), 可选原子 confidence 原始输出.
+                # ``outputs.confidence_pos``: FloatTensor, 形状为 (N, 1), 可选坐标 confidence 原始输出.
+                # ``outputs.confidence_halfedge``: FloatTensor, 形状为 (H, 1), 可选半边 confidence 原始输出.
                 outputs = self.model(batch)
-                # ``loss_dict.<scope>/node``：标量 Tensor，待恢复原子类别损失。
-                # ``loss_dict.<scope>/fixed_node``：标量 Tensor，条件原子类别损失。
-                # ``loss_dict.<scope>/pos``：标量 Tensor，待恢复坐标损失。
-                # ``loss_dict.<scope>/fixed_pos``：标量 Tensor，条件坐标损失。
-                # ``loss_dict.<scope>/edge``：标量 Tensor，待恢复半边类别损失。
-                # ``loss_dict.<scope>/fixed_edge``：标量 Tensor，条件半边类别损失。
-                # ``loss_dict.<scope>/dist``：标量 Tensor，同域待恢复距离损失。
-                # ``loss_dict.<scope>/fixed_dist``：标量 Tensor，条件距离损失。
-                # ``loss_dict.<scope>/dih``：标量 Tensor，二面角周期损失。
-                # ``loss_dict.<scope>/total``：标量 Tensor，当前 scope 加权损失和。
-                # ``loss_dict.mixed/cfd_total``：标量 Tensor，可选 confidence 总损失。
-                # ``loss_dict.mixed/cfd_node``：标量 Tensor，可选原子 confidence BCE。
-                # ``loss_dict.mixed/cfd_pos``：标量 Tensor，可选坐标 confidence MSE。
-                # ``loss_dict.mixed/cfd_edge``：标量 Tensor，可选半边 confidence BCE。
-                # ``loss_dict.mixed/p_dist``：标量 Tensor，可选配体—口袋距离损失。
+                # ``loss_dict.<scope>/node``: 标量 Tensor, 待恢复原子类别损失.
+                # ``loss_dict.<scope>/fixed_node``: 标量 Tensor, 条件原子类别损失.
+                # ``loss_dict.<scope>/pos``: 标量 Tensor, 待恢复坐标损失.
+                # ``loss_dict.<scope>/fixed_pos``: 标量 Tensor, 条件坐标损失.
+                # ``loss_dict.<scope>/edge``: 标量 Tensor, 待恢复半边类别损失.
+                # ``loss_dict.<scope>/fixed_edge``: 标量 Tensor, 条件半边类别损失.
+                # ``loss_dict.<scope>/dist``: 标量 Tensor, 同域待恢复距离损失.
+                # ``loss_dict.<scope>/fixed_dist``: 标量 Tensor, 条件距离损失.
+                # ``loss_dict.<scope>/dih``: 标量 Tensor, 二面角周期损失.
+                # ``loss_dict.<scope>/total``: 标量 Tensor, 当前 scope 加权损失和.
+                # ``loss_dict.mixed/cfd_total``: 标量 Tensor, 可选 confidence 总损失.
+                # ``loss_dict.mixed/cfd_node``: 标量 Tensor, 可选原子 confidence BCE.
+                # ``loss_dict.mixed/cfd_pos``: 标量 Tensor, 可选坐标 confidence MSE.
+                # ``loss_dict.mixed/cfd_edge``: 标量 Tensor, 可选半边 confidence BCE.
+                # ``loss_dict.mixed/p_dist``: 标量 Tensor, 可选配体—口袋距离损失.
                 loss_dict = self.loss_func(batch, outputs)
+                # D3才返回(B,2,48,48,48)区域logits; 标签只由监督数据流读取, 不参与体素选择.
+                density_losses = {}
+                if 'density_logits' in outputs:
+                    from models.density_selection import density_segmentation_loss
+                    density_losses = density_segmentation_loss(outputs['density_logits'], batch.density_target)
                 # print('\n', len(batch.node_type_batch), len(batch.pocket_pos_batch))
                 break
             except Exception as e:
@@ -558,24 +568,30 @@ class ModelLightning(pl.LightningModule):
                     raise e
 
         if 'loss' in loss_dict:
-            # ``loss``：scalar Tensor，兼容旧损失实现直接返回的总损失键。
+            # ``loss``: scalar Tensor, 兼容旧损失实现直接返回的总损失键.
             loss = loss_dict['loss']
         else:
-            # ``loss``：标量 Tensor，当前 reduced 配置的实际优化目标。
+            # ``loss``: 标量 Tensor, 当前 reduced 配置的实际优化目标.
             loss = loss_dict['mixed/total']
 
-        # ``k``：str，当前未加训练阶段前缀的损失键。
-        # ``v``：标量 Tensor，当前损失键对应的数值。
-        # ``loss_dict``：dict[str, scalar Tensor]，所有原损失键加 ``train_`` 前缀；记录时再把 ``train_mixed`` 替换为 ``train``。
+        if density_losses:
+            # weighted为0.1*(0.7*focal+0.3*dice); 只加到反传标量, 原dock损失字典保持原值.
+            loss = loss + density_losses['weighted']
+            self.log_dict({f'train/density_{key}': value for key, value in density_losses.items()}, batch_size=batch.num_graphs,
+                          sync_dist=self.sync_dist, prog_bar=False, logger=True)
+
+        # ``k``: str, 当前未加训练阶段前缀的损失键.
+        # ``v``: 标量 Tensor, 当前损失键对应的数值.
+        # ``loss_dict``: dict[str, scalar Tensor], 所有原损失键加 ``train_`` 前缀; 记录时再把 ``train_mixed`` 替换为 ``train``.
         loss_dict = {'train_'+k: v for k, v in loss_dict.items()}
         # if self.global_step != 73:
         # if True:
-        # ``k``：str，当前训练损失键；此日志映射只保留 ``mixed/`` 叶并把展示前缀改为 ``train``。
-        # ``v``：标量 Tensor，当前 mixed 损失叶值。
+        # ``k``: str, 当前训练损失键; 此日志映射只保留 ``mixed/`` 叶并把展示前缀改为 ``train``.
+        # ``v``: 标量 Tensor, 当前 mixed 损失叶值.
         self.log_dict({k.replace('train_mixed', 'train'):v for k, v in loss_dict.items() if 'mixed/' in k}, batch_size=batch.num_graphs,
                     sync_dist=self.sync_dist, prog_bar=True, logger=True)
-        # ``k``：str，当前训练损失键；此日志映射排除 ``mixed/`` 叶并保留命名任务前缀。
-        # ``v``：标量 Tensor，当前命名任务损失叶值。
+        # ``k``: str, 当前训练损失键; 此日志映射排除 ``mixed/`` 叶并保留命名任务前缀.
+        # ``v``: 标量 Tensor, 当前命名任务损失叶值.
         self.log_dict({k:v for k, v in loss_dict.items() if 'mixed/' not in k}, batch_size=batch.num_graphs,
                     sync_dist=self.sync_dist, prog_bar=False, logger=True)
 
@@ -583,51 +599,59 @@ class ModelLightning(pl.LightningModule):
 
     def validation_step(self, batch, batch_idx):
         """
-        在验证批次上执行与训练相同的前向和损失分解，不更新参数。
+        在验证批次上执行与训练相同的前向和损失分解, 不更新参数.
 
         输入参数:
-            - batch.node_in: LongTensor，形状为 (N,)，带噪原子类别。
-            - batch.pos_in: FloatTensor，形状为 (N, 3)，带噪配体局部坐标，单位 Å。
-            - batch.halfedge_in: LongTensor，形状为 (H,)，带噪半边类别。
-            - batch.halfedge_index: LongTensor，形状为 (2, H)，完整图半边端点，索引配体原子维。
-            - batch.fixed_node: LongTensor|BoolTensor，形状为 (N,)，0 表示原子类别待恢复，1 表示条件。
-            - batch.fixed_pos: LongTensor|BoolTensor，形状为 (N,)，0 表示坐标待恢复，1 表示条件。
-            - batch.fixed_halfedge: LongTensor|BoolTensor，形状为 (H,)，0 表示半边类别待恢复，1 表示条件。
-            - batch.fixed_halfdist: LongTensor|BoolTensor，形状为 (H,)，0 表示端点距离待恢复，1 表示条件。
-            - batch.node_type: LongTensor，形状为 (N,)，干净原子类别监督。
-            - batch.node_pos: FloatTensor，形状为 (N, 3)，干净配体局部坐标监督，单位 Å。
-            - batch.halfedge_type: LongTensor，形状为 (H,)，干净半边类别监督。
-            - batch.node_type_batch: LongTensor，形状为 (N,)，逐原子图归属编号，取值范围为 ``[0, B)``。
-            - batch.halfedge_type_batch: LongTensor，形状为 (H,)，逐半边图归属编号，取值范围为 ``[0, B)``。
-            - batch.task: list[str]，长度为 B，第 b 项是图 b 的任务名。
-            - batch.domain_node_index: LongTensor，形状为 (2, K)，第一行是刚体域号，第二行是批内原子编号。
-            - batch.tor_bonds_anno: LongTensor，形状为 (T, 3)，每行是执行层级和两个扭转轴端点。
-            - batch.dihedral_pairs_anno: LongTensor，形状为 (Q, 3)，每行是扭转行号和两个二面角外侧端点。
-            - batch_idx: int, 当前验证轮内批次编号；本实现不参与数值计算。
+            - batch.node_in: LongTensor, 形状为 (N,), 带噪原子类别.
+            - batch.pos_in: FloatTensor, 形状为 (N, 3), 带噪配体局部坐标, 单位 Å.
+            - batch.halfedge_in: LongTensor, 形状为 (H,), 带噪半边类别.
+            - batch.halfedge_index: LongTensor, 形状为 (2, H), 完整图半边端点, 索引配体原子维.
+            - batch.fixed_node: LongTensor|BoolTensor, 形状为 (N,), 0 表示原子类别待恢复, 1 表示条件.
+            - batch.fixed_pos: LongTensor|BoolTensor, 形状为 (N,), 0 表示坐标待恢复, 1 表示条件.
+            - batch.fixed_halfedge: LongTensor|BoolTensor, 形状为 (H,), 0 表示半边类别待恢复, 1 表示条件.
+            - batch.fixed_halfdist: LongTensor|BoolTensor, 形状为 (H,), 0 表示端点距离待恢复, 1 表示条件.
+            - batch.node_type: LongTensor, 形状为 (N,), 干净原子类别监督.
+            - batch.node_pos: FloatTensor, 形状为 (N, 3), 干净配体局部坐标监督, 单位 Å.
+            - batch.halfedge_type: LongTensor, 形状为 (H,), 干净半边类别监督.
+            - batch.node_type_batch: LongTensor, 形状为 (N,), 逐原子图归属编号, 取值范围为 ``[0, B)``.
+            - batch.halfedge_type_batch: LongTensor, 形状为 (H,), 逐半边图归属编号, 取值范围为 ``[0, B)``.
+            - batch.task: list[str], 长度为 B, 第 b 项是图 b 的任务名.
+            - batch.domain_node_index: LongTensor, 形状为 (2, K), 第一行是刚体域号, 第二行是批内原子编号.
+            - batch.tor_bonds_anno: LongTensor, 形状为 (T, 3), 每行是执行层级和两个扭转轴端点.
+            - batch.dihedral_pairs_anno: LongTensor, 形状为 (Q, 3), 每行是扭转行号和两个二面角外侧端点.
+            - batch_idx: int, 当前验证轮内批次编号; 本实现不参与数值计算.
+
+        D3附加输入与记录:
+            - batch.density_target: int64, (B,48,48,48), B个验证实例的实际裁块ZYX标签, 模型前向不读取.
+            - density_losses: dict[str, scalar Tensor], focal、dice与weighted定义同training_step, 只记录val/density_<key>; 不进入val/loss或返回的原dock损失字典.
 
         返回字段:
-            - loss_dict.val_<scope>/node: 标量 Tensor，待恢复原子类别损失。
-            - loss_dict.val_<scope>/fixed_node: 标量 Tensor，条件原子类别损失。
-            - loss_dict.val_<scope>/pos: 标量 Tensor，待恢复坐标损失。
-            - loss_dict.val_<scope>/fixed_pos: 标量 Tensor，条件坐标损失。
-            - loss_dict.val_<scope>/edge: 标量 Tensor，待恢复半边类别损失。
-            - loss_dict.val_<scope>/fixed_edge: 标量 Tensor，条件半边类别损失。
-            - loss_dict.val_<scope>/dist: 标量 Tensor，同域待恢复距离损失。
-            - loss_dict.val_<scope>/fixed_dist: 标量 Tensor，条件距离损失。
-            - loss_dict.val_<scope>/dih: 标量 Tensor，二面角周期损失。
-            - loss_dict.val_<scope>/total: 标量 Tensor，当前 scope 加权损失和。
-            - loss_dict.val_mixed/cfd_total: 标量 Tensor，可选 confidence 总损失。
-            - loss_dict.val_mixed/cfd_node: 标量 Tensor，可选原子 confidence BCE。
-            - loss_dict.val_mixed/cfd_pos: 标量 Tensor，可选坐标 confidence MSE。
-            - loss_dict.val_mixed/cfd_edge: 标量 Tensor，可选半边 confidence BCE。
-            - loss_dict.val_mixed/p_dist: 标量 Tensor，可选配体—口袋距离损失。
+            - loss_dict.val_<scope>/node: 标量 Tensor, 待恢复原子类别损失.
+            - loss_dict.val_<scope>/fixed_node: 标量 Tensor, 条件原子类别损失.
+            - loss_dict.val_<scope>/pos: 标量 Tensor, 待恢复坐标损失.
+            - loss_dict.val_<scope>/fixed_pos: 标量 Tensor, 条件坐标损失.
+            - loss_dict.val_<scope>/edge: 标量 Tensor, 待恢复半边类别损失.
+            - loss_dict.val_<scope>/fixed_edge: 标量 Tensor, 条件半边类别损失.
+            - loss_dict.val_<scope>/dist: 标量 Tensor, 同域待恢复距离损失.
+            - loss_dict.val_<scope>/fixed_dist: 标量 Tensor, 条件距离损失.
+            - loss_dict.val_<scope>/dih: 标量 Tensor, 二面角周期损失.
+            - loss_dict.val_<scope>/total: 标量 Tensor, 当前 scope 加权损失和.
+            - loss_dict.val_mixed/cfd_total: 标量 Tensor, 可选 confidence 总损失.
+            - loss_dict.val_mixed/cfd_node: 标量 Tensor, 可选原子 confidence BCE.
+            - loss_dict.val_mixed/cfd_pos: 标量 Tensor, 可选坐标 confidence MSE.
+            - loss_dict.val_mixed/cfd_edge: 标量 Tensor, 可选半边 confidence BCE.
+            - loss_dict.val_mixed/p_dist: 标量 Tensor, 可选配体—口袋距离损失.
         """
         while True:
             try:
-                # ``outputs``：dict[str, Tensor]，验证批次模型输出；原子/半边第一维与 batch 对齐。
+                # ``outputs``: dict[str, Tensor], 验证批次模型输出; 原子/半边第一维与 batch 对齐.
                 outputs = self.model(batch)
-                # ``loss_dict``：dict[str, scalar Tensor]，验证批次逐任务和 mixed 损失。
+                # ``loss_dict``: dict[str, scalar Tensor], 验证批次逐任务和 mixed 损失.
                 loss_dict = self.loss_func(batch, outputs)
+                density_losses = {}
+                if 'density_logits' in outputs:
+                    from models.density_selection import density_segmentation_loss
+                    density_losses = density_segmentation_loss(outputs['density_logits'], batch.density_target)
                 break
             except Exception as e:
                 if isinstance(e, RuntimeError) and "out of memory" in str(e):
@@ -638,28 +662,32 @@ class ModelLightning(pl.LightningModule):
                     #     pass
                     # gc.collect()
                     # torch.cuda.empty_cache()
-                    # ``batch``：PyG Batch，验证 OOM 时同样裁为前一半图后重试。
+                    # ``batch``: PyG Batch, 验证 OOM 时同样裁为前一半图后重试.
                     batch = self.reduce_batch(batch)
                 else:
                     raise e
         
-        # ``k``：str，当前未加验证阶段前缀的损失键。
-        # ``v``：标量 Tensor，当前损失键对应的数值。
-        # ``loss_dict``：dict[str, scalar Tensor]，所有损失键加 ``val_`` 前缀用于区分训练日志。
+        # ``k``: str, 当前未加验证阶段前缀的损失键.
+        # ``v``: 标量 Tensor, 当前损失键对应的数值.
+        # ``loss_dict``: dict[str, scalar Tensor], 所有损失键加 ``val_`` 前缀用于区分训练日志.
         loss_dict = {'val_'+k: v for k, v in loss_dict.items()}
-        # ``k``：str，当前验证损失键；此日志映射只保留 mixed 且非 fixed 的叶，并把展示前缀改为 ``val``。
-        # ``v``：标量 Tensor，当前 mixed 非 fixed 损失叶值。
+        # ``k``: str, 当前验证损失键; 此日志映射只保留 mixed 且非 fixed 的叶, 并把展示前缀改为 ``val``.
+        # ``v``: 标量 Tensor, 当前 mixed 非 fixed 损失叶值.
         self.log_dict({k.replace('val_mixed', 'val'):v for k,v in loss_dict.items() if ('mixed/' in k) and ('fixed_' not in k)}, batch_size=batch.num_graphs,
                       sync_dist=self.sync_dist, prog_bar=True, logger=True)
-        # ``k``：str，当前验证损失键；此日志映射只保留 mixed 的 fixed 叶，并把展示前缀改为 ``val``。
-        # ``v``：标量 Tensor，当前 mixed fixed 损失叶值。
+        # ``k``: str, 当前验证损失键; 此日志映射只保留 mixed 的 fixed 叶, 并把展示前缀改为 ``val``.
+        # ``v``: 标量 Tensor, 当前 mixed fixed 损失叶值.
         self.log_dict({k.replace('val_mixed', 'val'):v for k,v in loss_dict.items() if ('mixed/' in k) and ('fixed_' in k)}, batch_size=batch.num_graphs,
                       sync_dist=self.sync_dist, prog_bar=False, logger=True)
-        # ``k``：str，当前验证损失键；此日志映射只保留命名任务叶。
-        # ``v``：标量 Tensor，当前命名任务损失叶值。
+        # ``k``: str, 当前验证损失键; 此日志映射只保留命名任务叶.
+        # ``v``: 标量 Tensor, 当前命名任务损失叶值.
         self.log_dict({k:v for k,v in loss_dict.items() if ('mixed/' not in k)}, batch_size=batch.num_graphs,
                       sync_dist=self.sync_dist, prog_bar=False, logger=True)
 
+        if density_losses:
+            # 验证辅助监督单独记录, val/loss仍只使用原dock的mixed/total选best和调度.
+            self.log_dict({f'val/density_{key}': value for key, value in density_losses.items()}, batch_size=batch.num_graphs,
+                          sync_dist=self.sync_dist, prog_bar=False, logger=True)
         self.log('val/loss', loss_dict['val_mixed/total'], batch_size=batch.num_graphs,
                       sync_dist=self.sync_dist, prog_bar=False, logger=True)
         return loss_dict
