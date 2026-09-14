@@ -1,6 +1,6 @@
 # B-C-T0-RA-SMILES
 
-当前状态（2026-09-14）：已获正式执行授权，尚未启动；中心模型优先启动。
+当前状态（2026-09-14）：已完成235次更新，train/total约2.25，未到首次800步验证；[W&B miwl75au](https://wandb.ai/pencounkdual-111/PocketXmol_raw/runs/miwl75au)已在线，尚无best或测试指标。
 
 | 项目 | 当前内容 |
 |---|---|
@@ -8,13 +8,13 @@
 | 配置 | configs/docking/B-C-T0-RA-SMILES.yml |
 | 产物根 | /storage/penghongen/PocketXMol/training/B-C-T0-RA-SMILES |
 | 测试协议 | C0/C5；每实例每协议50候选、100步，batch50 |
-| best／W&B／指标 | 尚未产生 |
+| best／W&B／指标 | best与测试指标未产生；[W&B miwl75au](https://wandb.ai/pencounkdual-111/PocketXmol_raw/runs/miwl75au) online |
 
 所有新训练从规定官方参数初始化，重建优化器与调度状态；训练bf16-mixed，推理官方FP32张量路径。训练保留原val/loss与best选择，结束后直接完整测试，中心C0/C5、包络E；既有清单、视图、C5和种子不重建，每实例每协议50候选、100步，推理优先batch_size=50。W&B保持online，无法在线时报告，不自行切换offline。 无密度和D1起始72×1，D4/D2/D3起始36×2；OOM按72→36→24降批、累积相应1→2→3，配置global_batch_size保持72。接受原reduce_batch偶发裁批和累积梯度丢失，不增加补样或梯度补偿。仍无法运行则报告实际问题。
 
 ## 正式运行命令
 
-以下命令已获准，尚未执行；启动后补充实际release、launch和时间。
+以下训练命令已经执行，实际release、launch和开始时间见下文。
 
 ```bash
 bash 训练与运行/sh/train_docking.sh B-C-T0-RA-SMILES
@@ -25,6 +25,20 @@ bash 训练与运行/sh/train_docking.sh B-C-T0-RA-SMILES
 ## 只读核查与验收依据
 
 前置验收已被接受，不重跑。启动前核对真实作业、GPU UUID、控制目录、after_lock及try_lock；原命令独立备份。
+
+
+## 本次正式启动记录
+
+2026-09-14 22:02:58（gnode09本机UTC+8时间），沿作业379402真实控制目录保存旧run_cmd后，仅消费父目录try_lock启动；after_lock保留。当前批量72×1，官方初始参数、优化器与调度状态均从新训练开始。
+
+- 正式命令：`bash 训练与运行/sh/train_docking.sh B-C-T0-RA-SMILES`。
+- 实现提交：`0c79d53336f16f103227b967e596562f8a272f3e`；本次仅文档变更，源码与前置验收实现不变。
+- release：`/home/penghongen/Feedback/PocketXMol/releases/PocketXMol_e6173e5c817d/PocketXMol`。
+- 实际launch：`/home/penghongen/Feedback/PocketXMol/launches/379402/formal_B-C-T0-RA-SMILES_0c79d53`，已由正式stdout确认。
+- 本次stdout／stderr：`/storage/penghongen/tmp/pxm_formal_execution_20260914/runs/B-C-T0-RA-SMILES/train.out`及`train.err`。
+- 旧控制命令：同目录`previous_run_cmd.sh`；新命令本地来源`tmp/formal-execution-20260914/start-379402.sh`。
+
+服务器各节点时钟有差异，保留各自原始时间，不跨节点相减计算耗时。
 
 ## 之前的准备与尝试
 
@@ -47,3 +61,7 @@ bash 训练与运行/sh/train_docking.sh B-C-T0-RA-SMILES
 ## 验收与资源控制记录
 
 2026-09-14 19:52，主代理在gnode10确认378693正在执行Matcher的smiles_identity.experiment，进程组13179，随后按授权创建实际kill_lock。控制器已终止该进程组并回到try_lock；after_lock保留，GPU0空闲。接管证据根为/storage/penghongen/tmp/pxm_formal_smiles_20260914/takeover-378693。接管不删除Matcher文件或checkpoint，原运行命令另有副本。新链验收命令后续记录于[SMILES日志](../预实验（一 --二之间）/1-SMILES构图与GPU验收.md)。
+
+启动确认：实际训练子进程开始于本节点22:03:54，stdout确认规定官方初始权重，stderr确认bf16-mixed及W&B online；没有继承预实验或旧模型状态。
+
+最近核查：2026-09-14 gnode09 22:08:03／gnode10 22:09:41，三模型均持续产生有限训练损失，stdout／stderr未见OOM或异常退出；暂未产生首个验证检查点。已进入正常运行观察。
