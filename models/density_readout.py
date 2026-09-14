@@ -74,7 +74,7 @@ class DensityReadout(nn.Module):
                 key = self.key(voxel_features).reshape(1,-1,4,64).transpose(1,2)
                 value = self.value(voxel_features).reshape(1,-1,4,64).transpose(1,2)
                 attended = density_attention(query.transpose(0,1)[None],key,value,atom_pos[None],voxel_pos[None],self.beta,self.distance_bias,self.backend)[0].transpose(0,1).reshape(-1,256)
-                result[atom_ids] = self.alpha*self.output(attended)
+                result[atom_ids] = (self.alpha*self.output(attended)).to(result.dtype)
             else:
                 # floor定义home，保留越界索引后取交集；禁止把原子夹到边缘。
                 with torch.autocast(device_type=pos_node.device.type,enabled=False):
@@ -97,5 +97,5 @@ class DensityReadout(nn.Module):
                 weights = scores.softmax(-1)*inside[:,None]
                 attended = (weights[...,None]*value).sum(-2).reshape(-1,256)
                 residual = self.alpha*self.output(attended)
-                result[atom_ids] = residual*nonempty[:,None]
+                result[atom_ids] = (residual*nonempty[:,None]).to(result.dtype)
         return result
