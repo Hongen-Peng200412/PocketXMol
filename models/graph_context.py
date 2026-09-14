@@ -607,6 +607,9 @@ class ContextNodeEdgeNet(Module):
             - h_ctx: FloatTensor|None，形状为 (P, context_dim)，编码后的口袋上下文特征。
             - pos_ctx: FloatTensor|None，形状为 (P, 3)，与 ``pos_node`` 同原点的口袋局部坐标，单位 Å。
             - batch_ctx: LongTensor|None，形状为 (P,)，每个口袋上下文节点的图归属编号。
+            - density_feature: Tensor|None, D1 为 (B, 256, 6, 6, 6), D4 为 (B, 48, 48, 48, 48); B 个分子的密度编码, 空间轴 ZYX, None 保持原无密度路径.
+            - density_origin: float32|None, (B, 3), 实际裁块角点的模型局部 XYZ 坐标, 单位 Å.
+            - density_basis: float32|None, (B, 3, 3), 三行依次为源 X、Y、Z 体素步长的局部向量, 单位 Å; 与 density_feature 的分子首维对齐.
 
         返回值:
             - h_node: FloatTensor，形状为 (N, node_dim)，``num_blocks`` 层后的节点表示。
@@ -658,6 +661,7 @@ class ContextNodeEdgeNet(Module):
                 continue
 
             if density_feature is not None:
+                # 在当前层节点更新后注入密度残差, 再更新边与坐标; 邻域由本层当前 pos_node 重新确定.
                 h_node = h_node + self.density_readers[i](
                     h_node,pos_node,batch_node,density_feature,density_origin,density_basis)
             

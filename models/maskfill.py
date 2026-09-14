@@ -231,6 +231,9 @@ class PMAsymDenoiser(Module):
             - batch.pocket_pos: FloatTensor, 形状为 (P, 3), 与配体同原点的口袋局部坐标, 单位 Å.
             - batch.pocket_knn_edge_index: LongTensor, 形状为 (2, E_p), 口袋内部有向 kNN 边端点.
             - batch.pocket_pos_batch: LongTensor, 形状为 (P,), 每个口袋原子的图归属编号.
+            - batch.density_input: float32, (B, 56, 48, 48, 48), 仅密度模型读取; B 个分子的固定裁块, 空间轴 ZYX.
+            - batch.density_origin: float32, (B, 3), 实际裁块角点的局部 XYZ 坐标, 单位 Å, 与 pos_in 共用模型原点.
+            - batch.density_basis: float32, (B, 3, 3), 三行依次为源 X、Y、Z 一个体素步长在局部坐标系的向量, 单位 Å.
             - batch.is_peptide: LongTensor, 形状为 (N,), 小分子构象/docking 为全 0; 仅配置请求时读取.
             - kwargs: Mapping, 本实现不读取其中任何字段, 保留给统一调用接口.
 
@@ -298,8 +301,9 @@ class PMAsymDenoiser(Module):
         # ``h_node``: FloatTensor, 形状为 (N, self.config.node_dim), 完成 ``self.config.denoiser.num_blocks`` 个联合 block 后的配体节点隐藏特征.
         # ``pos_node``: FloatTensor, 形状为 (N, 3), 完成 ``self.config.denoiser.num_blocks`` 个坐标增量后的配体局部坐标, 单位 Å.
         # ``h_edge``: FloatTensor, 形状为 (2 * n_halfedges, self.config.edge_dim), 与双向 ``edge_index`` 列对齐的最终边隐藏特征.
-        density_arguments = {}
+        density_arguments = {}  # 无密度时不传新增字段, 保持原去噪调用路径.
         if self.density_encoder is not None:
+            # 同一前向内只编码一次, 六个去噪块共享该特征; 训练的不同更新不复用旧编码结果.
             density_arguments = dict(
                 density_feature=self.density_encoder(batch['density_input']),
                 density_origin=batch['density_origin'],
