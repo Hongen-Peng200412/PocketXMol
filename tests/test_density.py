@@ -93,3 +93,16 @@ def test_d4_outside_intersection_empty_and_rigid_invariance():
     shift=torch.tensor([3.,-2,1])
     rotated=reader(hidden,positions@rotation+shift,batch,feature,origin@rotation+shift,basis@rotation)
     torch.testing.assert_close(rotated,actual,rtol=1e-5,atol=1e-6)
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA自动混合精度几何验收')
+def test_cuda_bf16_preserves_home_at_crop_intersection_boundary():
+    reader=DensityReadout(320,dict(mode='D4',attention_backend='reference',checkpoint=False,distance_bias=True)).cuda()
+    feature=torch.randn(1,48,48,48,48,device='cuda')
+    hidden=torch.randn(2,320,device='cuda')
+    # 第一个home=50，其-3邻居47仍在块内；第二个home=51，全部邻居在块外。
+    positions=torch.tensor([[50.9999*.7,3.2*.7,3.2*.7],[51.0001*.7,3.2*.7,3.2*.7]],device='cuda')
+    with torch.autocast('cuda',dtype=torch.bfloat16):
+        result=reader(hidden,positions,torch.zeros(2,dtype=torch.long,device='cuda'),feature,torch.zeros(1,3,device='cuda'),torch.eye(3,device='cuda')[None]*.7)
+    assert result[0].abs().sum()>0
+    assert torch.count_nonzero(result[1])==0
