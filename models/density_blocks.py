@@ -11,8 +11,8 @@ from torch.utils.checkpoint import checkpoint as torch_checkpoint
 
 class Bottleneck(nn.Module):
     """
-    使用1x1卷积, 3x3卷积, 1x1卷积. 
-    
+    使用1x1卷积, 3x3卷积, 1x1卷积.
+
     输入参数 (Input Parameters):
         - in_planes: int, 输入特征图的通道数
         - planes: int, 中间层的基础通道数(瓶颈处通道数)
@@ -23,10 +23,10 @@ class Bottleneck(nn.Module):
         - affine: bool, 默认=False, InstanceNorm3d是否使用可学习的仿射参数
         - checkpoint: bool, 默认=False, 是否使用梯度检查点(节省显存)
         - **kwargs: 其他关键字参数
-    
+
     类属性 (Class Attributes):
         - expansion: int = 4, 通道扩展倍数, 输出通道数=planes * expansion
-    
+
     输出 (Output):
         - forward返回: torch, (B, planes*expansion, D', H', W'), 其中D', H', W'由stride决定, stride=2时各维度减半
     """
@@ -119,7 +119,7 @@ class ConvBuildingBlock(nn.Module):
             nn.Conv3d(out_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False),
             nn.InstanceNorm3d(out_channels, affine=True),
         )
-        
+
         self.shortcut_conv = nn.Identity()
         if in_channels != out_channels:
             self.shortcut_conv = nn.Conv3d(
@@ -129,7 +129,7 @@ class ConvBuildingBlock(nn.Module):
                 stride=1,
                 bias=True
             )
-    
+
     def forward(self,x:torch.Tensor):
         """把 (B, in_channels, D, H, W) 的 x 映射为同空间尺寸的 out_channels 通道."""
         return self.activate_function(self.conv1(x) + self.shortcut_conv(x))
@@ -150,7 +150,7 @@ class ShortConv(nn.Module):
         self.conv1 = nn.Conv3d(in_channels, out_channels, kernel_size=3, stride=1, padding=1, bias=False)
         self.norm1 = nn.InstanceNorm3d(out_channels,affine=True)
         self.relu1 = nn.ReLU()
-    
+
     def forward(self,x:torch.Tensor):
         """返回 x 的单层投影; 输入输出空间尺寸不变, 通道形状见类说明."""
         y = self.norm1(self.conv1(x))
@@ -163,7 +163,7 @@ class ShortConv(nn.Module):
 class ShortConvAdd(nn.Module):
     """
     融合两个同空间尺寸的体素特征, 保留成熟输入层的归一化与 ELU.
-    
+
     构造参数:
         - input_channels: int 或 None, 第一个输入(x0)的通道数; None 时使用 LazyConv3d 延迟初始化
         - output_channels: int, 输出通道数, 同时也是第二个输入(x1)的通道数
@@ -185,7 +185,7 @@ class ShortConvAdd(nn.Module):
         self.norm1 = nn.InstanceNorm3d(output_channels, affine=False)
         self.norm2 = nn.InstanceNorm3d(output_channels, affine=True)
         self.relu1 = nn.ELU()
-    
+
     def forward(self,x0,x1):
         """对 x0 投影后加上 x1 的归一化结果并激活; 两路形状和全零约定见类说明."""
         y = self.norm1(self.conv1(x0))
@@ -199,7 +199,7 @@ class ShortConvAdd(nn.Module):
 class Res2NetBlock(nn.Module):
     """
     把扩展通道分为 scale 组并级联卷积, 聚合后与输入残差相加.
-    
+
     构造参数:
         - in_channels: int, 输入通道数.
         - out_channels: int, 输出通道数, 也是每个分组的通道数.
@@ -217,7 +217,7 @@ class Res2NetBlock(nn.Module):
         self.conv_list = nn.ModuleList([nn.Conv3d(out_channels, out_channels, kernel_size=3, stride=stride, padding=1, bias=False) for _ in range(self.scale - 1)])
         self.activate_class = activate_class()
         self.conv2 = nn.Sequential(nn.Conv3d(out_channels*self.scale, out_channels, 1, 1, 0, bias=False), nn.InstanceNorm3d(out_channels, affine=True))
-        
+
         self.shortcut_conv = nn.Identity()
         if stride != 1 or in_channels != out_channels:
             self.shortcut_conv = nn.Conv3d(
@@ -227,7 +227,7 @@ class Res2NetBlock(nn.Module):
                 stride=stride,
                 bias=True
             )
-    
+
     def forward(self, x):
         """沿通道拆分 x 的投影, 逐组融合后恢复输出通道; 输入输出形状见类说明."""
         # x_list: tuple of torch tensors, 每个元素形状为(B, out_channels, D, H, W)
@@ -241,11 +241,11 @@ class Res2NetBlock(nn.Module):
                 y_list.append(self.conv_list[ii-1](xi))
             else:
                 y_list.append(self.conv_list[ii-1](xi+y_list[-1]))
-        
+
         y = self.conv2(self.activate_class(self.norm1(  torch.cat(y_list,dim=1)  )))
         y = self.activate_class(y+self.shortcut_conv(x))
         return y
-    
+
 
 
 
@@ -260,7 +260,7 @@ class AttentionGate(nn.Module):
         - out_features: int, 输出特征的通道数
         - attention_features: int, 默认=64, 注意力计算中间特征的通道数
         - attention_heads: int, 门控组数, 当前为 8; up_features 必须能被该组数整除, 每组宽度为 up_features // attention_heads.
-    
+
     输出 (Output):
         - forward返回: torch, (B, out_features, D, H, W), 融合后的特征图
     """
@@ -272,7 +272,7 @@ class AttentionGate(nn.Module):
         self.ofz = out_features
         self.afz = attention_features
         self.ahz = attention_heads
-        
+
         # (up_features) -> (attention_features)
         self.conv_q = nn.Sequential(nn.Conv3d(
             in_channels=self.ufz,
@@ -282,7 +282,7 @@ class AttentionGate(nn.Module):
             padding=1,
             bias=False
         ),nn.InstanceNorm3d(self.afz,affine=True))
-        
+
         # (down_features) -> (attention_features)
         self.conv_k = nn.Sequential(nn.Conv3d(
             in_channels=self.dfz,
@@ -292,7 +292,7 @@ class AttentionGate(nn.Module):
             padding=1,
             bias=False
         ),nn.InstanceNorm3d(self.afz,affine=True))
-        
+
         # [B, down_features, D, H, W] -> [B, up_features, D, H, W], 待门控的跳跃特征; 通道稍后分成 ahz 组.
         self.conv_v = nn.Sequential(nn.Conv3d(
             in_channels=self.dfz,
@@ -302,7 +302,7 @@ class AttentionGate(nn.Module):
             padding=1,
             bias=False
         ),nn.InstanceNorm3d(self.ufz,affine=True))
-        
+
         # (attention_features) -> (attention_heads), 输出经Sigmoid归一化到[0,1]
         self.gate = nn.Sequential(
             nn.ReLU(),
@@ -319,13 +319,13 @@ class AttentionGate(nn.Module):
         self.relu = nn.ReLU()
         # (up_features) -> (out_features)
         self.conv_back = ConvBuildingBlock(self.ufz, self.ofz)
-    
+
     def forward(self,us,ds):
         """
         输入参数 (Input Parameters):
             - us: torch, (B, up_features, D_us, H_us, W_us), 上采样路径的特征(较粗分辨率)
             - ds: torch, (B, down_features, D, H, W), 跳跃连接的特征(较细分辨率)
-        
+
         输出 (Output):
             - torch, (B, out_features, D, H, W), 注意力加权融合后的特征
         """
@@ -336,20 +336,20 @@ class AttentionGate(nn.Module):
         query = self.conv_q(upsampled)
         key = self.conv_k(ds)
         value = self.conv_v(ds)
-        
+
         # [B, up_features, D, H, W] -> [B, up_features // ahz, ahz, D, H, W], 拆出门控组轴; einops 中的 afz 是局部轴名, 不等于 self.afz.
         value = einops.rearrange(value, "N (afz ahz) d h w -> N afz ahz d h w", ahz=self.ahz)
-        
+
         # gate: torch, (B, ahz, D, H, W), 注意力权重, 范围[0,1]
         # 通过query和key的加法融合计算得到
         gate = self.gate(query+key)  # N ahz d h w
-        
+
         # (B, up_features // ahz, ahz, D, H, W), gate 沿每组通道宽度广播, 不混合不同空间位置.
         out = value*gate[:,None]
-        
+
         # out: torch, (B, up_features, D, H, W)
         # 将多头输出重排回原始形式
         out = einops.rearrange(out,"N afz ahz d h w -> N (afz ahz) d h w", ahz=self.ahz)
-        
+
         # 将注意力加权的输出与上采样特征相加, 经ReLU激活后通过输出卷积块
         return self.conv_back(self.relu(out+upsampled))

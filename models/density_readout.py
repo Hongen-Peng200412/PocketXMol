@@ -94,7 +94,8 @@ class DensityReadout(nn.Module):
         with torch.autocast(device_type=h_node.device.type,enabled=False):
             h_node = h_node.to(self.query.weight.dtype)
             if self.mode == 'D1':
-                # query: (B, N_max, 256), valid: (B, N_max); 只补齐变长查询, 不增加密度体素或跨分子混合.
+                # query: (B, N_max, 256), N_max 为此批最大原子数; valid 为 (B, N_max), True 是真实原子, False 是补齐查询.
+                # 只补齐变长查询, 不增加密度体素或跨分子混合.
                 query,valid = to_dense_batch(self.query(h_node),batch_node,batch_size=feature.shape[0])
                 atom_pos,_ = to_dense_batch(pos_node,batch_node,batch_size=feature.shape[0])
                 query = query.reshape(feature.shape[0],-1,4,64).transpose(1,2)
@@ -118,11 +119,11 @@ class DensityReadout(nn.Module):
             inside = ((neighborhood>=0)&(neighborhood<48)).all(-1)  # bool, (N, 343), True 表示落在此分子裁块内.
             linear = neighborhood[...,2]*48*48+neighborhood[...,1]*48+neighborhood[...,0]
             linear = linear.masked_fill(~inside,0)+batch_node[:,None]*(48**3)  # (N, 343), 加分子偏移后索引全批 ZYX 展平体素; 无效占位随后屏蔽.
-            voxel_features = feature.permute(0,2,3,4,1).reshape(-1,48)
-            selected = voxel_features[linear].to(self.key.weight.dtype)
-            query = self.query(h_node).reshape(-1,4,64)
-            key = self.key(selected).reshape(len(h_node),343,4,64).permute(0,2,1,3)
-            value = self.value(selected).reshape(len(h_node),343,4,64).permute(0,2,1,3)
+            voxel_features = feature.permute(0,2,3,4,1).reshape(-1,48)  # (B*48³, 48), 先分子再 ZYX 展平, 与 linear 的分子偏移对齐.
+            selected = voxel_features[linear].to(self.key.weight.dtype)  # (N, 343, 48), 每个原子的邻域只来自其所属分子.
+            query = self.query(h_node).reshape(-1,4,64)  # (N, 4, 64), 原子查询拆为四头.
+            key = self.key(selected).reshape(len(h_node),343,4,64).permute(0,2,1,3)  # (N, 4, 343, 64), 邻域轴保留 linear 的顺序.
+            value = self.value(selected).reshape(len(h_node),343,4,64).permute(0,2,1,3)  # (N, 4, 343, 64), 与 key 逐邻域体素对齐.
             scores = (query[:,:,None]*key).sum(-1)/8
             if self.distance_bias:
                 with torch.autocast(device_type=pos_node.device.type,enabled=False):
@@ -133,6 +134,6 @@ class DensityReadout(nn.Module):
             nonempty = inside.any(-1)
             scores = torch.where(nonempty[:,None,None],scores,torch.zeros_like(scores))
             weights = scores.softmax(-1)*inside[:,None]  # (N, 4, 343), 沿各原子的有效邻域归一化; 空交集权重全零.
-            attended = (weights[...,None]*value).sum(-2).reshape(-1,256)
+            attended = (weights[...,None]*value).sum(-2).reshape(-1,256)  # 沿 343 个邻域求和得到 (N, 4, 64), 再合并四头为 (N, 256).
             residual = self.alpha*self.output(attended).to(self.alpha.dtype)
             return (residual*nonempty[:,None]).to(original_dtype)
