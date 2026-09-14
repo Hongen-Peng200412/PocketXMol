@@ -2,7 +2,7 @@
 # 只读汇总原始JSON，计数器窗口包含同进程预取；不清缓存或启动GPU。
 set -euo pipefail
 '/storage/penghongen/PocketXMol/runtime/venv/bin/python' - <<'PY'
-import glob,hashlib,json,statistics
+import glob,hashlib,json,math,statistics
 result={}
 for path in sorted(glob.glob('/storage/penghongen/tmp/pocketxmol_density_20260914/benchmarks/*/result.json')):
  raw=open(path,'rb').read();data=json.loads(raw);updates=data['updates'];warm=updates[1:]
@@ -19,7 +19,18 @@ for path in sorted(glob.glob('/storage/penghongen/tmp/pocketxmol_density_2026091
   rows=[m for m in metrics if begin<=m['wall']<=end]
   if len(rows)<2:return {}
   first,last=rows[0],rows[-1];seconds=last['wall']-first['wall']
-  return dict(samples=len(rows),seconds=seconds,read_bytes=last['read_bytes']-first['read_bytes'],read_chars=last['read_chars']-first['read_chars'],cpu_cores=(last['cpu_seconds']-first['cpu_seconds'])/seconds,gpu_mean=statistics.mean(int(m['gpu'].split(',')[0]) for m in rows))
+  gpu=[int(m['gpu'].split(',')[0]) for m in rows]
+  return dict(samples=len(rows),seconds=seconds,read_bytes=last['read_bytes']-first['read_bytes'],read_chars=last['read_chars']-first['read_chars'],cpu_cores=(last['cpu_seconds']-first['cpu_seconds'])/seconds,gpu_mean=statistics.mean(gpu),gpu_median=statistics.median(gpu))
+ arguments=data['arguments'];capacity=math.ceil(arguments['workers']*arguments['prefetch']*arguments['batch']/72)
+ item['prefetch_capacity_global_updates']=capacity
+ remaining=updates[capacity:];item['post_prefetch_windows']=[]
+ if len(remaining)>=3:
+  size,extra=divmod(len(remaining),3);offset=0
+  for index in range(3):
+   count=size+int(index<extra);part=remaining[offset:offset+count];offset+=count
+   seconds=sum(x['total_seconds'] for x in part)
+   item['post_prefetch_windows'].append(dict(update_first=part[0]['update']+1,update_last=part[-1]['update']+1,update_seconds=seconds,elapsed_seconds=part[-1]['wall_end']-part[0]['wall_start'],io_wait_seconds=sum(x['io_wait_seconds'] for x in part),io_percent=100*sum(x['io_wait_seconds'] for x in part)/seconds,**window(part[0]['wall_start'],part[-1]['wall_end'])))
+ else:item['post_prefetch_window_limitation']='预取容量之后不足3次完整更新，不能划三个稳定窗口。'
  tail=warm[len(warm)//2:];tail_total=sum(x['total_seconds'] for x in tail)
  item.update(cold_seconds=updates[0]['total_seconds'],cold_io_wait_seconds=updates[0]['io_wait_seconds'],cold_density_worker_wall_seconds=updates[0]['density_cpu_seconds'],cold_graph_worker_wall_seconds=updates[0]['source_cpu_seconds'],cold_window=window(updates[0]['wall_start'],updates[0]['wall_end']),warm_mean=total/len(warm),warm_median=statistics.median(x['total_seconds'] for x in warm),warm_compute_mean=statistics.mean(sum(x[k] for k in ('forward_seconds','backward_seconds','optimizer_seconds')) for x in warm),warm_io_percent=100*sum(x['io_wait_seconds'] for x in warm)/total,warm_density_worker_wall_mean=statistics.mean(x['density_cpu_seconds'] for x in warm),warm_graph_worker_wall_mean=statistics.mean(x['source_cpu_seconds'] for x in warm),warm_window=window(warm[0]['wall_start'],warm[-1]['wall_end']),latter_half_mean=tail_total/len(tail),latter_half_io_percent=100*sum(x['io_wait_seconds'] for x in tail)/tail_total,peak_allocated_bytes=max(x['peak_allocated_bytes'] for x in updates),peak_reserved_bytes=max(x['peak_reserved_bytes'] for x in updates),peak_rss_bytes=max(m['rss_bytes'] for m in metrics),madvise_verified_samples=sum(x.get('madvise_verified_samples',0) for x in updates))
  result[path]=item

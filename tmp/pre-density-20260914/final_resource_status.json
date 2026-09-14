@@ -1,0 +1,40 @@
+{
+  "checked_epoch": 1789381796.992999,
+  "hostname": "gnode09",
+  "after_lock": true,
+  "try_lock": true,
+  "kill_lock": false,
+  "controller": {
+    "pid": 2383,
+    "cmdline": [
+      "bash",
+      "/var/spool/slurmd/job379402/slurm_script",
+      "--task-root",
+      "/home/penghongen/My_Project/AdaLigand",
+      "--feedback-root",
+      "/storage/penghongen/Adaligand_infered_receptor_data/cryoatom2/calibration/运行日志与统计/slurm",
+      "--task",
+      "测评数据代码/cryoatom2原始预测结构/sh/predict_calibration.sh",
+      "--simple",
+      "0",
+      "--pre_hold",
+      "0",
+      "--after_hold",
+      "1",
+      "--resource",
+      "a800",
+      "--gpus",
+      "1",
+      "--nodes",
+      "1",
+      "--cpus",
+      "16",
+      "--array",
+      "0"
+    ],
+    "status": "sleeping",
+    "children": []
+  },
+  "assigned_gpu": "GPU-adbf8fc8-5a4a-87e3-853b-c9cadcbdf74b, 0, 5",
+  "assigned_gpu_processes": []
+}
