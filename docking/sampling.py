@@ -9,6 +9,7 @@ import json
 import time
 from copy import deepcopy
 from datetime import datetime, timezone
+from functools import partial
 from pathlib import Path
 
 import numpy as np
@@ -51,7 +52,7 @@ def sample_occurrence(dataset, index, model, noiser, featurizer, config, protoco
             - protocol: str, 当前 C0、C5 或 E.
             - sample_index: int, 从0开始的原候选构象编号, 正式50个候选时为0至49; 与成功候选在SDF中的位置不同.
             - status: str, success 或 failed; 失败不补生成新候选.
-            - stage: str, 当前候选结束阶段; complete 表示完成, preprocess/batch/prepare_loop/noise/forward/prediction_to_batch/trajectory/synchronize/split/reconstruct/confidence 分别定位预处理、组批、循环准备、加噪、模型调用、预测写回、轨迹处理、CUDA同步、输出拆分、固定图重构及置信度聚合.
+            - stage: str, 当前候选结束阶段; complete 表示完成, preprocess/density_encode/batch/prepare_loop/noise/forward/prediction_to_batch/trajectory/synchronize/split/reconstruct/confidence 分别定位预处理、固定密度编码、组批、循环准备、加噪、模型调用、预测写回、轨迹处理、CUDA同步、输出拆分、固定图重构及置信度聚合.
             - error: str|None, 失败的异常类型和消息; 成功为 None.
             - sdf_index: int|None, 当前候选在poses.sdf中从0开始的位置; 失败为None. 如原候选0失败、1首先成功, 则该分子sample_index=1而sdf_index=0.
             - cfd_traj: float|None, 原 get_cfd_traj 分数; 正式100步先对全部配体原子取均值, 再平均后50步的原始位置置信度, 全程不做 sigmoid; 非有限分数使候选失败.
@@ -87,7 +88,7 @@ def sample_occurrence(dataset, index, model, noiser, featurizer, config, protoco
             - pocket_nucleic_fraction: float|None, 核酸原子数除以两类原子总数; 总数0或未取得时为None.
             - model_origin_world_xyz_A: list[list[float]]|None, 正常为(1,3)嵌套列表, 世界XYZ、Å; 官方空蛋白保留其空列表, 更早失败为None.
 
-            - inference_seconds: float, 组批、原采样循环与输出拆分的累计秒数, 不含SDF重构和写盘.
+            - inference_seconds: float, 固定密度编码、组批、原采样循环与输出拆分的累计秒数, 不含SDF重构和写盘.
             - sampling_batch_attempt_count: int, 实际进入原采样循环的候选批次数; 组批失败不计入.
             - sampling_batch_completed_count: int, 原循环完整返回且CUDA同步结束的批次数.
             - model_forward_attempt_count: int, 实际进入模型调用的批量前向次数; 初次加噪失败为0, 不按候选数乘步数估计.
@@ -128,6 +129,7 @@ def sample_occurrence(dataset, index, model, noiser, featurizer, config, protoco
     model_forward_attempt_count = model_forward_completed_count = 0
     pocket_protein_count = pocket_nucleic_count = None
     pocket_center = None
+    density_feature = None  # Tensor|None, 此实例固定裁块的单份编码, 只在当前函数调用内复用.
     stage = "preprocess"
 
     try:
@@ -142,6 +144,18 @@ def sample_occurrence(dataset, index, model, noiser, featurizer, config, protoco
         _, _, template, _ = read_template(dataset.root / "ligand_objects" / (record["object_key"].replace(":", "_") + ".npz"))
         template = Chem.Mol(template)
         template.AddConformer(Chem.Conformer(template.GetNumAtoms()), assignId=True)
+        if 'density_input' in data:
+            stage = 'density_encode'
+            encoding_started = time.perf_counter()
+            try:
+                with torch.no_grad():
+                    density_feature = model.density_encoder(data.density_input.to(config.device))
+                if sampling_device.type == 'cuda':
+                    torch.cuda.synchronize(sampling_device)
+            finally:
+                inference_seconds += time.perf_counter() - encoding_started
+            # 不为50个候选复制56通道原始裁块; 几何仍随候选拼批, 权重和裁块固定时编码可共用.
+            del data.density_input
     except Exception as error:
         if isinstance(error, OSError):
             raise
@@ -162,9 +176,13 @@ def sample_occurrence(dataset, index, model, noiser, featurizer, config, protoco
                 try:
                     # 同一个 occurrence 的复制候选沿 PyG 图维排列, 每个候选的二维图与口袋条件相同.
                     batch = Batch.from_data_list([data.clone() for _ in range(stop - start)], follow_batch=follow_batch, exclude_keys=exclude_keys).to(config.device)
+                    sampling_model = model
+                    if density_feature is not None:
+                        # 仅展开分子首维, 不复制底层体素; 各候选的位置和逐层查询仍分别计算.
+                        sampling_model = partial(model, density_feature=density_feature.expand(stop - start, -1, -1, -1, -1))
                     # 保留原 100 步循环和置信度轨迹聚合; 坐标和类别轨迹仅在内存短暂存在, 不另存完整去噪轨迹.
                     sampling_batch_attempt_count += 1
-                    batch, outputs, trajectories = sample_loop3(batch, model, noiser, device=config.device, off_tqdm=True, progress=progress)
+                    batch, outputs, trajectories = sample_loop3(batch, sampling_model, noiser, device=config.device, off_tqdm=True, progress=progress)
                     progress["stage"] = "synchronize"
                     if batch.node_pos.is_cuda:
                         torch.cuda.synchronize(batch.node_pos.device)
@@ -333,7 +351,8 @@ def sample_docking(config):
         dataset_config = deepcopy(config.dataset)
         dataset_config.pocket_mode = "envelope" if protocol == "E" else "center"
 
-        dataset = OccurrenceDataset(dataset_config, config.split, transforms, config.receptor_branch, protocol, shuffle=False)
+        # 模型配置唯一决定是否读取密度; C0/C5只改变实际给定中心, 不改变T0采样公式.
+        dataset = OccurrenceDataset(dataset_config, config.split, transforms, config.receptor_branch, protocol, shuffle=False, density_config=model_config.get('density'))
 
         noise_config = deepcopy(sample_config.noise)
         noise_config.num_steps = config.num_steps
