@@ -106,3 +106,27 @@ def test_cuda_bf16_preserves_home_at_crop_intersection_boundary():
         result=reader(hidden,positions,torch.zeros(2,dtype=torch.long,device='cuda'),feature,torch.zeros(1,3,device='cuda'),torch.eye(3,device='cuda')[None]*.7)
     assert result[0].abs().sum()>0
     assert torch.count_nonzero(result[1])==0
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(),reason='CUDA自动混合精度距离输出及梯度验收')
+@pytest.mark.parametrize('distance_bias',[False,True])
+def test_cuda_bf16_attention_against_fp32_reference(distance_bias):
+    if not distance_bias and not torch.backends.cuda.is_flash_attention_available():
+        pytest.skip('当前PyTorch构建未包含Flash；指定A800/Linux环境必须执行此检查')
+    torch.manual_seed(64)
+    inputs=[torch.randn(2,4,n,64,device='cuda',dtype=torch.bfloat16,requires_grad=True) for n in (30,216,216)]
+    inputs += [torch.randn(2,n,3,device='cuda',requires_grad=True)*10 for n in (30,216)]
+    inputs += [torch.randn(4,device='cuda',requires_grad=True)]
+    reference=density_attention(*(value.float() for value in inputs),distance_bias,'reference')
+    with torch.autocast('cuda',dtype=torch.bfloat16):
+        actual=density_attention(*inputs,distance_bias,'flash')
+    torch.testing.assert_close(actual.float(),reference,rtol=.03,atol=.008)
+    weight=torch.randn_like(actual)
+    expected=torch.autograd.grad((reference*weight.float()).sum(),inputs,retain_graph=True,allow_unused=True)
+    observed=torch.autograd.grad((actual*weight).sum(),inputs,allow_unused=True)
+    for first,second in zip(expected,observed):
+        if first is None:
+            assert second is None
+        else:
+            relative_rms=(first.float()-second.float()).square().mean().sqrt()/first.float().square().mean().sqrt().clamp_min(1e-7)
+            assert relative_rms<.04

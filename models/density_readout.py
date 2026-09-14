@@ -14,8 +14,8 @@ from torch.nn.attention import SDPBackend, sdpa_kernel
 def density_attention(query,key,value,query_pos,key_pos,beta,distance_bias,backend):
     """计算4头读出；输入(B,heads,N,64)，位置(B,N,3)，输出同query形状。
 
-    分数=qk/8-softplus(beta)*||(x-p)/10Å||²；增广实现省去仅依赖query的常数。
-    增广Q/K/V补至72维并显式scale=1/8，输出只取原64个value分量。
+    分数=qk/8-softplus(beta)*||(x-p)/10Å||²。距离分数明确使用FP32几何，
+    再交给SDPA数学内核；普通注意力可强制Flash。低精度QK增广未通过数值门控。
     """
     if backend == 'reference':
         scores = query @ key.transpose(-1,-2) / 8
@@ -23,19 +23,16 @@ def density_attention(query,key,value,query_pos,key_pos,beta,distance_bias,backe
             squared = (query_pos[:,:,None]-key_pos[:,None]).square().sum(-1)/100
             scores = scores - F.softplus(beta)[None,:,None,None]*squared[:,None]
         return scores.softmax(-1) @ value
-    output_dim = value.shape[-1]
     if distance_bias:
-        coefficient = F.softplus(beta)[None,:,None,None]
-        query_position = query_pos[:,None].expand(-1,query.shape[1],-1,-1)
-        key_position = key_pos[:,None].expand(-1,key.shape[1],-1,-1)
-        extra_query = torch.cat((query_position*coefficient*0.16,-coefficient.expand(query.shape[0],-1,query.shape[2],-1)*0.08),dim=-1)
-        extra_key = torch.cat((key_position,key_position.square().sum(-1,keepdim=True)),dim=-1)
-        query = F.pad(torch.cat((query,extra_query.to(query.dtype)),dim=-1),(0,4))
-        key = F.pad(torch.cat((key,extra_key.to(key.dtype)),dim=-1),(0,4))
-        value = F.pad(value,(0,8))
+        with torch.autocast(device_type=query.device.type,enabled=False):
+            geometry_dtype = torch.float64 if query.dtype == torch.float64 else torch.float32
+            squared = (query_pos.to(geometry_dtype)[:,:,None]-key_pos.to(geometry_dtype)[:,None]).square().sum(-1)/100
+            bias = -F.softplus(beta.to(geometry_dtype))[None,:,None,None]*squared[:,None]
+            with sdpa_kernel(SDPBackend.MATH):
+                return F.scaled_dot_product_attention(query,key,value,attn_mask=bias,dropout_p=0,scale=1/8)
     with sdpa_kernel(SDPBackend.FLASH_ATTENTION) if backend == 'flash' else sdpa_kernel([SDPBackend.FLASH_ATTENTION,SDPBackend.EFFICIENT_ATTENTION,SDPBackend.MATH]):
         result = F.scaled_dot_product_attention(query,key,value,dropout_p=0,scale=1/8)
-    return result[...,:output_dim]
+    return result
 
 
 class DensityReadout(nn.Module):
