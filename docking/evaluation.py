@@ -19,7 +19,8 @@ from rdkit.Chem import rdMolAlign
 from scipy.stats import spearmanr
 from sklearn.metrics import roc_auc_score
 
-from docking.assets import read_receptor, read_template, select_pocket
+from docking.assets import read_receptor, select_pocket
+from docking.smiles import read_smiles_graph, read_smiles_coords, UnsupportedSmilesError
 from utils.buster_tools import check_identity, check_intermolecular_distance
 
 
@@ -146,7 +147,7 @@ def evaluate_occurrence(arguments):
     arguments为tuple(config, protocol, record), 便于按完整实例分配CPU进程:
         - config: 与采样相同的EasyDict配置, 本函数读取dataset.root、output_root、split、model_name、num_candidates.
         - protocol: str, 当前C0、C5或E.
-        - record: dict, 冻结清单的一条实例, 包括pdb_id、candidate_id、object_key、views和center_offset_xyz_A.
+        - record: dict, 冻结清单的一条实例, 包括pdb_id、candidate_id、prepared_smiles、views和center_offset_xyz_A.
 
     产物位于 <output_root>/<split>/<protocol>/<pdb_id>/<occurrence_id>/:
         - candidate_metrics.json: list[dict], 逐候选保留candidates.json全部字段, 其定义见sampling.sample_occurrence, 另增加如下字段.
@@ -167,7 +168,7 @@ def evaluate_occurrence(arguments):
             - model_name: str, 当前模型名称, 如B-C-T0-RA.
             - split: str, validation或test.
             - protocol: str, 当前C0、C5或E.
-            - object_key: str, 完整模板身份, 如CCD:GMP.
+            - prepared_smiles: str, 精确SMILES身份, 如CCO.
             - views: list[str], 冻结测试视图; validation为空列表.
             - sampling_complete: bool, 是否已有采样result.json; False不作为可复用缓存.
             - sampling_status: str, success、partial、failed或not_sampled, 沿用实际采样记录.
@@ -212,11 +213,11 @@ def evaluate_occurrence(arguments):
     assessment_path = occurrence_dir / "assessment.json"
     sampling_path = occurrence_dir / "result.json"
     sampling = json.loads(sampling_path.read_text(encoding="utf-8")) if sampling_path.exists() else None
-    if sampling is not None and (any(sampling[key] != value for key, value in identity.items()) or sampling["object_key"] != record["object_key"] or sampling["num_candidates"] != config.num_candidates):
+    if sampling is not None and (any(sampling[key] != value for key, value in identity.items()) or sampling["prepared_smiles"] != record["prepared_smiles"] or sampling["num_candidates"] != config.num_candidates):
         raise ValueError("sampling_identity_mismatch")
     if assessment_path.exists() and sampling_path.exists():
         previous = json.loads(assessment_path.read_text(encoding="utf-8"))
-        if any(previous[key] != value for key, value in identity.items()) or previous["object_key"] != record["object_key"] or previous["num_candidates"] != config.num_candidates:
+        if any(previous[key] != value for key, value in identity.items()) or previous["prepared_smiles"] != record["prepared_smiles"] or previous["num_candidates"] != config.num_candidates:
             raise ValueError("assessment_identity_mismatch")
         if previous["sampling_complete"]:
             return previous
@@ -226,10 +227,11 @@ def evaluate_occurrence(arguments):
     asset_error = None
     try:
         root = Path(config.dataset.root)
-        _, _, template, _ = read_template(root / "ligand_objects" / (record["object_key"].replace(":", "_") + ".npz"))
-        with np.load(root / "parse" / identity["pdb_id"] / "ligand_coords.npz", allow_pickle=False) as archive:
-            # (N,3), 完整沉积重原子世界坐标, 仅在评价中作为真实RMSD参照和已批准的定位条件.
-            ligand_coords = archive[f"coords_{identity['occurrence_id']}"]
+        if "unsupported_smiles_reason" in record:
+            raise UnsupportedSmilesError(record["unsupported_smiles_reason"])
+        template = read_smiles_graph(config.dataset.smiles_root, record["prepared_smiles"])["mol"]
+        # (N, 3), 公共 SMILES 原子顺序的沉积世界 XYZ 坐标, 只用于评价参照和定位条件.
+        ligand_coords = read_smiles_coords(config.dataset.smiles_coords_root, identity["pdb_id"], identity["occurrence_id"], record["prepared_smiles"])
         reference = Chem.Mol(template)
         reference_conformer = Chem.Conformer(len(ligand_coords))
         for atom_index, position in enumerate(ligand_coords):
@@ -315,7 +317,7 @@ def evaluate_occurrence(arguments):
     ranked = sorted((metric for metric in metrics if metric["self_ranking"] is not None), key=lambda metric: (-metric["self_ranking"], metric["sample_index"]))
     assessment = {
         **identity,
-        "object_key": record["object_key"],
+        "prepared_smiles": record["prepared_smiles"],
         "views": record["views"],
         "sampling_complete": sampling is not None,
         "sampling_status": sampling["status"] if sampling is not None else "not_sampled",

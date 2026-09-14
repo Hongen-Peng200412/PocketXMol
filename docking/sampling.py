@@ -19,7 +19,7 @@ from rdkit import Chem
 from torch_geometric.data import Batch
 from torch_geometric.transforms import Compose
 
-from docking.assets import read_template
+from docking.smiles import read_smiles_graph
 from docking.dataset import OccurrenceDataset
 from models.maskfill import PMAsymDenoiser
 from models.sample import get_cfd_traj, sample_loop3, seperate_outputs2
@@ -43,7 +43,7 @@ def sample_occurrence(dataset, index, model, noiser, featurizer, config, protoco
         - protocol: str, C0、C5 或 E, 决定定位条件和输出子目录.
 
     产物位于 <output_root>/<split>/<protocol>/<pdb_id>/<occurrence_id>/:
-        - poses.sdf: 多分子 SDF, 仅包含成功候选(跑通就算成功, 不是RMSD<2埃); 每个分子的 sample_index 属性保存原候选编号, 如3, 拓扑和原子顺序来自完整模板, 坐标为世界 XYZ、Å.
+        - poses.sdf: 多分子 SDF, 仅包含成功候选(跑通就算成功, 不是RMSD<2埃); 每个分子的 sample_index 属性保存原候选编号, 如3, 拓扑和原子顺序来自prepared_smiles对应的公共重原子图, 坐标为世界 XYZ、Å.
         - candidates.json: list[dict], 长度为 num_candidates, 包括每个失败候选; 各项字段如下.
             - pdb_id: str, 当前结构编号, 如9v7o.
             - occurrence_id: int, 原 candidate_id, 如0.
@@ -62,8 +62,8 @@ def sample_occurrence(dataset, index, model, noiser, featurizer, config, protoco
         - confidence.npz: 仅存在成功候选时写出; K 为成功候选数, N 为完整配体重原子数, H=N*(N-1)/2, T=num_steps.
             - sample_index: int64, (K,), 成功候选原编号, 如[0,2,3], 与SDF分子顺序及下列数组首轴对齐.
             - confidence_pos_traj: float32, (K,N,T), 每个原子每步的原始位置置信度, 无 sigmoid.
-            - confidence_pos: float32, (K,N,1), 最后一步原始位置置信度, 原子顺序与完整模板一致.
-            - confidence_node: float32, (K,N,1), 最后一步原子类别置信度原始输出, 原子顺序与模板一致.
+            - confidence_pos: float32, (K,N,1), 最后一步原始位置置信度, 原子轴N按prepared_smiles对应公共重原子图的顺序.
+            - confidence_node: float32, (K,N,1), 最后一步原子类别置信度原始输出, 原子轴N按prepared_smiles对应公共重原子图的顺序.
             - confidence_halfedge: float32, (K,H,1), 最后一步半边类别置信度原始输出, 半边按原完全图上三角顺序排列.
 
         - result.json: dict, 全部候选尝试和产物写入完成后保存, 返回值为同一字典.
@@ -72,7 +72,7 @@ def sample_occurrence(dataset, index, model, noiser, featurizer, config, protoco
             - model_name: str, 当前模型稳定名称.
             - split: str, validation 或 test.
             - protocol: str, 当前 C0、C5 或 E.
-            - object_key: str, 完整模板身份, 如 CCD:GMP.
+            - prepared_smiles: str, 精确SMILES身份, 如 CCO.
             - views: list[str], 冻结测试视图名称; 验证为空列表, 测试从 ALL、CAP10、HF10_TO5 选择.
             - sampling_seed: int, 当前 occurrence 的冻结候选种子, 如10831; 模型和协议不另混入种子.
             - center_offset_xyz_A: list[float], 长度3的冻结 C5 偏移, 世界 XYZ、Å; C0/E也保存此值但不施加.
@@ -130,6 +130,7 @@ def sample_occurrence(dataset, index, model, noiser, featurizer, config, protoco
     pocket_protein_count = pocket_nucleic_count = None
     pocket_center = None
     density_feature = None  # Tensor|None, 此实例固定裁块的单份编码, 只在当前函数调用内复用.
+    density_indices = None  # int64 Tensor|None, (1,4096), D3按冻结语言与当前编码选出的ZYX平铺索引, 与整条轨迹共用.
     stage = "preprocess"
 
     try:
@@ -141,7 +142,7 @@ def sample_occurrence(dataset, index, model, noiser, featurizer, config, protoco
         data.node_pos = torch.zeros_like(data.node_pos)
         data.gt_node_pos = torch.zeros_like(data.gt_node_pos)
         # 原 decode_output 必须读取真实模型原点; 官方纯核酸若在更早步骤失败, 会留下 preprocess 错误.
-        _, _, template, _ = read_template(dataset.root / "ligand_objects" / (record["object_key"].replace(":", "_") + ".npz"))
+        template = read_smiles_graph(dataset.config.smiles_root, record["prepared_smiles"])["mol"]
         template = Chem.Mol(template)
         template.AddConformer(Chem.Conformer(template.GetNumAtoms()), assignId=True)
         if 'density_input' in data:
@@ -150,6 +151,9 @@ def sample_occurrence(dataset, index, model, noiser, featurizer, config, protoco
             try:
                 with torch.no_grad():
                     density_feature = model.density_encoder(data.density_input.to(config.device))
+                    if 'density_language' in data:
+                        # D3只使用SMILES语言向量与密度特征选点; 推理数据没有配体区域标签, 不用真实坐标修正所选体素.
+                        _, density_indices = model.density_selection(density_feature, data.density_language.to(config.device))
                 if sampling_device.type == 'cuda':
                     torch.cuda.synchronize(sampling_device)
             finally:
@@ -180,6 +184,8 @@ def sample_occurrence(dataset, index, model, noiser, featurizer, config, protoco
                     if density_feature is not None:
                         # 仅展开分子首维, 不复制底层体素; 各候选的位置和逐层查询仍分别计算.
                         sampling_model = partial(model, density_feature=density_feature.expand(stop - start, -1, -1, -1, -1))
+                        if density_indices is not None:
+                            sampling_model = partial(sampling_model, density_indices=density_indices.expand(stop - start, -1))
                     # 保留原 100 步循环和置信度轨迹聚合; 坐标和类别轨迹仅在内存短暂存在, 不另存完整去噪轨迹.
                     sampling_batch_attempt_count += 1
                     batch, outputs, trajectories = sample_loop3(batch, sampling_model, noiser, device=config.device, off_tqdm=True, progress=progress)
@@ -255,7 +261,7 @@ def sample_occurrence(dataset, index, model, noiser, featurizer, config, protoco
     total_pocket = (pocket_protein_count + pocket_nucleic_count) if pocket_protein_count is not None else 0
     result = {
         **identity,
-        "object_key": record["object_key"],
+        "prepared_smiles": record["prepared_smiles"],
         "views": record["views"],
         "sampling_seed": int(record["sampling_seed"]),
         "center_offset_xyz_A": record["center_offset_xyz_A"],
