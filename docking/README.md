@@ -60,7 +60,7 @@
 | `sampling_seed` | 整数，逐实例候选生成种子，同一实例的模型／协议共用 | `10831` |
 | `views` | 字符串列表，测试视图归属；非测试为 `[]` | `["ALL", "CAP10", "HF10_TO5"]` |
 
-偏移方向在球面均匀，半径独立服从 `Uniform(0,5)`，不是在球体积内均匀采样。仅明确为C5的中心T1训练流每次重新生成；有限C5验证与推理读取冻结值。C0不施加该字段，中心T0训练不抽新增偏移。以下只展示格式，不代表正式通过状态或实际冻结种子：
+偏移方向在球面均匀，半径独立服从 `Uniform(0,5)`，不是在球体积内均匀采样。当前C5评测只读取现有冻结值，不重新生成；C0不施加该字段。中心训练与val/loss固定真中心C0，不抽新增偏移。以下只展示格式，不代表正式通过状态或实际冻结种子：
 
 ```json
 {"split":"test","pdb_id":"9v7o","candidate_id":0,"object_key":"CCD:GMP","n_heavy_atoms":20,"center_offset_xyz_A":[1.0,0.0,0.0],"sampling_seed":10831,"views":["ALL","CAP10","HF10_TO5"]}
@@ -120,18 +120,22 @@
 
 `OccurrenceDataset` 从最终清单读取实例。完整配体图与世界坐标仍直接读原模板和 `ligand_coords.npz`，按完整模板编号建立原半边表示，调用原 `FeaturizeMol` 和 free 任务／噪声变换。
 
-受体排除 UNK 后按完整残基重原子质量中心选袋：中心距离严格小于 15 Å，包络距离任一真值配体重原子严格小于 10 Å。中心模型原点为本次给定中心，包络模型为实际选入受体原子的世界坐标均值。官方只读蛋白；RA/RB 读标准蛋白及 RNA/DNA，空蛋白不伪造节点或原点。
+受体排除 UNK 后按完整残基重原子质量中心选袋：中心距离严格小于 15 Å，包络距离任一真值配体重原子严格小于 10 Å。中心模型原点为本次给定中心，包络模型为实际选入受体原子的世界坐标均值。官方只读蛋白；RA 读标准蛋白及 RNA/DNA，空蛋白不伪造节点或原点。
 
-RA/RB的E口袋为空时，`OccurrenceDataset.__getitem__` 在求均值前抛出 `EmptyEnvelopePocketError`，例如 `empty_envelope_pocket: 6j3z/11`。训练及val/loss的迭代流只捕获这一种错误，按划分和实例身份写警告后跳过；训练继续抽样直至组成正常batch，验证沿原路径计算其余有效E的损失。冻结JSONL及其他源资产不改写。正式采样按records逐实例直接索引，已有失败记录保存全部预算候选的preprocess错误，评价仍保留该实例分母；空E不改用配体中心或补入受体。其他数据异常仍直接传播。
+RA的E口袋为空时，`OccurrenceDataset.__getitem__` 在求均值前抛出 `EmptyEnvelopePocketError`，例如 `empty_envelope_pocket: 6j3z/11`。训练及val/loss的迭代流只捕获这一种错误，按划分和实例身份写警告后跳过；训练继续抽样直至组成正常batch，验证沿原路径计算其余有效E的损失。冻结JSONL及其他源资产不改写。正式采样按records逐实例直接索引，已有失败记录保存全部预算候选的preprocess错误，评价仍保留该实例分母；空E不改用配体中心或补入受体。其他数据异常仍直接传播。
 
-`DataModule.setup` 从已有dock的 `center_translation` 选择训练和原val/loss条件：T0为C0，T1为C5，包络为E。设完整重原子世界坐标为X*、其几何中心为g：T0训练以g选袋和定原点，局部目标质心为0；T1训练共用一次delta，以g+delta选袋和定原点，局部目标质心为-delta。原高斯之后，T1才对整分子增加s*delta，s=1-level_dict['pos']；受体和监督目标不移动。Dataset本身只构造定位条件，不添加这项带噪平移。
+`DataModule.setup`按pocket_mode确定中心C0或包络E，训练与原val/loss条件相同。完整配体世界坐标为X*，g=mean(X*)；中心以g选袋并定模型原点，局部目标X*−g的质心为0。原GaussianExplodePrior加噪后直接执行原同构重分配和固定字段恢复，不增加共享平移，不读取center_translation。
 
-推理C0/C5与机制T0/T1独立组合。T0+C5保留不准确中心，T1+C0仍在后续原高斯后增加-s*mean(Z)，Z为当前局部预测。首步都用原纯高斯先验，不强制实际质心归零。定位后不读GT中心或偏移，口袋与原点固定，最终只加回原点一次。
+旧运行仍保存含center_translation字段的配置。当前续训、采样和评价的严格配置检查不会把已删除字段自动视为等价；需要读取历史运行时，使用其冻结release与原配置。当前入口服务新的获准运行，使用独立产物目录；现有正确T0结果继续有效，不更改其run.json、checkpoint或W&B。
 
-核酸输入为 `(P,15)`：元素 C/N/O/P 四列，A/C/G/U/DA/DC/DG/DT 八列，base/sugar/phosphate 三列；蛋白位置为 0。蛋白输入保持 `(P,25)`，核酸位置为 0。`pocket_is_nucleic(P,)` 对齐共同原子顺序。RA 对完整受体联合构图；RB 在两类节点内分别构图。`given_center_local(1,3)` 为给定中心减模型原点，单位 Å；T1 只在中心模式使用。
+C0/C5仅是评测提供的实际中心不同，两者使用同一T0推理入口。实际中心c用于选袋及原点C，轨迹中固定；首步原纯高斯先验，后续局部预测Z加s*sigma(N)*epsilon，其中s=1−level_dict['pos']。没有中心相关重新加噪，不强制候选实际质心归零；定位后不读取GT中心或GT偏移，最终只加回C一次。
 
-糖组分 sugar 包含 `C1'` 至 `C5'`、`O2'` 至 `O5'`；磷酸组分 phosphate 包含 `P/OP1/OP2/OP3` 及旧名 `O1P/O2P/O3P`；其余标准核苷酸原子归 base。旧原子名的星号转为撇号，例如 `C1* → C1'`。官方空蛋白保留原 `pocket_center(0,3)`，因此其 `given_center_local` 也为空，不强制补成正常的 `(1,3)`。
+核酸输入为`(P,15)`：元素C/N/O/P四列、A/C/G/U/DA/DC/DG/DT八列、base/sugar/phosphate三列；蛋白位置为0。蛋白输入保持`(P,25)`，核酸位置为0，`pocket_is_nucleic(P,)`对齐共同原子顺序。RA对蛋白与核酸联合构图，独立投影后使用同一个pocket_encoder；当前无独立核酸编码器或given_center_local字段。
+
+糖组分 sugar 包含 `C1'` 至 `C5'`、`O2'` 至 `O5'`；磷酸组分 phosphate 包含 `P/OP1/OP2/OP3` 及旧名 `O1P/O2P/O3P`；其余标准核苷酸原子归 base。旧原子名的星号转为撇号，例如 `C1* → C1'`。官方空蛋白保留原 `pocket_center(0,3)`，不强制补成正常的 `(1,3)`。
 
 训练对合法实例均匀有放回抽样；有限验证按 worker 编号跨步遍历，正常情况不漏尾部。原偶发 OOM 裁批仍单独记录，不用它解释正常遍历缺失。
 
 正式准备入口为 `scripts/prepare_docking.py`，按 `index → objects → samples → freeze` 执行。每 CPU 任务 8 核、最多 12 份并发；正式 Slurm 命令见 `训练与运行/README.md`。`tests/test_docking_data.py` 使用构造资产检查筛选、原子编号、几何与视图；实际检查和正式运行分别记在 `日志/实现与共同数据准备.md`。
+
+官方等价验收见[test_docking_official.py](../tests/test_docking_official.py)，参照本地Git提交`65488cf635c856101dbe703ac97e2f10f58e005c`的真实原先验、信息等级、噪声器、采样循环与解码。历史六模型源码和配置保存在`463d59098bca92b7278839992afd0efc84d5db81`；旧RB/T1运行须以其对应历史源码理解，当前入口只维护RA＋T0和官方蛋白兼容。收口证据与历史结果见[非密度记录](../日志/第一类实验（不加密度信息）/总日志&分析/非密度收口记录.md)。

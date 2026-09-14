@@ -44,6 +44,6 @@ T0训练C=g，g是完整配体重原子世界XYZ坐标均值；以残基重原�
 
 - [中心修复与重训日志](../../../日志/第一类实验（不加密度信息）/1-B-C-T0-RA.md)：全部纠偏、审查、测试、正式命令和实际产物证据。
 - [旧错误训练日志](../../../日志/第一类实验（不加密度信息）/1-B-C-T0-RA.md)：无效条件和停止证据；不得从其目录续训。
-- [共同准备日志](../../../日志/实现与共同数据准备.md)、[总日志](../../../日志/总日志.md)、[计划映射](../../../日志/计划执行映射.md)及三份当前9-8规格。
+- [共同准备日志](../../../日志/实现与共同数据准备.md)、[总日志](../../../日志/第一类实验（不加密度信息）/总日志&分析/总日志.md)、[计划映射](../../../日志/计划执行映射.md)及三份当前9-8规格。
 - `/home/penghongen/Feedback/Pocket_Plus/allocations/371591/`：实际控制器的run_cmd、out、err、after_lock；try_lock位于其父目录。Pocket_Plus名称来自历史allocation，不授权操作其它作业。
 - 项目代码同步根 `/home/penghongen/My_Project/PocketXMol`；运行用冻结release。项目环境 `/storage/penghongen/PocketXMol/runtime/venv/bin/python`，共享派生根 `/storage/penghongen/Adaligand_Build/Ori_Data/pocketxmol`，原源根 `/storage/penghongen/AdaLigand/Ori_Data` 只读。

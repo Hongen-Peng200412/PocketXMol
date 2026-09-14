@@ -1,6 +1,6 @@
 # 输入、批字段与输出产物概览
 
-本文说明原 PocketXMol 从 LMDB 到 SDF/CSV 的字段。当前六个无密度实验另由 `docking/` 接入 AdaLigand 完整 occurrence，下面先列出该入口与原接口的关系，后续章节保留原任务说明。
+本文说明原 PocketXMol 从 LMDB 到 SDF/CSV 的字段。当前RA＋T0实验由 `docking/` 接入 AdaLigand 完整 occurrence，下面先列出该入口与原接口的关系，后续章节保留原任务说明。
 
 ## 当前 occurrence 入口
 
@@ -8,13 +8,12 @@
 
 | 新增或改变含义的字段 | 形状 | 本项目实际含义 |
 |---|---|---|
-| `pocket_atom_feature` | `(P,25)` | 蛋白原特征；RA/RB中的核酸原子对应全零 |
+| `pocket_atom_feature` | `(P,25)` | 蛋白原特征；RA中的核酸原子对应全零 |
 | `pocket_nucleic_feature` | `(P,15)` | 核酸元素4维、核苷酸8维、碱基／糖基／磷酸基3维；蛋白原子对应全零 |
 | `pocket_is_nucleic` | `(P,)`，bool | 标准RNA/DNA原子标记，与口袋坐标逐原子对齐 |
-| `given_center_local` | 通常`(1,3)` | 本次给定中心的模型坐标，中心模式为零；供T1读取 |
 | `pocket_center` | 通常`(1,3)` | 中心模式用给定世界中心，包络用实际选入口袋原子的世界均值 |
 
-这里 `P` 是当前模型实际输入的口袋原子数。RA使用联合口袋图，RB仅在蛋白内部和核酸内部构图。官方空蛋白仍沿原入口尝试，不补假口袋或原点，结果按实际执行阶段记录。
+这里 `P` 是当前模型实际输入的口袋原子数。RA将蛋白与核酸放在联合口袋图中，共享编码器。官方空蛋白仍沿原入口尝试，不补假口袋或原点，结果按实际执行阶段记录。
 
 采样在每个实例目录写 `poses.sdf`、`candidates.json`、成功候选的 `confidence.npz`，最后写 `result.json`。评价增加 `candidate_metrics.json` 和 `assessment.json`。完整字段见[采样模块](../docking/sampling.py)和[评价模块](../docking/evaluation.py)的函数说明；三个测试视图共用候选，完整验证只汇总ALL。
 
