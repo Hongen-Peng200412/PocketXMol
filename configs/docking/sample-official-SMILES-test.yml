@@ -1,4 +1,4 @@
-# 官方冻结权重的精确SMILES芳香键复验; 本文件由378693执行, 旧测试产物保持原样.
+# 官方冻结权重的精确SMILES芳香键复验; 本文件由379402执行, 旧测试产物保持原样.
 # scripts/sample_docking.py生成候选, scripts/evaluate_docking.py读取同一配置评价; 本文件只用于正式测试.
 model_name: official-SMILES
 train_config: /storage/penghongen/PocketXMol_official_test/extracted/data/trained_models/pxm/train_config/train.yml
