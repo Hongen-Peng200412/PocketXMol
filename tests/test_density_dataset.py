@@ -18,7 +18,7 @@ from test_docking_data import prepared_data
 def test_density_dataset_preserves_input_origin(prepared_data, protocol):
     config = make_config(str(Path(__file__).resolve().parents[1] / 'configs/docking/B-C-T0-RA.yml'))
     dataset_config = config.data.dataset
-    dataset_config.update(root=prepared_data.root, derived_root=prepared_data.derived_root, manifest_root=prepared_data.manifest_root)
+    dataset_config.update(root=prepared_data.root, derived_root=prepared_data.derived_root, manifest_root=prepared_data.manifest_root, smiles_root=prepared_data.smiles_root, smiles_coords_root=prepared_data.smiles_coords_root)
     dataset_config.pocket_mode = 'envelope' if protocol == 'E' else 'center'
     features = FeaturizeMol(config.transforms.featurizer)
     transforms = Compose([features, get_transforms(config.transforms.task, mode='test', num_node_types=features.num_node_types)])
@@ -41,7 +41,7 @@ def test_density_dataset_preserves_input_origin(prepared_data, protocol):
 @pytest.mark.parametrize('workers', [0, 2])
 def test_datamodule_uses_model_density_setting(prepared_data, workers):
     config = make_config(str(Path(__file__).resolve().parents[1] / 'configs/docking/B-C-T0-RA.yml'))
-    config.data.dataset.update(root=prepared_data.root, derived_root=prepared_data.derived_root, manifest_root=prepared_data.manifest_root)
+    config.data.dataset.update(root=prepared_data.root, derived_root=prepared_data.derived_root, manifest_root=prepared_data.manifest_root, smiles_root=prepared_data.smiles_root, smiles_coords_root=prepared_data.smiles_coords_root)
     config.model.density = {'mode': 'D1'}
     config.train.update(num_workers=workers, persistent_workers=False, batch_size=1, prefetch_factor=1)
     module = DataModule(config)

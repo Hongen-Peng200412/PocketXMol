@@ -1,128 +1,131 @@
 # Docking 共同数据与内存输入
 
-本目录把已有 AdaLigand 实例接入原 PocketXMol 的 free docking 路径。原实例身份、完整模板重原子和世界坐标始终保持一致；训练只增加必要的手性对称排列，密度辅助标签从已有 `ligand_area.npz` 按实例拆出。
+本目录提供精确 prepared SMILES 的公共图读取、实例坐标读取、口袋构造及原 PocketXMol free docking 接口。`pdb_id＋candidate_id` 定位沉积实例，`prepared_smiles` 定义化学图身份。公共SMILES芳香键映射为原模型类别4，与固定官方版本65488cf635c856101dbe703ac97e2f10f58e005c的parse_3d_mol相同。历史ligand_object接入直接使用旧单双键数组，其模型类别不作为新链参照；数值验收记录见[SMILES预实验](../日志/预实验（一 --二之间）/1-SMILES构图与GPU验收.md)。
 
-下列结构由当前准备代码生成，共同资产已在服务器完成准备；实际数量和核查证据见 [共同准备记录](../日志/实现与共同数据准备.md)。默认路径由 `configs/docking/prepare.yml` 指定。两个目录树中的 `data` 是同一个物理目录，分别列出稳定接口与准备诊断。
+`smiles.py`读取公共图和坐标；`dataset.py`构造模型输入，`sampling.py`与`evaluation.py`共享同一SMILES图。`assets.py`还保留历史read_template，`preparation.py`保留原冻结资产的准备逻辑，均不作为新训练、采样或评价的配体图入口。
 
-## <科学产物>
+## 产物位置
 
-```text
-/storage/penghongen/PocketXMol/data/
-├── train.jsonl                 # 原训练质量清单中累计通过的完整实例
-├── validation.jsonl            # 原验证质量清单中累计通过的完整实例
-├── calibration.jsonl           # 校准实例，始终不并入训练
-└── test.jsonl                  # 指定测试 PDB 的累计通过实例及三视图归属
+下列SMILES公共包与迁移坐标、清单已在服务器核对存在。正式运行直接读取已有资产。配置中的`smiles_root`、`smiles_coords_root`、`manifest_root`明确选择对应目录。
 
-/storage/penghongen/Adaligand_Build/Ori_Data/pocketxmol/
-├── symmetries/
-│   └── CCD_GMP.npz             # 示例身份 CCD:GMP 的手性自同构排列；每身份一个 NPZ
-└── ligand_area/
-    └── 9v7o/
-        └── 0.npy              # 示例 occurrence 0 的源 ZYX 体素索引；每实例一个 NPY
-```
-
-文件名中的 `CCD_GMP` 来自完整 `object_key="CCD:GMP"`，仅把冒号替换成下划线。`candidate_id` 就是项目中的 `occurrence_id`，例如 `9v7o/0.npy`；不能用 CCD 编号替代 PDB 内的实例编号。
-
-## <其他文件>
+### 科学接口
 
 ```text
-/storage/penghongen/PocketXMol/data/
-├── README.md                   # 当前字段契约的副本（运行说明）
-├── summary.json                # 四个划分、三视图及排除原因计数（运行统计）
-├── excluded.jsonl              # 每个排除实例的首个失败原因（运行诊断）
-└── preparation/
-    ├── sources.jsonl           # 原划分与身份条件确定的候选实例（计算中间文件）
-    ├── index_excluded.jsonl    # 身份条件失败记录（运行诊断）
-    ├── objects_{0..11}.jsonl   # 12个数组分片的模板准备状态（运行诊断）
-    ├── samples_{0..11}.jsonl   # 12个分片累计通过、尚未冻结偏移的实例（计算中间文件）
-    └── excluded_{0..11}.jsonl  # 12个分片的资产失败记录（运行诊断）
+/storage/penghongen/AdaLigand/Ori_Data/smiles_assets/
+├── smiles_graphs_v1.npz          # 精确字符串对应的重原子和无向键数组
+├── smiles_symmetries_v1.npz      # 同一字符串原子顺序的压缩自同构排列
+└── SMILE_coords/v1/
+    └── 5irx.npz                 # 示例PDB内完整实例的SMILES顺序世界坐标
 
-/storage/penghongen/Adaligand_Build/Ori_Data/pocketxmol/
-└── README.md                   # 与data目录相同的字段契约副本（运行说明）
+/storage/penghongen/PocketXMol/data/smiles-v1/frozen/
+├── train.jsonl                  # 保留原训练冻结成员和顺序的迁移清单
+├── validation.jsonl             # 保留原监督验证冻结成员和顺序
+├── calibration.jsonl            # 校准实例，不并入训练
+└── test.jsonl                   # 保留原测试成员、三个视图、C5及候选种子
+
+/storage/penghongen/Adaligand_Build/Ori_Data/pocketxmol/ligand_area/
+└── 9v7o/0.npy                   # 原occurrence 0的源ZYX体素标签，继续复用
 ```
 
-`{0..11}` 表示正式配置中的 12 份文件。开发验收可以减少分片数，末次 `freeze` 必须使用该次实际分片总数。中间文件不能代替四份最终清单作为训练或测试输入；目录存在也不表示准备完成。
+### 其他文件
 
-## 完整实例和测试视图
+```text
+/storage/penghongen/AdaLigand/Ori_Data/smiles_assets/
+├── smiles_assets_v1_report.json # Matcher公共包的构图统计（运行统计）
+└── SMILE_coords/*.npz           # 根部文件属于首次失败迁移，不是v1坐标接口（计算中间文件）
 
-### `train.jsonl`、`validation.jsonl`、`calibration.jsonl`、`test.jsonl`
+/storage/penghongen/PocketXMol/data/smiles-v1/
+└── {train,validation,calibration,test}.jsonl # 根部四文件属于首次失败迁移（计算中间文件）
 
-每行对应一个合法完整实例，由 `freeze` 阶段写出。训练、验证、校准先继承 `stage1_preparation_box_pool_3/split/` 中的原实例资格；测试只使用指定 `held_out_06_chain/test_0.json` 的 PDB。所有划分累计要求原 `small_molecule`、单残基单 CCD、非共价、含碳、原模型词表支持、图与语言资产有效、沉积重原子全部存在且有限、必要受体与地图资产可用。
-
-| 字段 | 类型与实体含义 | 构造示例值 |
-|---|---|---|
-| `split` | 字符串，所属划分 | `"test"` |
-| `pdb_id` | 字符串，源 `parse/` 与 `density/` 的 PDB 子目录名 | `"9v7o"` |
-| `candidate_id` | 整数，PDB 内稳定 occurrence 编号 | `0` |
-| `object_key` | 字符串，完整共享模板身份，不跨 CCD 合并 | `"CCD:GMP"` |
-| `n_heavy_atoms` | 整数，完整模板、沉积坐标和模型配体共同原子数 | `20` |
-| `center_offset_xyz_A` | 长度 3 的浮点列表，冻结 C5 的世界 XYZ 偏移，单位 Å | `[1.0, 0.0, 0.0]` |
-| `sampling_seed` | 整数，逐实例候选生成种子，同一实例的模型／协议共用 | `10831` |
-| `views` | 字符串列表，测试视图归属；非测试为 `[]` | `["ALL", "CAP10", "HF10_TO5"]` |
-
-偏移方向在球面均匀，半径独立服从 `Uniform(0,5)`，不是在球体积内均匀采样。当前C5评测只读取现有冻结值，不重新生成；C0不施加该字段。中心训练与val/loss固定真中心C0，不抽新增偏移。以下只展示格式，不代表正式通过状态或实际冻结种子：
-
-```json
-{"split":"test","pdb_id":"9v7o","candidate_id":0,"object_key":"CCD:GMP","n_heavy_atoms":20,"center_offset_xyz_A":[1.0,0.0,0.0],"sampling_seed":10831,"views":["ALL","CAP10","HF10_TO5"]}
+/storage/penghongen/tmp/pxm_pre_smiles_20260914/
+├── cpu-v1/                     # 化学同构报告与原子映射（外部抽样审计）
+├── diagnose-v1/                 # 原模型离散键类别的全量核对（运行诊断）
+├── gpu-v1/                      # 预设数值门限及真实GPU比较（运行诊断）
+└── bf16-repeat-v1/              # 固定输入的bf16重复性定位（运行诊断）
 ```
 
-测试以累计筛选后的完整 `object_key` 计频数。每个身份只建立一次冻结排序：频数大于 10 时，CAP10 取前 10，HF10_TO5 取前 5；频数不超过 10 时两者均全部保留，包括 6–10 的身份。三个视图共用同一候选池、偏移与种子。
+根部原型文件与`v1/`坐标包、`frozen/`清单属于不同尝试，不能混用；具体运行命令和状态只在实验日志维护。旧`ligand_objects`、旧坐标及逐CCD对称文件保留供历史运行和一次迁移审计，不作为本分支Dataset的输入。
 
-### `symmetries/CCD_GMP.npz`
+## 公共化学图和自同构
 
-每份文件属于一个共享模板，供训练中的原 `reassign_in` 重新排列等价原子坐标。其内容是 RDKit 对完整图做 `useChirality=True` 自匹配的原规则，不是评价 RMSD 的匹配表。
+### `smiles_graphs_v1.npz`
 
-| 字段 | 类型、形状与含义 | 构造示例 |
+一份公共包保存K种精确字符串，图顺序由其`smiles`数组确定，不重新规范化输入字符串。N_total和E_total分别是连接后的全部原子数和无向键数。
+
+| 字段 | 类型、形状和切片规则 | 示例 |
 |---|---|---|
-| `object_key` | NumPy 标量字符串，与源身份完全一致 | `"CCD:GMP"` |
-| `atom_count` | int64 标量，完整模板原子数 N | `20` |
-| `matches_iso` | int64 `(M,S)`，M 个自同构中会发生置换的 S 个原子列；值索引完整模板原子 | `[[0,2],[2,0]]` 表示模板原子 0 与 2 可交换 |
+| `schema_version` | int64标量，包格式版本 | `1` |
+| `smiles` | Unicode `(K,)`，精确PreparedLigand顶层字符串 | `CCO` |
+| `atom_offsets` | int64 `(K+1,)`，切分element、charge和atom_in_ring；首值0，末值N_total | `[0,3,9]`表示两图分别3和6原子 |
+| `element` | int16 `(N_total,)`，原子序数 | `[6,6,8]` |
+| `charge` | int8 `(N_total,)`，逐原子形式电荷 | `[0,0,-1]` |
+| `atom_in_ring` | bool `(N_total,4)`，3、4、5、6元环标记；原dock特征器不读取此字段 | `[False,False,False,True]` |
+| `bond_offsets` | int64 `(K+1,)`，切分bond_index第二维、bond_type和bond_in_ring第一维 | `[0,2,8]` |
+| `bond_index` | int32 `(2,E_total)`，每张图内部的局部原子编号，不加全局atom_offsets | `[[0,1],[1,2]]`为两条链式键 |
+| `bond_type` | uint8 `(E_total,)`，0/1/2/3/4为单、双、三、配位、芳香 | `4`为芳香键 |
+| `bond_in_ring` | bool `(E_total,4)`，与键对齐的3、4、5、6元环标记 | `[False,False,False,True]` |
 
-原 RDKit 匹配最多返回 10000 种排列；如恒等排列未返回则补回。没有可交换原子时形状为 `(1,0)`，不会制造真实扭转或刚体域。原子顺序与 `ligand_objects/CCD_GMP.npz` 的 `atoms` 第一维相同。
+`read_smiles_graph`将键类别映成原模型的1/2/3/4，配位键拒绝。模型数组直接读取公共包；SDF与RMSD所需RDKit Mol按同一精确SMILES首次解析并缓存，保留`[nH]`显式氢语义，核对原子、形式电荷、端点及键类型顺序。不会每次Dataset索引都解析字符串，也不会通过沉积坐标重建手性。
 
-### `ligand_area/9v7o/0.npy`
+### `smiles_symmetries_v1.npz`
 
-一个实例一份 int32 `(K,3)` NPY，K 为原标签体素数，列为完整源图 Z、Y、X 索引。它直接来自 `density/9v7o/ligand_area.npz` 的 `mask_0`，不会包含其它 occurrence 的监督。
+该包有自己独立的`smiles(K,)`字符串索引，不假设与图包排序一致。`schema_version`为int64标量1；`atom_count`为int32 `(K,)`，保存各图重原子数。
 
-例如源索引 `[25,30,40]` 相对裁块起点 `[20,20,20]` 得到块内 `[5,10,20]`。运行时只保留三个分量都在 `[0,48)` 内的索引。K 可以为 0，此时为 `(0,3)`，不得用其它实例标签填补。实际体素尺寸与源角点从 exp/sim 元数据读取，索引本身没有 Å 单位。
+`matches_shape`为int32 `(K,2)`，例如`[2,2]`表示该图有两种排列、两个可交换原子；`matches_offsets`为int64 `(K+1,)`，把一维int32 `matches_iso`切分后恢复为相应形状。恢复的每个值是本图原子编号，例如`[[0,2],[2,0]]`表示原子0和2可以交换。没有可交换原子时为`(1,0)`。
 
-## 准备诊断
+排列沿用公共包的`useChirality=True、maxMatches=10000`和恒等排列补回规则。迁移审计先恢复完整排列，再按新旧原子映射比较集合。该包只用于原训练同构重分配，评价继续沿原`CalcRMS(maxMatches=30000)`，不改用训练排列代替。
 
-### `preparation/sources.jsonl`
+## 实例坐标和冻结清单
 
-每行含 `split`、`pdb_id`、`candidate_id`、`object_key`，是原划分与身份条件筛选后的候选。字段含义与最终清单相同，例如 `{"split":"train","pdb_id":"train_demo","candidate_id":0,"object_key":"CCD:ETH"}`；这时尚未通过完整模板和资产检查。
+### `SMILE_coords/v1/{pdb_id}.npz`
 
-### `preparation/samples_{0..11}.jsonl`
+一个PDB一份包。K_occ是包内实例数，N_total是所有实例的完整重原子总数。
 
-每行在候选四字段基础上加 `n_heavy_atoms`，例如前述构造实例加 `"n_heavy_atoms":3`。它表示模板、完整性、语言与共同资产检查已通过，尚无冻结偏移和视图；后续 `freeze` 合并所有分片，再写出四份正式清单。
+| 字段 | 类型、形状与对齐 | 示例 |
+|---|---|---|
+| `schema_version` | int64标量 | `1` |
+| `candidate_ids` | int64 `(K_occ,)`，升序的PDB内原实例编号 | `[0,2]` |
+| `prepared_smiles` | Unicode `(K_occ,)`，逐实例精确化学身份 | `["CCO","CCO"]` |
+| `coord_offsets` | int64 `(K_occ+1,)`，切分coords第一维，首值0、末值N_total | `[0,3,6]` |
+| `coords` | float32 `(N_total,3)`，完整沉积重原子的世界XYZ坐标，单位Å | `[12.0,8.0,-1.5]`为一个原子的三个分量 |
 
-### `preparation/objects_{0..11}.jsonl`
+`read_smiles_coords`同时核对实例编号和精确字符串，然后返回对应坐标切片；每个切片的原子顺序与公共图一致。包不保存旧模板身份或图缓存编号。一次迁移的新到旧原子映射保存在验收证据中，不参与正式运行。
 
-每行一个模板，含 `object_key`、`status`、`reason`、`atom_count` 和 `canonical_smiles`。成功 `status="ok"`、`reason=""`；失败 `status="excluded"`、`reason` 给出异常，后两项为 `null`。`canonical_smiles` 是源字符串的无手性规范形式，仅用于核对已有语言输入身份，不改写源字符串或补算向量。
+### 四份冻结JSONL
 
-逐实例语言身份检查读取原 `candidate_<id>.npz`，其中 `model_name` 是标量字符串 `SMI-TED Light 289M`；目录名则为 `smi_ted_289m`。同时核对PDB、实例编号、object_key、已存输入字符串和768维有限向量，不能把目录名当成NPZ中的模型名称。
+每个字典对应一个完整实例。原累计条件继续包括`small_molecule`、单残基单CCD、非共价、含碳、元素及键词表支持、语言表征无错误、沉积重原子完整且有限、必要受体和地图资产可用。
 
-成功构造示例：`{"object_key":"CCD:ETH","status":"ok","reason":"","atom_count":3,"canonical_smiles":"CCO"}`。失败构造示例：`{"object_key":"CCD:BAD","status":"excluded","reason":"template: unsupported_ligand_bond","atom_count":null,"canonical_smiles":null}`。
+| 字段 | 类型与含义 | 格式示例 |
+|---|---|---|
+| `split` | str，训练、监督验证、校准或测试划分 | `train` |
+| `pdb_id` | str，PDB目录名 | `5irx` |
+| `candidate_id` | int，原occurrence编号 | `0` |
+| `prepared_smiles` | str，精确公共图身份 | `CCO` |
+| `n_heavy_atoms` | int，图与坐标共同重原子数 | `3` |
+| `center_offset_xyz_A` | 长度3列表，冻结C5世界XYZ偏移，Å | `[1.0,0.0,0.0]` |
+| `sampling_seed` | int，逐实例候选种子 | `10831` |
+| `views` | list[str]，原冻结测试视图；非测试为空 | `["ALL","CAP10","HF10_TO5"]` |
+| `unsupported_smiles_reason` | str，仅明确不支持实例含此字段；训练/val跳过，测试保留失败分母 | `constructed unsupported graph`为构造测试示例 |
 
-### `excluded.jsonl` 与准备阶段的排除文件
+构造格式示例：`{"split":"train","pdb_id":"train_demo","candidate_id":0,"prepared_smiles":"CCO","n_heavy_atoms":3,"center_offset_xyz_A":[1.0,0.0,0.0],"sampling_seed":10831,"views":[]}`。示例不代表实际资产编号或种子。
 
-每行含实例的四个身份字段与 `reason`。只记录顺序检查中的首个失败原因，不重复扣减；同一 CCD 的图失败会在相关具体实例上体现，不建立额外 CCD 黑名单。身份表丢失时未知 `object_key=""`；测试 PDB 整份身份表不可读时 `candidate_id=-1` 表示无法枚举实例的 PDB 诊断，不能冒充正常实例。
+迁移逐项保留原清单的顺序、实例成员、偏移、种子和视图，不重新运行`freeze`。历史CAP10和HF10_TO5按原完整模板身份冻结成员；本次SMILES身份合并不改变这些已冻结集合。C5半径来自原Uniform(0,5)、方向来自均匀球面，仅评测读取；中心训练和val/loss始终C0。
 
-构造示例：`{"split":"train","pdb_id":"train_demo","candidate_id":1,"object_key":"CCD:ETH","reason":"occurrence_assets: incomplete_deposited_heavy_atoms"}`。异常实例直接排除，源资产保持原状。
+### `ligand_area/{pdb_id}/{candidate_id}.npy`
 
-### `summary.json`
+继续复用已有int32 `(K,3)` 源体素ZYX索引，只包含当前occurrence。例：源`[25,30,40]`减裁块起点`[20,20,20]`得到块内`[5,10,20]`；运行时只保留三分量均在`[0,48)`的索引。K可为0，不补其他实例标签，实际体素尺寸读取地图元数据。
 
-顶层 `source_paths` 保存只读 root、原 split_root、test_split、language_root 及 derived_root；`freeze_seed=3407`、`sampling_seed=10831` 保存冻结随机参数；`splits` 下分别保存四个集合的 `occurrences`、`pdbs`、`objects` 和 `views` 计数，例如 `{"occurrences":27,"pdbs":1,"objects":3,"views":{"ALL":27,"CAP10":26,"HF10_TO5":21}}` 是构造验收集合的格式示例。`excluded_reasons` 是失败原因到实例数的映射，例如 `{"occurrence_assets: incomplete_deposited_heavy_atoms":1}`。
+## 历史准备入口
 
-准备完成需要所有对象／实例分片成功退出，`freeze` 成功写出四份清单及统计，并通过记录中的数量、来源和真实输入验收。旧审计数量不能当作新分母。
+`preparation.py`与`scripts/prepare_docking.py`保留原来的`index、objects、samples、freeze`流程，供追溯旧清单、旧模板对称排列和既有视图定义。其源模板编码不是新模型输入。当前生产入口直接读取`data/smiles-v1/frozen`，不运行历史准备、重新筛选或重新冻结；特别是CAP10与HF10_TO5成员仍由原模板身份分组时冻结的清单决定，不按合并后的SMILES身份重新分组。
 
-## 内存装配与使用入口
+## 口袋与原模型链
 
-`OccurrenceDataset` 从最终清单读取实例。完整配体图与世界坐标仍直接读原模板和 `ligand_coords.npz`，按完整模板编号建立原半边表示，调用原 `FeaturizeMol` 和 free 任务／噪声变换。
+`OccurrenceDataset`按公共SMILES原子顺序装配图和坐标，再调用原FeaturizeMol、任务变换和dock噪声器。原噪声、同构重分配、固定字段恢复、loss、置信度及self-ranking保持原入口。
 
 受体排除 UNK 后按完整残基重原子质量中心选袋：中心距离严格小于 15 Å，包络距离任一真值配体重原子严格小于 10 Å。中心模型原点为本次给定中心，包络模型为实际选入受体原子的世界坐标均值。官方只读蛋白；RA 读标准蛋白及 RNA/DNA，空蛋白不伪造节点或原点。
 
-RA的E口袋为空时，`OccurrenceDataset.__getitem__` 在求均值前抛出 `EmptyEnvelopePocketError`，例如 `empty_envelope_pocket: 6j3z/11`。训练及val/loss的迭代流只捕获这一种错误，按划分和实例身份写警告后跳过；训练继续抽样直至组成正常batch，验证沿原路径计算其余有效E的损失。冻结JSONL及其他源资产不改写。正式采样按records逐实例直接索引，已有失败记录保存全部预算候选的preprocess错误，评价仍保留该实例分母；空E不改用配体中心或补入受体。其他数据异常仍直接传播。
+RA的E口袋为空时，`OccurrenceDataset.__getitem__` 在求均值前抛出 `EmptyEnvelopePocketError`，例如 `empty_envelope_pocket: 6j3z/11`。训练及val/loss的迭代流捕获该错误和清单明确标记的UnsupportedSmilesError，按划分和实例身份写警告后跳过；训练继续抽样直至组成正常batch，验证沿原路径计算其余有效E的损失。冻结JSONL及其他源资产不改写。正式采样按records逐实例直接索引，已有失败记录保存全部预算候选的preprocess错误，评价仍保留该实例分母；空E不改用配体中心或补入受体。运行时图与字符串不一致、坐标身份不一致等错误直接传播，不按已批准的少量迁移例外静默跳过。
 
 `DataModule.setup`按pocket_mode确定中心C0或包络E，训练与原val/loss条件相同。完整配体世界坐标为X*，g=mean(X*)；中心以g选袋并定模型原点，局部目标X*−g的质心为0。原GaussianExplodePrior加噪后直接执行原同构重分配和固定字段恢复，不增加共享平移，不读取center_translation。
 
@@ -136,6 +139,6 @@ C0/C5仅是评测提供的实际中心不同，两者使用同一T0推理入口�
 
 训练对合法实例均匀有放回抽样；有限验证按 worker 编号跨步遍历，正常情况不漏尾部。原偶发 OOM 裁批仍单独记录，不用它解释正常遍历缺失。
 
-正式准备入口为 `scripts/prepare_docking.py`，按 `index → objects → samples → freeze` 执行。每 CPU 任务 8 核、最多 12 份并发；正式 Slurm 命令见 `训练与运行/README.md`。`tests/test_docking_data.py` 使用构造资产检查筛选、原子编号、几何与视图；实际检查和正式运行分别记在 `日志/实现与共同数据准备.md`。
+历史准备入口为 `scripts/prepare_docking.py`；本次不调用。`tests/test_docking_data.py` 使用构造资产检查筛选、原子编号、几何与视图；SMILES迁移与验收记录见[预实验日志](../日志/预实验（一 --二之间）/1-SMILES构图与GPU验收.md)。本次使用迁移清单，不重新执行freeze。
 
-官方等价验收见[test_docking_official.py](../tests/test_docking_official.py)，参照本地Git提交`65488cf635c856101dbe703ac97e2f10f58e005c`的真实原先验、信息等级、噪声器、采样循环与解码。历史六模型源码和配置保存在`463d59098bca92b7278839992afd0efc84d5db81`；旧RB/T1运行须以其对应历史源码理解，当前入口只维护RA＋T0和官方蛋白兼容。收口证据与历史结果见[非密度记录](../日志/第一类实验（不加密度信息）/总日志&分析/非密度收口记录.md)。
+官方等价验收见[test_docking_official.py](../tests/test_docking_official.py)，参照本地Git提交`65488cf635c856101dbe703ac97e2f10f58e005c`的真实原先验、信息等级、噪声器、采样循环与解码。历史六模型源码和配置保存在`463d59098bca92b7278839992afd0efc84d5db81`；旧RB/T1运行须以其对应历史源码理解，当前入口维护RA＋T0、密度分支与官方蛋白兼容。密度字段保持[密度输入说明](../models/README-density.md)中的48³、ALL56、实际体素间距与模型原点契约。收口证据与历史结果见[非密度记录](../日志/第一类实验（不加密度信息）/总日志&分析/非密度收口记录.md)。
