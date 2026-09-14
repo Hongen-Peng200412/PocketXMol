@@ -1,4 +1,9 @@
-"""复用Pocket_Plus的残差三维卷积与解码门控；不包含循环状态或任务输出头。"""
+"""提供 Pocket_Plus 单次 U-Net 使用的三维卷积与解码门控, 返回体素特征而不写文件.
+
+DensityEncoder 组合本模块的 Bottleneck、ShortConv、ShortConvAdd、Res2NetBlock 与 AttentionGate.
+卷积特征统一为 (B, channels, D, H, W), B 是裁块数, D、H、W 是源数组 Z、Y、X 方向的空间尺寸.
+本模块保留数学积木的输入输出形式, 不维护跨轮状态或任务分类头.
+"""
 import torch
 import einops
 from torch import nn
@@ -98,7 +103,13 @@ class Bottleneck(nn.Module):
 
 class ConvBuildingBlock(nn.Module):
     """
-    双层3x3卷积+最后残差, 空间维度不变
+    两层 3³ 卷积与残差连接, 保持空间尺寸, 用于 AttentionGate 的输出投影.
+
+    构造参数:
+        - in_channels: int, 输入通道数.
+        - out_channels: int, 输出通道数; 与输入通道数不同时用 1³ 卷积投影残差.
+        - activate_class: nn.Module 类, 激活函数, 当前使用 nn.ReLU.
+    前向输入 x 为 (B, in_channels, D, H, W), 输出为 (B, out_channels, D, H, W).
     """
     def __init__(self, in_channels:int, out_channels:int, activate_class:nn.Module=nn.ReLU):
         super().__init__()
@@ -129,7 +140,10 @@ class ConvBuildingBlock(nn.Module):
 
 class ShortConv(nn.Module):
     """
-    简单3x3卷积块, 空间维度不变
+    3³ 卷积、带仿射参数的实例归一化和 ReLU, 保持空间尺寸.
+
+    构造参数 in_channels、out_channels 分别指定输入和输出通道数.
+    前向输入 x 为 (B, in_channels, D, H, W), 输出为 (B, out_channels, D, H, W).
     """
     def __init__(self,in_channels:int,out_channels:int):
         super().__init__()
@@ -147,11 +161,16 @@ class ShortConv(nn.Module):
 
 class ShortConvAdd(nn.Module):
     """
-    2个特征 x_0, x_1 的融合. x_0 为原始输入特征(如13通道的输入), x_1 为循环传递的特征(如64通道的recycle特征)
+    融合两个同空间尺寸的体素特征, 保留成熟输入层的归一化与 ELU.
     
-    输入参数 (Input Parameters):
+    构造参数:
         - input_channels: int 或 None, 第一个输入(x0)的通道数; None 时使用 LazyConv3d 延迟初始化
         - output_channels: int, 输出通道数, 同时也是第二个输入(x1)的通道数
+
+    前向输入:
+        - x0: (B, input_channels, D, H, W), 待投影体素特征; DensityEncoder 传入 56 通道密度裁块.
+        - x1: (B, output_channels, D, H, W), 同尺寸附加特征; 本项目每次传入 64 通道全零张量, 不传递上一轮状态.
+    前向输出为 (B, output_channels, D, H, W); x1 虽为零, norm2 的可学习仿射偏置仍参与前向和训练.
     """
     def __init__(self, input_channels, output_channels: int):
         super().__init__()
@@ -176,10 +195,15 @@ class ShortConvAdd(nn.Module):
 
 class Res2NetBlock(nn.Module):
     """
-    层级残差模块
+    把扩展通道分为 scale 组并级联卷积, 聚合后与输入残差相加.
     
-    输入参数 (Input Parameters):
-        - scale: int, 默认=4, 分割尺度数 or 层级数
+    构造参数:
+        - in_channels: int, 输入通道数.
+        - out_channels: int, 输出通道数, 也是每个分组的通道数.
+        - stride: int, 分组卷积步长; 当前 U-Net 仅使用 1, 保持空间尺寸.
+        - scale: int, 通道分组数; 当前最粗解码层使用 3, 其余解码层使用 4.
+        - activate_class: nn.Module 类, 当前使用 nn.ReLU.
+    当前调用的前向输入 x 为 (B, in_channels, D, H, W), 输出为 (B, out_channels, D, H, W).
     """
     def __init__(self, in_channels, out_channels, stride=1, scale=4,activate_class:nn.Module=nn.ReLU):
         super(Res2NetBlock, self).__init__()
@@ -223,12 +247,14 @@ class Res2NetBlock(nn.Module):
 
 class AttentionGate(nn.Module):
     """
-    输入参数 (Input Parameters):
+    把较粗解码特征插值到跳跃连接的空间尺寸, 用逐体素门控融合两路特征.
+
+    构造参数:
         - down_features: int, 下采样路径(跳跃连接)特征的通道数
         - up_features: int, 上采样路径特征的通道数
         - out_features: int, 输出特征的通道数
         - attention_features: int, 默认=64, 注意力计算中间特征的通道数
-        - attention_heads: int, 默认=8, 注意力头的数量————规定 up_features = afz * ahz
+        - attention_heads: int, 门控组数, 当前为 8; up_features 必须能被该组数整除, 每组宽度为 up_features // attention_heads.
     
     输出 (Output):
         - forward返回: torch, (B, out_features, D, H, W), 融合后的特征图
@@ -261,7 +287,7 @@ class AttentionGate(nn.Module):
             bias=False
         ),nn.InstanceNorm3d(self.afz,affine=True))
         
-        # (down_features) -> (up_features), 规定 up_features = afz * ahz
+        # [B, down_features, D, H, W] -> [B, up_features, D, H, W], 待门控的跳跃特征; 通道稍后分成 ahz 组.
         self.conv_v = nn.Sequential(nn.Conv3d(
             in_channels=self.dfz,
             out_channels=self.ufz,
@@ -305,16 +331,14 @@ class AttentionGate(nn.Module):
         key = self.conv_k(ds)
         value = self.conv_v(ds)
         
-        # value: torch, (B, afz, ahz, D, H, W)
-        # 将value重排为多头形式, 其中 up_features = afz * ahz
+        # [B, up_features, D, H, W] -> [B, up_features // ahz, ahz, D, H, W], 拆出门控组轴; einops 中的 afz 是局部轴名, 不等于 self.afz.
         value = einops.rearrange(value, "N (afz ahz) d h w -> N afz ahz d h w", ahz=self.ahz)
         
         # gate: torch, (B, ahz, D, H, W), 注意力权重, 范围[0,1]
         # 通过query和key的加法融合计算得到
         gate = self.gate(query+key)  # N ahz d h w
         
-        # out: torch, (B, afz, ahz, D, H, W)
-        # 对value应用注意力权重(广播乘法)
+        # (B, up_features // ahz, ahz, D, H, W), gate 沿每组通道宽度广播, 不混合不同空间位置.
         out = value*gate[:,None]
         
         # out: torch, (B, up_features, D, H, W)
