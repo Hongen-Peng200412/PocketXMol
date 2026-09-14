@@ -24,6 +24,8 @@ from models.ipa import ContextGAEdgeNet, GAEncoder
 from models.common import *
 from models.corrector import correct_pos, get_dihedral_batch
 from models.diffusion import *
+from models.density_backbone import DensityEncoder
+from models.density_readout import DensityReadout
 
 
 class PMAsymDenoiser(Module):
@@ -184,6 +186,12 @@ class PMAsymDenoiser(Module):
         # ``self.denoiser``: Module, 输入节点/边总宽度分别为 ``node_dim``、``edge_dim``, 并用 ``pocket_dim`` 维口袋节点作为上下文.
         self.denoiser = denoiser_bb(node_dim, edge_dim,
                             context_dim=pocket_dim, **config.denoiser)
+        self.density_encoder = None
+        if 'density' in config:
+            self.density_encoder = DensityEncoder(config.density)
+            self.denoiser.density_readers = nn.ModuleList([
+                DensityReadout(node_dim,config.density) for _ in range(config.denoiser.num_blocks)
+            ])
 
         # Output decoders
         # ``self.node_decoder``: MLP; [N, node_dim] -> [N, num_node_types] 的原子类别 logits 解码头.
@@ -289,6 +297,13 @@ class PMAsymDenoiser(Module):
         # ``h_node``: FloatTensor, 形状为 (N, self.config.node_dim), 完成 ``self.config.denoiser.num_blocks`` 个联合 block 后的配体节点隐藏特征.
         # ``pos_node``: FloatTensor, 形状为 (N, 3), 完成 ``self.config.denoiser.num_blocks`` 个坐标增量后的配体局部坐标, 单位 Å.
         # ``h_edge``: FloatTensor, 形状为 (2 * n_halfedges, self.config.edge_dim), 与双向 ``edge_index`` 列对齐的最终边隐藏特征.
+        density_arguments = {}
+        if self.density_encoder is not None:
+            density_arguments = dict(
+                density_feature=self.density_encoder(batch['density_input']),
+                density_origin=batch['density_origin'],
+                density_basis=batch['density_basis'],
+            )
         h_node, pos_node, h_edge = self.denoiser(
             h_node=h_node_in,
             pos_node=pos_in, 
@@ -301,6 +316,7 @@ class PMAsymDenoiser(Module):
             h_ctx=h_pocket,
             pos_ctx=batch['pocket_pos'],
             batch_ctx=batch['pocket_pos_batch'],
+            **density_arguments,
         )
         
         # ``pred_node``: FloatTensor, 形状为 (N, self.num_node_types); 逐原子干净类别 logits, 未归一化.

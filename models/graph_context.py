@@ -592,7 +592,8 @@ class ContextNodeEdgeNet(Module):
                 
     def forward(self, h_node, pos_node, h_edge, edge_index,
                 node_extra, edge_extra, batch_node=None,
-                h_ctx=None, pos_ctx=None, batch_ctx=None):
+                h_ctx=None, pos_ctx=None, batch_ctx=None,
+                density_feature=None,density_origin=None,density_basis=None):
         """逐层更新节点、边与坐标，并在每层重建配体—口袋上下文边。
 
         输入参数:
@@ -655,6 +656,10 @@ class ContextNodeEdgeNet(Module):
                                         h_ctx, ctx_knn_edge_index, h_ctx_edge)
             if self.node_only:
                 continue
+
+            if density_feature is not None:
+                h_node = h_node + self.density_readers[i](
+                    h_node,pos_node,batch_node,density_feature,density_origin,density_basis)
             
             # # edge feature updates
             h_edge = self.edge_blocks[i](h_edge, edge_index, h_node, edge_extra)
