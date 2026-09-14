@@ -1,0 +1,3 @@
+# 在已经验收的 PocketXMol 项目运行环境上补充的密度编码依赖.
+# Torch/PyG/Lightning 等继续沿用原环境, 不通过本文件升级.
+einops==0.8.1
