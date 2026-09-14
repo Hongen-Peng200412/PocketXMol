@@ -1,6 +1,7 @@
-# 密度mode和attention实现由PMAsymDenoiser读取；三维源裁块固定56通道。
-# flash强制PyTorch Flash内核；distance_bias启用逐头可学习平方物理距离偏置。
-# checkpoint仅重算激活节省显存；batch24×累积3保持每次更新72实例。
+# D4-C-T0-RA 的密度训练配置, scripts/train_pl.py 读取 model、loss、noise、transforms、data、train.
+# 数据集从 model.density 派生唯一密度入口; 原 RA 图、dock 噪声、loss 与置信度保持既定契约.
+# attention_backend 控制瓶颈和无距离全局读出的内核; 启用距离时全局读出使用 FP32 几何和 SDPA 数学内核.
+# 以下加载进程、单卡批量、激活重算值是性能预实验起点, 最终资源配置按实际验收记录确定.
 model:
   name: pm_asym_denoiser
   pocket_dim: 128
@@ -31,11 +32,13 @@ model:
         num_gaussians: 64
         type_: linear
   nucleic_branch: RA
+  # 密度编码与读出, PMAsymDenoiser 构造 DensityEncoder 及六个独立 DensityReadout.
   density:
-    mode: D4
-    attention_backend: flash
-    distance_bias: true
-    checkpoint: true
+    mode: D4  # str, 完整 U-Net 输出 48³×48, 每层读取当前原子所在体素周围 7³ 邻域交集.
+    attention_backend: flash  # str, 瓶颈与无距离全局注意力强制使用 PyTorch Flash; 参考实现仅供数值验收.
+    distance_bias: true  # bool, 逐头 softplus(beta) 乘以平方物理距离 / 100; 额外耗时是否符合约定在预实验中判定.
+    checkpoint: true  # bool, 训练反向时重算重型块激活, 不保存跨更新的密度特征.
+# 原 IndividualTasksLoss 及其置信度目标; 本配置不增加密度监督项.
 loss:
   name: individual_tasks
   weights:
@@ -62,6 +65,7 @@ loss:
       node: 1
       pos: 20
       edge: 1
+# 原 dock 高斯、同构重分配和固定字段恢复; C0/C5 不切换采样公式.
 noise:
   name: mixed
   individual:
@@ -94,6 +98,7 @@ transforms:
     use_mask_node: true
     use_mask_edge: true
     chem:
+      # int 列表, 顺序决定模型元素词表编号; 与原官方特征化配置一致.
       atomic_numbers:
       - 6
       - 7
@@ -106,6 +111,7 @@ transforms:
       - 35
       - 53
       - 34
+      # int 列表, 单键、双键、三键、芳香键类别; 保留原词表, 不表示本配置改变了实际输入编码.
       mol_bond_types:
       - 1
       - 2
@@ -124,15 +130,15 @@ data:
     root: /storage/penghongen/AdaLigand/Ori_Data
     derived_root: /storage/penghongen/Adaligand_Build/Ori_Data/pocketxmol
     manifest_root: /storage/penghongen/PocketXMol/data
-    pocket_mode: center
+    pocket_mode: center  # str, 训练和 val/loss 使用真实中心 C0 选袋及定位.
     knn: 32
 train:
   seed: 2023
   batch_size: 24
   num_workers: 15
   pin_memory: true
-  max_steps: 40000
-  val_check_interval: 800
+  max_steps: 40000  # int, 优化器更新上限; 第三次学习率实际下降时可提前停止.
+  val_check_interval: 800  # int, 每 800 次全局72实例的优化器更新计算原 val/loss.
   precision: bf16-mixed
   persistent_workers: true
   optimizer:
@@ -148,13 +154,13 @@ train:
       type: plateau
       mode: min
       threshold_mode: rel
-      threshold: 0.01
-      patience: 5
+      threshold: 0.01  # float, 原 val/loss 相对改善阈值 1%, 与 best 按最低原损失保存的规则区分.
+      patience: 5  # int, 连续第6次未达到改善阈值时降低学习率.
       factor: 0.2
       cooldown: 0
       min_lr: 0
       eps: 1.0e-08
-  global_batch_size: 72
+  global_batch_size: 72  # int, 单卡批量×梯度累积×GPU数, 本阶段每模型一张GPU.
   accumulate_grad_batches: 3
   log_every_n_steps: 50
   initial_checkpoint: /storage/penghongen/PocketXMol_official_test/extracted/data/trained_models/pxm/checkpoints/pocketxmol.ckpt
