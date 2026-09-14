@@ -333,7 +333,8 @@ def sample_docking(config):
         dataset_config = deepcopy(config.dataset)
         dataset_config.pocket_mode = "envelope" if protocol == "E" else "center"
 
-        dataset = OccurrenceDataset(dataset_config, config.split, transforms, config.receptor_branch, protocol, shuffle=False)
+        # 模型配置唯一决定是否读取密度; C0/C5只改变实际给定中心, 不改变T0采样公式.
+        dataset = OccurrenceDataset(dataset_config, config.split, transforms, config.receptor_branch, protocol, shuffle=False, density_config=model_config.get('density'))
 
         noise_config = deepcopy(sample_config.noise)
         noise_config.num_steps = config.num_steps

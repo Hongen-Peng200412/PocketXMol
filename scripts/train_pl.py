@@ -150,8 +150,10 @@ class DataModule(pl.LightningDataModule):
             follow_batch = list(dict.fromkeys(follow_batch + ['pocket_pos']))
             # 中心训练和原val/loss均使用真中心C0; 包络使用E, 评测C5只在采样入口提供.
             protocol = 'C0' if data_cfg.dataset.pocket_mode == 'center' else 'E'
-            train_set = OccurrenceDataset(data_cfg.dataset, 'train', self.transforms, self.config.model.nucleic_branch, protocol, True)
-            val_set = OccurrenceDataset(data_cfg.dataset, 'validation', self.transforms, self.config.model.nucleic_branch, protocol, False)
+            # Mapping|None, 与模型的密度配置共用唯一入口; 无密度配置不读地图、不改变原数据链.
+            density_config = self.config.model.get('density')
+            train_set = OccurrenceDataset(data_cfg.dataset, 'train', self.transforms, self.config.model.nucleic_branch, protocol, True, density_config=density_config)
+            val_set = OccurrenceDataset(data_cfg.dataset, 'validation', self.transforms, self.config.model.nucleic_branch, protocol, False, density_config=density_config)
             batch_size = train_cfg.batch_size
             val_workers = train_cfg.num_workers
         else:
@@ -239,7 +241,7 @@ class ModelLightning(pl.LightningModule):
         """构造原主干及 loss, 新实验只加载官方 model 权重, 自己续训交给 Lightning 恢复.
 
         config.train.initial_checkpoint 是 adaligand 首次训练的官方检查点路径; args.resume 非空时跳过该路径. num_node_types/num_edge_types 为配体类别数, kwargs.pocket_in_dim 保持蛋白25维.
-        官方参数去掉 model. 前缀后严格匹配旧主干, 只允许新 nucleic_embedder 参数缺失; RA共享原pocket_encoder. 恢复自己检查点时不执行官方初始化.
+        官方参数去掉 model. 前缀后严格匹配旧主干, 只允许新增核酸投影、密度编码器和密度读出参数缺失; RA共享原pocket_encoder. 恢复自己检查点时不执行官方初始化.
         """
         super().__init__()
         self.config = config
@@ -258,7 +260,8 @@ class ModelLightning(pl.LightningModule):
             model_state = {key[6:]: value for key, value in ckpt['state_dict'].items() if key.startswith('model.')}
             if self.is_docking:
                 incompatible = self.model.load_state_dict(model_state, strict=False)
-                missing = [key for key in incompatible.missing_keys if not key.startswith('nucleic_embedder.')]
+                # 新参数按模型自身初始化; 官方原主干和置信度参数仍须完整匹配, 不接受其他缺失.
+                missing = [key for key in incompatible.missing_keys if not key.startswith(('nucleic_embedder.', 'density_encoder.', 'denoiser.density_readers.'))]
                 if missing or incompatible.unexpected_keys:
                     raise RuntimeError(f'官方权重与原模型不匹配: missing={missing}, unexpected={incompatible.unexpected_keys}')
             else:
