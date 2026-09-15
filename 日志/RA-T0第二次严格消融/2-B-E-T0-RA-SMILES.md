@@ -1,14 +1,19 @@
 # B-E-T0-RA-SMILES
 
-当前状态（2026-09-15 22:10／22:11）：B-E-T0-RA-SMILES：19960更新，best14400／约1.65910，last19200；首次下降后lr=2e-5，W&B 2uv4mdnt online，尚无测试。
+当前状态（2026-09-16 01:19）：训练完成：31200更新、第三次下降停止；best21600／1.5245567560195923，训练W&B online finished。E测试已于01:17:57正式启动，首实例50候选成功，随后按同一配置CPU评价。
 
 | 项目 | 当前内容 |
 |---|---|
 | 资源 | 379402_0，实际JobId379402，gnode09，A800，16CPU |
 | 配置 | configs/docking/B-E-T0-RA-SMILES.yml |
 | 产物根 | /storage/penghongen/PocketXMol/training/B-E-T0-RA-SMILES |
+| best检查点 | /storage/penghongen/PocketXMol/training/B-E-T0-RA-SMILES/checkpoints/step=21600.ckpt；val/loss=1.5245567560195923 |
+| 完整恢复检查点 | /storage/penghongen/PocketXMol/training/B-E-T0-RA-SMILES/checkpoints/last.ckpt；31200更新，第三次下降停止 |
+| 训练W&B | https://wandb.ai/pencounkdual-111/PocketXmol_raw/runs/2uv4mdnt；online finished |
+| 测试配置与产物 | configs/docking/sample-B-E-T0-RA-SMILES-test.yml；/storage/penghongen/PocketXMol/sampling/B-E-T0-RA-SMILES/test |
+| 测试源码 | 0f09526ea210b573071c1c601881c16412b7999a；/home/penghongen/Feedback/PocketXMol/releases/PocketXMol_0beb73604a7d/PocketXMol |
 | 测试协议 | E；每实例每协议50候选、100步，batch50 |
-| best／W&B／指标 | B-E-T0-RA-SMILES：19960更新，best14400／约1.65910，last19200；首次下降后lr=2e-5，W&B 2uv4mdnt online，尚无测试 |
+| best／W&B／指标 | best21600／1.5245567560195923，训练W&B 2uv4mdnt online finished；E测试已启动，首实例50候选成功，指标待评价 |
 
 所有新训练从规定官方参数初始化，重建优化器与调度状态；训练bf16-mixed，推理官方FP32张量路径。训练保留原val/loss与best选择，结束后直接完整测试，中心C0/C5、包络E；既有清单、视图、C5和种子不重建，每实例每协议50候选、100步，推理优先batch_size=50。W&B保持online，无法在线时报告，不自行切换offline。 无密度和D1起始72×1，D4/D2/D3起始36×2；OOM按72→36→24降批、累积相应1→2→3，配置global_batch_size保持72。接受原reduce_batch偶发裁批和累积梯度丢失，不增加补样或梯度补偿。仍无法运行则报告实际问题。
 
@@ -20,7 +25,14 @@
 bash 训练与运行/sh/train_docking.sh B-E-T0-RA-SMILES
 ```
 
-训练后依据实际best建立测试配置，记录短采样与评价命令，不使用旧模型best，也不完整验证集采样。
+以下为训练结束后已批准的完整E测试及CPU评价命令；使用best21600，执行状态见当前状态与后文记录。
+
+```bash
+bash 训练与运行/sh/sample_docking.sh B-E-T0-RA-SMILES-test
+bash 训练与运行/sh/evaluate_docking.sh B-E-T0-RA-SMILES-test
+```
+
+评价只在采样正常退出后执行，沿用同一配置；不采样完整验证集。
 
 ## 只读核查与验收依据
 
@@ -29,6 +41,16 @@ bash 训练与运行/sh/train_docking.sh B-E-T0-RA-SMILES
 启动前核查（16:57）：379402仅控制器等待，实际GPU UUID GPU-adbf8fc8-5a4a-87e3-853b-c9cadcbdf74b，显存5 MiB、利用率0%；after_lock及父目录try_lock存在，kill_lock不存在。本包络训练目录尚不存在，已验收配置为E、72×1、global72、bf16-mixed、W&B online及规定官方初始权重；不传resume，不复用中心或旧包络状态。正式执行沿用已验收release e6173e5c817d（来源0c79d53），保留原控制命令及全部前序产物。
 
 ## 本次正式启动记录
+
+正式测试确认（2026-09-16 01:19）：stdout记录实际开始01:17:57、job379402、上述release及launch；首实例11jb/0完成50候选，GPU持续计算，stderr无报错。控制器等待到执行的原仓库快照过程未触发重启，没有覆盖旧模型或产物。
+
+E测试派发（2026-09-16 01:16:20，gnode09）：使用冻结release 0beb73604a7d，Git archive SHA256为c8a279aea167c106474c2eafe25936b3b6137b96896e344913333c9daa1e6599，发布仅归一22个Shell文件换行。原训练run_cmd已备份至`/storage/penghongen/tmp/pxm_formal_execution_20260914/runs/B-E-T0-RA-SMILES-test/previous_run_cmd.sh`；同目录保存sample.out、sample.err及随后evaluate.out、evaluate.err。通过bash -n后仅消费父目录try_lock，after_lock及所有旧产物保留。测试launch名称为formal_B-E-T0-RA-SMILES_test_0f09526。
+
+训练完成核查（2026-09-16 01:12）：stdout报告31200更新、stop_reason=plateau并正常退出；完整last.ckpt确认decline_count=3、last_validation_step=31200、best21600及上述val/loss。最终优化器lr=8e-7，W&B最后训练批次lr=4e-6来自第三次下降前，下降后未再更新参数。旧源码、39份定期checkpoint、last、训练配置及W&B全部保留，没有OOM降批。
+
+测试入口提交为`0f09526ea210b573071c1c601881c16412b7999a`。主代理逐字段自查与独立代理一轮审查批准，未修改生产Python或重跑GPU预实验。本机两个Python环境均缺少PyYAML，因此改用服务器既有运行环境只读解析内存中的新YAML；与已完成的中心复验配置比较，公共数据路径一致，仅模型路径、名称和E协议不同；实际保存训练配置的`data.dataset.pocket_mode=envelope`、RA及检查点路径均核对通过。第一次核查脚本误读顶层dataset，修正为data.dataset后通过，未启动模型或写入测试产物。
+
+验收与资源命令独立于上述正式入口：`tmp/formal-execution-20260914/read_completed_envelope.sh`只读检查完整checkpoint；`start-envelope-test-379402.sh`负责锁控制与留存正式命令。01:14核对实际JobId379402、数组索引0、gnode09、16CPU、A800 UUID GPU-adbf8fc8-5a4a-87e3-853b-c9cadcbdf74b；控制器2383等待，显存5MiB。after_lock和父目录try_lock存在、kill_lock不存在，新测试产物目录尚不存在。
 
 2026-09-15 16:58:48（gnode09）备份原控制命令后仅消费父目录try_lock，after_lock和所有中心模型产物保留。正式命令为`bash 训练与运行/sh/train_docking.sh B-E-T0-RA-SMILES`，72×1、bf16-mixed、原E训练与val/loss，从规定官方参数新初始化优化器和调度状态。没有传resume，也没有修改已验收科学配置。
 
@@ -69,3 +91,9 @@ bash 训练与运行/sh/train_docking.sh B-E-T0-RA-SMILES
 核查（2026-09-15 21:09／21:10）：B-E-T0-RA-SMILES：16009更新，best14400／约1.65910，last16000；lr=1e-4，W&B 2uv4mdnt online，尚无测试。三项训练损失有限、累计OOM均0，W&B均在线。D1 C0全部成功，C5持续推进。D2最近两小时更新吞吐接近，未见明确I/O退化；继续原配置与60分钟分段等待。
 
 核查（2026-09-15 22:10／22:11）：B-E-T0-RA-SMILES：19960更新，best14400／约1.65910，last19200；首次下降后lr=2e-5，W&B 2uv4mdnt online，尚无测试。三项训练持续推进、损失有限、累计OOM均0；W&B在线。无密度包络已首次降学习率至2e-5，按原规则继续；D1测试无生成失败。吞吐未见明确退化，继续60分钟分段等待。
+
+核查（2026-09-15 23:10／23:12）：B-E-T0-RA-SMILES：23842更新，best21600／约1.52456，last23200；lr=2e-5，W&B 2uv4mdnt online，尚无测试。三项训练损失有限、累计OOM均0、W&B在线。D1 C0已完成、C5生成全部成功；既有脚本将在两个协议推理完成后自动开始CPU评价。未见明确I/O退化，继续60分钟分段等待。
+
+核查（2026-09-16 00:11／00:13）：B-E-T0-RA-SMILES：27780更新，best21600／约1.52456，last27200；第二次下降后lr=4e-6，W&B 2uv4mdnt online，尚无测试。D1中心C0/C5各446实例、22300候选均生成成功，2026-09-15 23:34:54进入本资源8进程CPU评价，当前8个子进程均约99% CPU。三项训练损失有限、无OOM、W&B在线；无密度包络第二次降学习率至4e-6。继续原流程与60分钟分段等待。
+
+核查（2026-09-16 01:12／01:13）：B-E-T0-RA-SMILES：训练完成：31200更新、第三次下降停止；best21600／1.5245567560195923，W&B 2uv4mdnt online finished；正在发布E测试入口。无密度包络训练正常退出：31200更新、第三次下降、best21600，完整检查点与在线W&B结束状态已核验；新E测试入口经主代理自查和一轮独立审查批准，正在发布。D1 C0评价完成，Top-1为58.52018%，C5评价继续；D2中心与包络继续在线训练、无OOM。
