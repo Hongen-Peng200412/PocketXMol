@@ -1,6 +1,6 @@
 # B-C-T0-RA-SMILES
 
-当前状态（2026-09-15 15:46／15:48）：B-C-T0-RA-SMILES：训练best21600；C0/C5采样15:02:26正常退出0，正在同卡8进程CPU评价，尚无完整汇总指标。
+当前状态（2026-09-15 15:51）：训练best21600；C0/C5采样已完成，C0 ALL 446实例self-ranking top1 RMSD＜2 Å成功率60.7623%；C5仍在CPU评价，完整在线汇总尚未上传。
 
 | 项目 | 当前内容 |
 |---|---|
@@ -8,7 +8,7 @@
 | 配置 | configs/docking/B-C-T0-RA-SMILES.yml |
 | 产物根 | /storage/penghongen/PocketXMol/training/B-C-T0-RA-SMILES |
 | 测试协议 | C0/C5；每实例每协议50候选、100步，batch50 |
-| best／W&B／指标 | B-C-T0-RA-SMILES：训练best21600；C0/C5采样15:02:26正常退出0，正在同卡8进程CPU评价，尚无完整汇总指标 |
+| best／W&B／指标 | best21600；C0 ALL 446实例的self-ranking top1 RMSD＜2 Å成功率60.7623%；C5评价进行中，完整W&B汇总尚未上传 |
 | 当前测试产物 | /storage/penghongen/PocketXMol/sampling/B-C-T0-RA-SMILES/test |
 
 所有新训练从规定官方参数初始化，重建优化器与调度状态；训练bf16-mixed，推理官方FP32张量路径。训练保留原val/loss与best选择，结束后直接完整测试，中心C0/C5、包络E；既有清单、视图、C5和种子不重建，每实例每协议50候选、100步，推理优先batch_size=50。W&B保持online，无法在线时报告，不自行切换offline。 无密度和D1起始72×1，D4/D2/D3起始36×2；OOM按72→36→24降批、累积相应1→2→3，配置global_batch_size保持72。接受原reduce_batch偶发裁批和累积梯度丢失，不增加补样或梯度补偿。仍无法运行则报告实际问题。
@@ -125,3 +125,5 @@ bash 训练与运行/sh/evaluate_docking.sh B-C-T0-RA-SMILES-test
 核查（2026-09-15 14:44／14:46）：B-C-T0-RA-SMILES：训练完成，best21600；C0完成446/446实例、22300候选成功；C5完成406/446实例、20300候选全部成功，尚无CPU指标。三个训练run远端running且持续接收指标，累计OOM均0；无密度训练run finished、测试仍在正常生成。吞吐未见明显下降，不调整I/O或科学配置，继续60分钟分段等待。
 
 阶段核查（2026-09-15 15:46／15:48）：B-C-T0-RA-SMILES：训练best21600；C0/C5采样15:02:26正常退出0，正在同卡8进程CPU评价，尚无完整汇总指标。D2两run正常在线且累计OOM为0。
+
+CPU评价进度（15:51）：正式stdout确认C0 occurrence_count446、top1_success_rate0.6076233183856502。八个CPU评价进程均在计算（约99%单核利用率），已经转入C5；未根据耗时修改评估定义。C0协议summary.json已落盘，完整两协议汇总与W&B状态待完成后统一核对。
