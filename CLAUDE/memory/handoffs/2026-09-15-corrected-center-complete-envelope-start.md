@@ -4,7 +4,7 @@
 
 ## 当前状态
 
-正式goal仍active。B-C-T0-RA-SMILES已完成训练、best C0/C5测试、CPU评价与W&B在线上传；379402已派发B-E-T0-RA-SMILES新训练，启动加载确认以包络实验日志为准。D1中心正在371591完成best测试，D2中心与包络分别在378693和379403_1继续训练。
+正式goal仍active。B-C-T0-RA-SMILES已完成训练、best C0/C5测试、CPU评价与W&B在线上传；379402已派发B-E-T0-RA-SMILES新训练，已于17:02:10启动，首31更新损失有限，W&B 2uv4mdnt online。D1中心正在371591完成best测试，D2中心与包络分别在378693和379403_1继续训练。
 
 ## 已完成结果
 
@@ -14,7 +14,7 @@
 
 ## 包络接续
 
-16:57确认379402仅控制器等待，after_lock和父目录try_lock存在、kill_lock不存在，GPU UUID GPU-adbf8fc8-5a4a-87e3-853b-c9cadcbdf74b空闲，B-E-T0-RA-SMILES训练目录尚不存在。16:58:48备份旧run_cmd后消费try_lock，沿真实协议派发，不用kill_lock或scancel。控制器开始准备该次运行副本，实际训练开始时间和W&B id仍需核对日志。
+16:57确认379402仅控制器等待，after_lock和父目录try_lock存在、kill_lock不存在，GPU UUID GPU-adbf8fc8-5a4a-87e3-853b-c9cadcbdf74b空闲，B-E-T0-RA-SMILES训练目录尚不存在。16:58:48备份旧run_cmd后消费try_lock，沿真实协议派发，不用kill_lock或scancel。控制器完成该次运行副本后于17:02:10开始，stdout确认官方初始权重，W&B 2uv4mdnt online，首31次更新损失有限。
 
 正式短命令为`bash 训练与运行/sh/train_docking.sh B-E-T0-RA-SMILES`。沿已验收配置E、RA＋T0、72×1、global72、bf16-mixed、W&B online，从官方pxm参数新初始化优化器和调度状态，不传resume。正式源码沿用`/home/penghongen/Feedback/PocketXMol/releases/PocketXMol_e6173e5c817d/PocketXMol`（来源0c79d53），不混入工作区他人对dataset.py、density_backbone.py的未提交修改。
 
