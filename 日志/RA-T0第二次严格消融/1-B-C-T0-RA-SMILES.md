@@ -1,6 +1,6 @@
 # B-C-T0-RA-SMILES
 
-当前状态（2026-09-15 15:51）：训练best21600；C0/C5采样已完成，C0 ALL 446实例self-ranking top1 RMSD＜2 Å成功率60.7623%；C5仍在CPU评价，完整在线汇总尚未上传。
+当前状态（2026-09-15 16:56确认）：训练、best的C0/C5完整测试、CPU评价与在线记录全部完成。ALL Top-1成功率C0 60.76%、C5 39.91%；两协议共44600候选全部生成和评价成功。
 
 | 项目 | 当前内容 |
 |---|---|
@@ -8,8 +8,27 @@
 | 配置 | configs/docking/B-C-T0-RA-SMILES.yml |
 | 产物根 | /storage/penghongen/PocketXMol/training/B-C-T0-RA-SMILES |
 | 测试协议 | C0/C5；每实例每协议50候选、100步，batch50 |
-| best／W&B／指标 | best21600；C0 ALL 446实例的self-ranking top1 RMSD＜2 Å成功率60.7623%；C5评价进行中，完整W&B汇总尚未上传 |
+| best／W&B／指标 | best21600／val/loss1.72273850440979；训练miwl75au finished；评价8ift0jbh online_completed；ALL Top-1 C0 60.76%、C5 39.91% |
 | 当前测试产物 | /storage/penghongen/PocketXMol/sampling/B-C-T0-RA-SMILES/test |
+
+## 最终测试结果
+
+以下成功率均以RMSD＜2 Å为阈值。Top-1和Top-5使用原self-ranking；Oracle表示50候选中至少一个成功。前三项按实例等权，最后一项先在各PDB内计算再对PDB等权。三个视图复用同一候选池。
+
+| 协议 | 视图 | 实例数 | Top-1 | Top-5 | Oracle | PDB等权Top-1 |
+|---|---|---:|---:|---:|---:|---:|
+| C0 | ALL | 446 | 60.76% | 69.96% | 83.63% | 58.69% |
+| C0 | CAP10 | 272 | 48.16% | 60.66% | 78.68% | 54.95% |
+| C0 | HF10_TO5 | 227 | 47.14% | 60.35% | 79.30% | 52.71% |
+| C5 | ALL | 446 | 39.91% | 50.45% | 62.33% | 40.19% |
+| C5 | CAP10 | 272 | 29.78% | 41.91% | 54.41% | 36.08% |
+| C5 | HF10_TO5 | 227 | 30.84% | 42.29% | 54.19% | 34.57% |
+
+完整结果：`/storage/penghongen/PocketXMol/sampling/B-C-T0-RA-SMILES/test/summary.json`；各协议同目录的`occurrences.json`保存逐实例评价，候选目录及原始置信度均保留。[评价W&B](https://wandb.ai/pencounkdual-111/PocketXmol_raw/runs/8ift0jbh)已online_completed，正式进程16:40:40退出0。
+
+C0/C5各446实例、22300候选，全部生成并完成RMSD与置信度配对；两协议均44600次模型forward完成，没有生成或评价失败。采样15:02:26结束，随后8CPU进程评价至16:40:40，墙钟约98分钟；summary的evaluation_seconds为逐实例耗时之和，不能当作墙钟时间。RDKit的allene立体化学提示已保留于stderr，沿既有评价实现，没有修改指标或删除实例。
+
+记录来源为远端完整summary.json及正式stdout／stderr，本地只读副本在tmp/formal-execution-20260914/B-C-T0-RA-SMILES-summary.json。该副本用于填表核对，不另建实验日志。
 
 所有新训练从规定官方参数初始化，重建优化器与调度状态；训练bf16-mixed，推理官方FP32张量路径。训练保留原val/loss与best选择，结束后直接完整测试，中心C0/C5、包络E；既有清单、视图、C5和种子不重建，每实例每协议50候选、100步，推理优先batch_size=50。W&B保持online，无法在线时报告，不自行切换offline。 无密度和D1起始72×1，D4/D2/D3起始36×2；OOM按72→36→24降批、累积相应1→2→3，配置global_batch_size保持72。接受原reduce_batch偶发裁批和累积梯度丢失，不增加补样或梯度补偿。仍无法运行则报告实际问题。
 

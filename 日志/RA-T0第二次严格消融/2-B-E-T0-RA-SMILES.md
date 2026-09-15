@@ -1,6 +1,6 @@
 # B-E-T0-RA-SMILES
 
-当前状态（2026-09-14）：已获正式执行授权，尚未启动；等待中心模型训练、测试及评价完成。
+当前状态（2026-09-15 16:58派发）：中心全流程已完成并在线记录；本包络模型已派发至379402，从官方参数新初始化，等待加载确认。
 
 | 项目 | 当前内容 |
 |---|---|
@@ -14,7 +14,7 @@
 
 ## 正式运行命令
 
-以下命令已获准，尚未执行；启动后补充实际release、launch和时间。
+以下命令已于16:58:48派发；实际开始及W&B记录确认后补充。
 
 ```bash
 bash 训练与运行/sh/train_docking.sh B-E-T0-RA-SMILES
@@ -25,6 +25,14 @@ bash 训练与运行/sh/train_docking.sh B-E-T0-RA-SMILES
 ## 只读核查与验收依据
 
 前置验收已被接受，不重跑。启动前核对真实作业、GPU UUID、控制目录、after_lock及try_lock；原命令独立备份。
+
+启动前核查（16:57）：379402仅控制器等待，实际GPU UUID GPU-adbf8fc8-5a4a-87e3-853b-c9cadcbdf74b，显存5 MiB、利用率0%；after_lock及父目录try_lock存在，kill_lock不存在。本包络训练目录尚不存在，已验收配置为E、72×1、global72、bf16-mixed、W&B online及规定官方初始权重；不传resume，不复用中心或旧包络状态。正式执行沿用已验收release e6173e5c817d（来源0c79d53），保留原控制命令及全部前序产物。
+
+## 本次正式启动记录
+
+2026-09-15 16:58:48（gnode09）备份原控制命令后仅消费父目录try_lock，after_lock和所有中心模型产物保留。正式命令为`bash 训练与运行/sh/train_docking.sh B-E-T0-RA-SMILES`，72×1、bf16-mixed、原E训练与val/loss，从规定官方参数新初始化优化器和调度状态。没有传resume，也没有修改已验收科学配置。
+
+冻结release为`/home/penghongen/Feedback/PocketXMol/releases/PocketXMol_e6173e5c817d/PocketXMol`（来源0c79d53）。本次控制脚本为`tmp/formal-execution-20260914/start-envelope-379402.sh`，日志与原命令副本在`/storage/penghongen/tmp/pxm_formal_execution_20260914/runs/B-E-T0-RA-SMILES/`，分别为train.out、train.err、previous_run_cmd.sh。预定launch为`/home/penghongen/Feedback/PocketXMol/launches/379402/formal_B-E-T0-RA-SMILES_0c79d53`，等待正式stdout确认；控制脚本属于资源证据，不与正式短训练命令混记。
 
 ## 之前的准备与尝试
 
