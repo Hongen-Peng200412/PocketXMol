@@ -1,6 +1,6 @@
 # B-E-T0-RA-SMILES
 
-当前状态（2026-09-15 17:03）：已从官方参数新初始化，17:02:10正式启动；31次更新，损失有限、lr=1e-4、72×1、bf16-mixed；W&B 2uv4mdnt online，尚无best。
+当前状态（2026-09-15 19:07／19:09）：B-E-T0-RA-SMILES：8113更新，best5600／约1.77278，last8000；lr=1e-4，W&B 2uv4mdnt online，尚无测试。
 
 | 项目 | 当前内容 |
 |---|---|
@@ -8,7 +8,7 @@
 | 配置 | configs/docking/B-E-T0-RA-SMILES.yml |
 | 产物根 | /storage/penghongen/PocketXMol/training/B-E-T0-RA-SMILES |
 | 测试协议 | E；每实例每协议50候选、100步，batch50 |
-| best／W&B／指标 | 尚未到首次800更新验证；[W&B 2uv4mdnt](https://wandb.ai/pencounkdual-111/PocketXmol_raw/runs/2uv4mdnt) online；无测试结果 |
+| best／W&B／指标 | B-E-T0-RA-SMILES：8113更新，best5600／约1.77278，last8000；lr=1e-4，W&B 2uv4mdnt online，尚无测试 |
 
 所有新训练从规定官方参数初始化，重建优化器与调度状态；训练bf16-mixed，推理官方FP32张量路径。训练保留原val/loss与best选择，结束后直接完整测试，中心C0/C5、包络E；既有清单、视图、C5和种子不重建，每实例每协议50候选、100步，推理优先batch_size=50。W&B保持online，无法在线时报告，不自行切换offline。 无密度和D1起始72×1，D4/D2/D3起始36×2；OOM按72→36→24降批、累积相应1→2→3，配置global_batch_size保持72。接受原reduce_batch偶发裁批和累积梯度丢失，不增加补样或梯度补偿。仍无法运行则报告实际问题。
 
@@ -57,3 +57,7 @@ bash 训练与运行/sh/train_docking.sh B-E-T0-RA-SMILES
 2026-09-14 19:52，主代理在gnode10确认378693正在执行Matcher的smiles_identity.experiment，进程组13179，随后按授权创建实际kill_lock。控制器已终止该进程组并回到try_lock；after_lock保留，GPU0空闲。接管证据根为/storage/penghongen/tmp/pxm_formal_smiles_20260914/takeover-378693。接管不删除Matcher文件或checkpoint，原运行命令另有副本。新链验收命令后续记录于[SMILES日志](../预实验（一 --二之间）/1-SMILES构图与GPU验收.md)。
 
 启动确认（17:03）：stdout核对官方初始权重与本次launch，stderr确认bf16-mixed、在线W&B，31次更新损失有限。控制器准备运行副本约3分钟后正常启动，不属于模型I/O退化，未改变底层控制器或其他项目。沿用原空E口袋跳过规则，进入60分钟分段等待。
+
+核查（2026-09-15 18:05／18:07）：B-E-T0-RA-SMILES：4048更新，best2400／约1.81572，last4000；lr=1e-4，W&B 2uv4mdnt online，尚无测试。三项训练持续产生有限损失，累计OOM均0；在线W&B持续记录。D1测试正常生成，无失败实例，未见明确I/O退化。继续60分钟分段等待，不改科学配置。
+
+核查（2026-09-15 19:07／19:09）：B-E-T0-RA-SMILES：8113更新，best5600／约1.77278，last8000；lr=1e-4，W&B 2uv4mdnt online，尚无测试。三项训练持续产生有限损失，累计OOM均0；在线W&B持续记录。D1测试正常生成，无失败实例，未见明确I/O退化。继续60分钟分段等待，不改科学配置。
