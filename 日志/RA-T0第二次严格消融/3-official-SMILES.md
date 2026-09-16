@@ -2,7 +2,7 @@
 
 本轮执行边界（2026-09-16）：仅收口D1、D2、修正编码的无密度RA＋T0中心／包络及官方冻结对照；完成部分不重跑。D3、D4本轮取消，禁止local_cov及额外实验。各资源完成自身范围内全部测试与CPU评价后，保留after_lock、资源及历史产物，回到try_lock等待。后部旧排程仅作历史。
 
-当前状态（2026-09-16 23:02—23:04）：official-SMILES：三协议推理完成，各445成功、9qkz/0输入失败；CPU评价C0/C5完成，ALL Top-1=44.62%／32.74%，E继续。
+当前状态（2026-09-17 00:26—00:28）：official-SMILES：全流程完成；C0/C5/E ALL Top-1=44.62%／32.74%／62.78%，每协议保留9qkz/0失败分母；评价W&B puccpjvm online_completed，379402在try_lock等待。
 
 | 项目 | 当前内容 |
 |---|---|
@@ -12,9 +12,33 @@
 | 正式源码 | /home/penghongen/Feedback/PocketXMol/releases/PocketXMol_0beb73604a7d/PocketXMol；来源0f09526ea210b573071c1c601881c16412b7999a |
 | 产物根 | /storage/penghongen/PocketXMol/sampling/official-SMILES/test |
 | 测试协议 | C0/C5/E；每实例每协议50候选、100步，batch50 |
-| best／W&B／指标 | official-SMILES：三协议推理完成，各445成功、9qkz/0输入失败；CPU评价C0/C5完成，ALL Top-1=44.62%／32.74%，E继续 |
+| best／W&B／指标 | official-SMILES：全流程完成；C0/C5/E ALL Top-1=44.62%／32.74%／62.78%，每协议保留9qkz/0失败分母；评价W&B puccpjvm online_completed，379402在try_lock等待 |
 
 仅使用规定官方冻结参数，不训练。
+
+## 最终测试结果
+
+2026-09-16 08:56:06开始C0/C5/E推理，20:39:12完成；CPU评价20:39:12—23:03:50，约145分钟。每协议446实例，445实例22250候选成功，9qkz/0预处理失败50候选；失败保留全部评价分母，未重试、删样或修正输入。
+
+完整汇总：`/storage/penghongen/PocketXMol/sampling/official-SMILES/test/summary.json`；同根保留配置、逐实例候选、姿态、置信度和评价。评价W&B：[ puccpjvm ](https://wandb.ai/pencounkdual-111/PocketXmol_raw/runs/puccpjvm)，状态`online_completed`，error=null。本地只读副本：`tmp/formal-execution-20260914/official-SMILES-summary.json`。
+
+成功定义为RMSD<2 Å，采用原self-ranking。前三项成功率按实例等权；最后一列先在每个PDB内汇总再等权。ALL、CAP10、HF10_TO5为同一候选池的冻结视图，不重复生成。
+
+| 协议 | 视图 | 实例数 | Top-1 | Top-5 | Oracle | PDB等权Top-1 |
+|---|---|---:|---:|---:|---:|---:|
+| C0 | ALL | 446 | 44.62% | 51.57% | 61.43% | 41.67% |
+| C0 | CAP10 | 272 | 30.88% | 40.44% | 52.57% | 37.59% |
+| C0 | HF10_TO5 | 227 | 30.84% | 41.41% | 54.63% | 35.65% |
+| C5 | ALL | 446 | 32.74% | 41.93% | 51.35% | 32.74% |
+| C5 | CAP10 | 272 | 23.53% | 30.51% | 42.65% | 31.37% |
+| C5 | HF10_TO5 | 227 | 25.55% | 32.60% | 44.49% | 32.27% |
+| E | ALL | 446 | 62.78% | 73.99% | 84.98% | 63.25% |
+| E | CAP10 | 272 | 55.51% | 67.65% | 80.51% | 62.57% |
+| E | HF10_TO5 | 227 | 56.83% | 68.72% | 79.30% | 61.29% |
+
+耗时、峰值显存、Spearman、Pose AUC及有效数／NA原因见完整汇总。汇总的evaluation_seconds是逐实例CPU耗时之和，不等于上述墙钟耗时。
+
+9qkz/0在三协议均报`AssertionError: unknown element in pocket`，失败阶段为preprocess，未进入模型前向；各协议success=445、failed=1。ALL成功率分母仍为446；RMSD均值、Spearman等只使用可定义项并记录有效数，不能把NA改为0。
 
 ## 正式运行命令
 
@@ -81,3 +105,5 @@ bash 训练与运行/sh/evaluate_docking.sh official-SMILES-test
 核查（2026-09-16 22:01—22:03）：official-SMILES：C0/C5/E推理完成，各445成功、9qkz/0输入失败；CPU评价C0完成，ALL Top-1=44.62%，C5/E继续。D1-E best20800 E测试完成385实例19250候选全部成功。D2-C C0全446实例成功，C5完成70实例3500候选成功。D2-E为38619微批、约19309更新，best15200、last19200，lr降为2e-5，OOM0；W&B在线running推进至19299。官方三协议推理已完成，各445成功和9qkz/0输入失败；CPU评价C0已完成446实例，ALL Top-1=0.4461883408071749，C5/E继续，完整summary及在线评价记录待全部完成。
 
 核查（2026-09-16 23:02—23:04）：official-SMILES：三协议推理完成，各445成功、9qkz/0输入失败；CPU评价C0/C5完成，ALL Top-1=44.62%／32.74%，E继续。D1-E best20800 E测试全部446实例22300候选成功，22:35:27开始同资源CPU评价。D2-C C0全446实例成功，C5完成124实例6200候选成功。D2-E为39789微批、约19894更新，best15200、last19200，lr=2e-5，OOM0；微批总数40000不是优化器更新上限。官方CPU评价已完成C0/C5，ALL Top-1分别0.4461883408071749和0.3273542600896861，E评价继续；三协议推理均保留9qkz/0输入失败分母。
+
+核查（2026-09-17 00:26—00:28）：official-SMILES：全流程完成；C0/C5/E ALL Top-1=44.62%／32.74%／62.78%，每协议保留9qkz/0失败分母；评价W&B puccpjvm online_completed，379402在try_lock等待。D1-E和official-SMILES完整summary读取核对，在线评价分别vdix82n2和puccpjvm，均online_completed/error=null。D1-E于09-16 23:24:30结束，E ALL Top-1=66.59%；官方于23:03:50结束，C0/C5/E ALL Top-1=44.62%/32.74%/62.78%，每协议保留9qkz/0输入失败。00:27核对371591与379402均after_lock及父目录try_lock存在，kill_lock不存在，控制器等待；不追加任务。D2-C C5完成186实例9300候选全部成功；D2-E为41351微批、约20675更新，best15200、last20000，lr=2e-5，OOM0，W&B在线running推进至20649。
