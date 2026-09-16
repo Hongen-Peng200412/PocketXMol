@@ -1,0 +1,30 @@
+# D2密度中心RA＋T0正式测试, 使用已完成训练的最低val/loss检查点.
+# scripts/sample_docking.py生成C0/C5候选, scripts/evaluate_docking.py按同一配置评价; 不采样完整验证集.
+model_name: D2-C-T0-RA
+# str, 已完成训练保存的实际配置; sample_docking读取model.density派生密度输入, 并沿原noise和featurizer.
+# D2保留实际给定中心定位密度裁块; 裁块内缩不改变模型原点, 不额外加入密度参数覆盖.
+train_config: /storage/penghongen/PocketXMol/training/D2-C-T0-RA/train_config/D2-C-T0-RA.yml
+# str, 本次训练原val/loss最低的best, 为1.783219575881958; 不读取last或旧编码模型目录.
+checkpoint: /storage/penghongen/PocketXMol/training/D2-C-T0-RA/checkpoints/step=11200.ckpt
+receptor_branch: RA  # str, 蛋白与核酸联合受体图, 共享编码器.
+dataset:
+  root: /storage/penghongen/AdaLigand/Ori_Data  # str, 只读受体资产根.
+  derived_root: /storage/penghongen/Adaligand_Build/Ori_Data/pocketxmol  # str, 既有衍生产物根.
+  smiles_root: /storage/penghongen/AdaLigand/Ori_Data/smiles_assets  # str, 公共精确SMILES图与同顺序自同构.
+  smiles_coords_root: /storage/penghongen/AdaLigand/Ori_Data/smiles_assets/SMILE_coords/v1  # str, 同原子顺序的沉积坐标包.
+  manifest_root: /storage/penghongen/PocketXMol/data/smiles-v1/frozen  # str, 已冻结成员、C5向量、种子和测试视图.
+  knn: 32  # int, OccurrenceDataset受体近邻上限.
+protocols: [C0, C5]  # list[str], 先真实中心再冻结偏移中心; 两者都沿T0原采样, 轨迹内原点与口袋固定.
+split: test  # str, 完整446实例; 三个测试视图复用同一候选池.
+output_root: /storage/penghongen/PocketXMol/sampling/D2-C-T0-RA  # str, 独立产物根, 自动增加test/协议子目录.
+batch_size: 50  # int, 同一实例同时生成的候选数, 不跨实例组批.
+num_candidates: 50  # int, 每实例每协议预算, 失败候选仍进入分母.
+num_steps: 100  # int, 原sample_loop3步骤数.
+device: cuda  # str, 378693获准A800内执行; 模型eval, 沿官方FP32张量路径.
+evaluation_workers: 8  # int, 后续CPU评价进程数, 使用同一作业的CPU.
+# 仅evaluate_docking读取并在线上传评价汇总; 不在配置保存凭据.
+wandb:
+  entity: pencounkdual-111
+  project: PocketXmol_density
+  name: D2-C-T0-RA_test
+  mode: online
