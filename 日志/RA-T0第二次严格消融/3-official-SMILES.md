@@ -1,6 +1,6 @@
 # official-SMILES
 
-当前状态（2026-09-16 11:01／11:03）：official-SMILES：C0 230/446实例、11500候选成功；C5/E尚未开始，官方冻结权重，不训练。
+当前状态（2026-09-16 12:12—12:14）：official-SMILES：C0已处理366/446实例，365实例18250候选成功；9qkz/0输入含官方特征器不支持元素，50候选失败，保留分母；C5/E待开始。
 
 | 项目 | 当前内容 |
 |---|---|
@@ -10,7 +10,7 @@
 | 正式源码 | /home/penghongen/Feedback/PocketXMol/releases/PocketXMol_0beb73604a7d/PocketXMol；来源0f09526ea210b573071c1c601881c16412b7999a |
 | 产物根 | /storage/penghongen/PocketXMol/sampling/official-SMILES/test |
 | 测试协议 | C0/C5/E；每实例每协议50候选、100步，batch50 |
-| best／W&B／指标 | official-SMILES：C0 230/446实例、11500候选成功；C5/E尚未开始，官方冻结权重，不训练 |
+| best／W&B／指标 | official-SMILES：C0已处理366/446实例，365实例18250候选成功；9qkz/0输入含官方特征器不支持元素，50候选失败，保留分母；C5/E待开始 |
 
 仅使用规定官方冻结参数，不训练。
 
@@ -53,3 +53,5 @@ bash 训练与运行/sh/evaluate_docking.sh official-SMILES-test
 核查（2026-09-16 09:59／10:01）：official-SMILES：C0 118/446实例、5900候选成功；C5/E尚未开始，官方冻结权重，不训练。三项训练持续产生有限损失、累计OOM均0，W&B远端记录持续更新。官方C0正常生成，尚无失败实例；未见明确I/O退化，不改变配置。训练进度条统计的是微批次，D2更新步数按累积2换算，超过40000微批次不代表超过40000优化器更新。继续60分钟分段等待。
 
 核查（2026-09-16 11:01／11:03）：official-SMILES：C0 230/446实例、11500候选成功；C5/E尚未开始，官方冻结权重，不训练。D2中心20800更新在第三次下降触发时停止，完整last确认best11200、val/loss1.783219575881958及decline_count3，W&B0t1vqqgk online finished。新C0/C5入口经过主代理自查、服务器只读YAML解析及一轮独立审查批准，正在发布。其余任务正常、无OOM；官方C0候选全部成功。
+
+核查（2026-09-16 12:12—12:14）：official-SMILES：C0已处理366/446实例，365实例18250候选成功；9qkz/0输入含官方特征器不支持元素，50候选失败，保留分母；C5/E待开始。只读检查：D1-E约16498个优化器更新，lr=2e-5，best仍10400；D2-E为27647个微批、约13823个优化器更新，lr=1e-4，best仍11200。两项训练无OOM，W&B在线running且更新记录推进。D2-C的C0已完成50实例/2500候选，全部成功。官方C0已处理366实例，365实例18250候选成功，9qkz/0在preprocess报AssertionError: unknown element in pocket，50候选失败记录已保留；尚无模型forward，不改输入，最终保留评价分母。两节点时间独立记录。
