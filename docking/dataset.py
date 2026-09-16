@@ -114,6 +114,7 @@ class OccurrenceDataset(IterableDataset):
 
         # (3,), occurrence 的沉积几何中心, 仅用于已批准的定位条件构造.
         ligand_center = ligand_coords.mean(axis=0)
+        # NOTE: 在未来真实的端到端评测或推理中(self.protocol = real_e2e), ligand_coords 应该为None(不知道沉积原子), 并由用户或上游直接输入 given_center, 用它来通过 select_pocket 选口袋、从高斯噪音开始恢复结构。
         if self.protocol == "C5":
             # float32, (3,), 评测清单中已冻结的世界XYZ偏移, 单位Å; 训练与val/loss入口固定C0或E.
             offset = np.asarray(record["center_offset_xyz_A"], dtype=np.float32)
@@ -159,8 +160,8 @@ class OccurrenceDataset(IterableDataset):
             if self.config.pocket_mode == "center":
                 pocket_config.center = given_center.tolist()
             data = FeaturizePocket(pocket_config)(data)
-        else:
-            # (1, 3), 原 PocketXMol 定位规则的世界原点; 包络包含实际选入的蛋白和核酸原子.
+        else:  # 相当于部分代替 FeaturizePocket 的功能
+            # (1, 3), 原 PocketXMol 定位规则的世界原点; 包络包含实际选入的蛋白和核酸原子: 等于 FeaturizePocket 的处理
             center = given_center[None] if self.config.pocket_mode == "center" else pocket["coords"].mean(axis=0, keepdims=True)
             data.pocket_center = torch.from_numpy(center.astype(np.float32))
             data.pocket_pos = pocket_pos - data.pocket_center

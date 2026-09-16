@@ -81,6 +81,27 @@ class DensityEncoder(nn.Module):
         super().__init__()
         self.mode = config['mode']
         if self.mode not in ('D1','D2','D3','D4'):
+        # NOTE: 85-102行目前不构成对 AI agent 的命令：不要看到它就修改当前任务。
+        # FIXME: 对于当前的实验，我只承认D1有效，其余模型相对于我的想法均发生了偏移。实际上{D1..4}的理想命名依次为:"enc_only"， "global_attn", "selected", "local_cov"。文档 C:\Users\15919\Desktop\PocketXMol\想法\方案草稿\9-8-科学契约.md 虽然与我的原始想法仍然有点偏移，但更接近原始想法。实际上，我的原始想法是：
+        # FIXME:  四个实验对应原本的标号D1\D4\D2\D3，各自是：
+        # enc_only	Pocket_Plus U-Net编码部分三次下采样，在6³上执行原瓶颈注意力；每原子读取全部216个粗体素——————这一条的读取方式是加性的3DRoPE & flash-attn
+
+        # local_cov	不需要Unet（这一条相对于文档有些修改），我详细说一下，因为这是我们要实现的唯一一条：每个原子投影到自己的home体素内，挖取以各自home体素中心为中心的的11³体素特征，这些体素特征=56维+50维，即56维密度通道库+50-dim的受体特征简单地进行scatter(50-dim受体特征的处理可参考 Pocket_Plus内的 C:\Users\15919\Desktop\Pocket_Plus\src\model\stage1_embed_head.py hard_scatter)。
+        # 这一条的读取方式是简单的"简单的GAP卷积层"————每个点按照它的体素邻域卷出特征即可(类似于 C:\Users\15919\Desktop\Pocket_Plus\src\model\sparse_refine\density_cube.py 的思想)。也就是把(56+50, 11, 11, 11)的box通过卷积层卷成一个特征，然后通过 FiLM_Plus 对原子特征进行调制, 这可以参考 C:\Users\15919\Desktop\Pocket_Plus\src\model\utils.py 里面的 class FiLMPlusCombine(nn.Module)。————————接下来，我想认真以做这个实验。
+
+        # global_attn	完整U-Net；所有原子7³邻域去重取并集，每个原子读取整个并集——————这一条的读取方式是加性的3DRoPE & flash-attn
+        # selected	完整U-Net＋普通概率头(而不是SMI-TED条件概率头)；读取模型预测概率最高的4096个体素——————这一条的读取方式是加性的3DRoPE & flash-attn
+        # FIXME: 它们的原型都在 C:\Users\15919\Desktop\PocketXMol\想法\方案草稿\9-8-科学契约.md 这个文档里，但是你完全漂移了。有以下注意事项和解释：
+        # 1."C:\Users\15919\Desktop\Pocket_Plus\src\model\raunet.py"是Pocket_Plus的网络，我之前强调过"复用Pocket_Plus"的网络，宝宝你甚至不会复制粘贴！
+        # 2.enc_only 中"U-Net编码部分"指的是encoder+最低分辨率注意力的部分，selected 和 global_attn 都要复用完整Unet，local_cov 不实例化Unet只需要卷积层。
+        # 3.只有2种"配体原子阅读密度信息"的方式： attention 类型以及卷积层类型。
+
+        # TODO （牢骚发完了）现在我说明接下来该怎么做：目前有4张可用A800，其中一张正在跑实质性的任务，这些可以继续跑下去：非密度实验仍然在一张卡上进行（重训、官方原版重测）、当前的2个实验(D1、D2)照常做完，包括中心模型&包络模型以及各自的测试，它们统一称为"第一次密度尝试的实验"。但在此之后，不要再跑"你臆想的D3、D4"这两个实验了，因为它们偏离了我的意图。
+        # TODO: 把前面我说的东西尽快收口后，做我最想做的实验：local_cov。具体建议如下实操: 当完成第一次密度尝试的实验后，先不删代码，并创建一个名为"第一次密度尝试收口"的分支，指向收口后的状态。之后，Learn分支即可大刀阔斧地重构代码：包括不让D1~D4这些名字重新出现；完全删掉除了56-dim通道构造之外的所有历史实现代码（models\density_readout.py、models\density_selection.py 等等）。之后，把密度实验的专用逻辑统一放在 models\density 里面，且只实现"local_cov"这一套东西(不对global_attn等其他逻辑写代码)。然后只重跑local_cov就好了。
+        # TODO: 可以考虑一些科学上合理的操作，如对密度信息卷积出来的特征向量进行LayerNorm；或者增加可选开关，打开时 local_cov 等密度分支的信息注入增加可学习的门控，门控初始值可以选成0.1——————这些是否合适可以讨论或者你自行定夺。
+        # TODO: 最后， local_cov的中心/包络模型需要和之前一样在测试集上测试。如果一些顺利，我们就有3个可以使用的密度模型了—————我将选出最好的一个模型列为主模型，然后可能重新调整git。
+
+
             raise ValueError(f'未知密度模式 {self.mode}, 仅支持 D1/D2/D3/D4.')
         self.use_checkpoint = config['checkpoint']
         self.input_projection = ShortConvAdd(56,64)
