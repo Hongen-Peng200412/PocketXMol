@@ -1,6 +1,6 @@
 # B-E-T0-RA-SMILES
 
-当前状态（2026-09-16 01:19）：训练完成：31200更新、第三次下降停止；best21600／1.5245567560195923，训练W&B online finished。E测试已于01:17:57正式启动，首实例50候选成功，随后按同一配置CPU评价。
+当前状态（2026-09-16 08:52／08:54）：B-E-T0-RA-SMILES：全流程完成，best21600；E测试446实例、22300候选生成和评价成功，Top-1=63.00448%，评价W&B t5ckbgr9 online_completed。
 
 | 项目 | 当前内容 |
 |---|---|
@@ -13,7 +13,21 @@
 | 测试配置与产物 | configs/docking/sample-B-E-T0-RA-SMILES-test.yml；/storage/penghongen/PocketXMol/sampling/B-E-T0-RA-SMILES/test |
 | 测试源码 | 0f09526ea210b573071c1c601881c16412b7999a；/home/penghongen/Feedback/PocketXMol/releases/PocketXMol_0beb73604a7d/PocketXMol |
 | 测试协议 | E；每实例每协议50候选、100步，batch50 |
-| best／W&B／指标 | best21600／1.5245567560195923，训练W&B 2uv4mdnt online finished；E测试已启动，首实例50候选成功，指标待评价 |
+| best／W&B／指标 | B-E-T0-RA-SMILES：全流程完成，best21600；E测试446实例、22300候选生成和评价成功，Top-1=63.00448%，评价W&B t5ckbgr9 online_completed |
+
+## 完整E测试结果
+
+来源为`/storage/penghongen/PocketXMol/sampling/B-E-T0-RA-SMILES/test/summary.json`；E目录保留逐实例`occurrences.json`及候选、评价文件。本地只读副本为`tmp/formal-execution-20260914/B-E-T0-RA-SMILES-summary.json`。评价W&B为[包络复验测试](https://wandb.ai/pencounkdual-111/PocketXmol_raw/runs/t5ckbgr9)，summary确认online_completed、error=null。
+
+成功定义为RMSD<2 Å，Top-1／Top-5沿原self-ranking，Oracle为50候选中最佳RMSD。前三项实例等权，最后一列先在PDB内平均再在PDB间等权；三个视图复用同一候选池。
+
+| 视图 | 实例 | Top-1 | Top-5 | Oracle | PDB等权Top-1 |
+|---|---:|---:|---:|---:|---:|
+| ALL | 446 | 63.00% | 79.15% | 89.69% | 63.98% |
+| CAP10 | 272 | 56.99% | 72.43% | 86.40% | 62.40% |
+| HF10_TO5 | 227 | 57.71% | 72.25% | 87.22% | 62.51% |
+
+ALL共22300候选，生成和RMSD评价均成功，无失败实例，Top-1平均RMSD=2.78879 Å。CPU评价于2026-09-16 05:05:03开始、05:58:22正常退出，约53分钟，使用本资源8进程。各实例评价耗时之和是并行CPU时间，不能当作该墙钟时长。
 
 所有新训练从规定官方参数初始化，重建优化器与调度状态；训练bf16-mixed，推理官方FP32张量路径。训练保留原val/loss与best选择，结束后直接完整测试，中心C0/C5、包络E；既有清单、视图、C5和种子不重建，每实例每协议50候选、100步，推理优先batch_size=50。W&B保持online，无法在线时报告，不自行切换offline。 无密度和D1起始72×1，D4/D2/D3起始36×2；OOM按72→36→24降批、累积相应1→2→3，配置global_batch_size保持72。接受原reduce_batch偶发裁批和累积梯度丢失，不增加补样或梯度补偿。仍无法运行则报告实际问题。
 
@@ -97,3 +111,9 @@ E测试派发（2026-09-16 01:16:20，gnode09）：使用冻结release 0beb73604
 核查（2026-09-16 00:11／00:13）：B-E-T0-RA-SMILES：27780更新，best21600／约1.52456，last27200；第二次下降后lr=4e-6，W&B 2uv4mdnt online，尚无测试。D1中心C0/C5各446实例、22300候选均生成成功，2026-09-15 23:34:54进入本资源8进程CPU评价，当前8个子进程均约99% CPU。三项训练损失有限、无OOM、W&B在线；无密度包络第二次降学习率至4e-6。继续原流程与60分钟分段等待。
 
 核查（2026-09-16 01:12／01:13）：B-E-T0-RA-SMILES：训练完成：31200更新、第三次下降停止；best21600／1.5245567560195923，W&B 2uv4mdnt online finished；正在发布E测试入口。无密度包络训练正常退出：31200更新、第三次下降、best21600，完整检查点与在线W&B结束状态已核验；新E测试入口经主代理自查和一轮独立审查批准，正在发布。D1 C0评价完成，Top-1为58.52018%，C5评价继续；D2中心与包络继续在线训练、无OOM。
+
+核查（2026-09-16 01:20）：B-E-T0-RA-SMILES：训练完成，best21600／1.5245567560195923；E测试3/446实例、150候选成功，评价尚未开始。D1包络已从官方参数初始化，W&B n7awsoa3 online，初始数据加载中；无密度包络E测试前三个实例全部生成成功。正式进程已核对，继续60分钟分段等待，不重复启动。
+
+核查（2026-09-16 02:20／02:22）：B-E-T0-RA-SMILES：训练完成、best21600／1.5245567560195923；E测试130/446实例、6500候选成功，CPU评价尚未开始。三项训练损失有限、累计OOM均0，W&B保持online。D1包络已通过初始加载并保存首个验证检查点；D2中心第二次降学习率后继续；无密度包络E测试无生成失败。没有观察到明确I/O退化，继续60分钟分段等待。
+
+核查（2026-09-16 08:52／08:54）：B-E-T0-RA-SMILES：全流程完成，best21600；E测试446实例、22300候选生成和评价成功，Top-1=63.00448%，评价W&B t5ckbgr9 online_completed。两次可见核查之间远端任务持续执行，未进行重启；本次按真实节点时间记录进度。无密度包络05:58:22已完成全流程、评价W&B t5ckbgr9 online_completed；官方冻结对照08:54:38派发。三项训练无OOM，损失有限。W&B只读API本次响应缓慢，尚在等待，未切换offline或认定训练停止。
