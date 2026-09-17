@@ -2,7 +2,7 @@
 
 ## 当前有效状态
 
-2026-09-17 14:30状态快照：72×1真实数据GPU门控已经通过，完整检查点恢复和E小规模FP32采样评价均成功。379402仍在`try_lock`，准备使用与中心相同的release`PocketXMol_ef9dd39`从官方参数在独立目录重启。
+2026-09-17 14:44状态快照：379402于14:36:20使用release`PocketXMol_ef9dd39`从官方参数重启，已推进至约8次更新。训练为72×1、bf16-mixed；观察时显存64,755 MiB、GPU利用率96%，未见OOM、Traceback或非有限损失；空E口袋继续按既定规则跳过并记录。
 
 | 项目 | 当前值 |
 |---|---|
@@ -12,7 +12,7 @@
 | 当前有效release | `/home/penghongen/Feedback/PocketXMol/releases/PocketXMol_ef9dd39/PocketXMol`，来源提交`ef9dd39` |
 | 当前有效训练产物 | `/storage/penghongen/PocketXMol/training/local_cov-E-T0-RA-b72` |
 | best与`val/loss` | 尚未产生 |
-| W&B | 重启run待生成；首次失败run `wvrbzttx`保留 |
+| W&B | 当前run [beds48bb](https://wandb.ai/pencounkdual-111/PocketXmol_density/runs/beds48bb)；首次提前停止run `wvrbzttx`保留 |
 | CPU评价 | 尚未执行 |
 
 ## 正式运行命令
