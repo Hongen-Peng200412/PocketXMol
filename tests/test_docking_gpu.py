@@ -80,6 +80,8 @@ def test_real_data_training_and_sampling_budget(tmp_path, monkeypatch, experimen
     """用真实非test资产检查local_cov训练、显存、原损失及采样评价，不设姿态质量阈值。"""
     root = Path(__file__).resolve().parents[1]
     config = make_config(str(root / f'configs/docking/{experiment}.yml'))
+    # 门控只运行2次优化器更新, 因此把本次回调验证间隔缩为2; 正式YAML仍为每800次更新验证.
+    config.train.val_check_interval = 2
     pl.seed_everything(config.train.seed, workers=True)
     data_module = DataModule(config)
     args = SimpleNamespace(num_gpus=1, multi_node=False, resume='')
