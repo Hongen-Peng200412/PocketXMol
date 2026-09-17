@@ -80,15 +80,21 @@ def read_receptor(path):
         - receptor.element: uint8, (P,), 原子序数, 与 coords 第一维对齐.
         - receptor.res_type: uint8, (P,), 原 AdaLigand 残基编号, 不使用 feat 中的修饰母体类别.
         - receptor.res_index: int32, (P,), PDB 内原残基编号, 如 315; 筛选后允许不连续.
-        - receptor.is_backbone: bool, (P,), 原主链标记; 模型只在蛋白25维编码中读取.
+        - receptor.is_backbone: bool, (P,), 原主链标记; 蛋白25维编码和 ``local_cov`` 受体散射第50维读取.
         - receptor.atom_name: S4, (P,), 原子 ASCII 名称, 如 b"OP1".
+        - receptor.feat: float32, (P,49), 源文件含该字段时返回；仅`local_cov`把它与主链标记拼成50维散射输入.
 
-    本进程最多保留 16 份只读受体表; 不加载未使用的49维 feat 或受体共价键数组.
+    本进程最多保留16份只读受体表；不加载受体共价键数组。
     """
     with np.load(Path(path), allow_pickle=False) as archive:
         # bool, (P_source,), True 对应标准蛋白或八种标准核苷酸; 同时切分六个逐原子数组.
         keep = archive["res_type"] < 28
-        receptor = {key: archive[key][keep] for key in ("coords", "element", "res_type", "res_index", "is_backbone", "atom_name")}
+        receptor = {
+            key: archive[key][keep]
+            for key in ("coords", "element", "res_type", "res_index", "is_backbone", "atom_name")
+        }
+        if "feat" in archive:
+            receptor["feat"] = archive["feat"][keep]
     return receptor
 
 

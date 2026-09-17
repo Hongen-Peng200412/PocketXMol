@@ -253,11 +253,12 @@ pocket_* raw fields
 
 ```text
 源exp.npy / sim.npy及其几何元数据 + 完整原始受体坐标
-    → 固定48³裁块及ALL的56通道
-    → density_input / density_origin / density_basis
-    → D1的6³×256或D4的48³×48体素特征
-    → 每层配体原子的320维密度残差
+    → 固定80³裁块及ALL的56通道
+    → 当前RA口袋原子的50维源特征硬散射
+    → 六层共享的106通道网格
+    → 每层按当前配体坐标读取11³窗口并独立卷积
+    → 64维条件经零初始化FiLMPlus调制320维节点特征
     → 原pred_pos、原置信度和self-ranking
 ```
 
-数组空间轴为ZYX，坐标为XYZ、Å；裁块起点内缩不改变原模型原点。训练每次编码当前裁块，推理只在同一权重、同一实例和固定定位条件内复用编码。字段类型、形状、通道含义与索引公式见[密度接口说明](../models/README-density.md)。这些特征留在内存中；当前冻结实例采样仍通过`docking/sampling.py`保存`poses.sdf`、`candidates.json`、`confidence.npz`和`result.json`，不增加密度预测文件。
+数组空间轴为ZYX，坐标为XYZ、Å；裁块起点内缩不改变原模型原点。训练每个批次构造固定网格，推理只在同一权重、同一实例和固定定位条件内复用该网格；六个去噪块仍分别用当前配体坐标计算home。字段类型、形状、通道含义与索引公式见[local_cov模块说明](../models/density/README.md)。这些特征留在内存中；当前冻结实例采样仍通过`docking/sampling.py`保存`poses.sdf`、`candidates.json`、`confidence.npz`和`result.json`，不增加密度预测文件。

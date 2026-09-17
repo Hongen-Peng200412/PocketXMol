@@ -13,6 +13,6 @@ export OPENBLAS_NUM_THREADS=1
 ulimit -Sn 65536
 export TMPDIR=/storage/penghongen/tmp
 mkdir -p "$TMPDIR"
-experiment="${1:?请指定明确实验配置, 如 D1-C-T0-RA}"
+experiment="${1:?请指定明确实验配置, 如 local_cov-C-T0-RA}"
 shift
 exec /storage/penghongen/PocketXMol/runtime/venv/bin/python scripts/train_pl.py "configs/docking/${experiment}.yml" --logdir "/storage/penghongen/PocketXMol/training/${experiment}" "$@"

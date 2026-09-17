@@ -3,7 +3,7 @@
 
 从 PMAsymDenoiser.forward 阅读主流程: PyG Batch 的带噪配体、fixed 条件标记和口袋图先成为隐藏特征, 再由原去噪网络更新配体原子、相互作用边及坐标.
 口袋编码保持官方蛋白入口; 可选 RA 在蛋白与核酸联合图中共享编码器.
-配置 model.density 时, 另将固定密度裁块编码为体素特征, 在配体去噪网络的各层读取该特征.
+配置`model.density.name=local_cov`时，先构造固定106通道网格，再由六个去噪块按当前配体坐标分别读取11³局部块。
 本模块不落盘, 返回原子和半边的分类原始分数 logits、去噪坐标以及可选的原子类别、位置和半边置信度分数, 各字段形状见类 Docstring.
 本模块不读取时间步或任务名称, 构象与 docking 的任务条件由 fixed_*、带噪输入和口袋字段表达.
 """
@@ -47,7 +47,7 @@ class PMAsymDenoiser(Module):
     构造参数:
         - config.pocket_dim: int, 编码后口袋节点宽度.
         - config.nucleic_branch: None|str, None 保持官方蛋白编码; RA 在联合口袋图中共享编码器.
-        - config.density: 可选映射, 存在时构造密度编码器和逐层原子读出; 字段由 DensityEncoder、DensityReadout 读取, 缺省不增加密度参数或依赖.
+        - config.density: 可选映射；存在时必须为`local_cov`，只读取性能参数`chunk_size`，缺省不增加密度参数.
         - config.node_dim: int, 拼接原子 Embedding、两维 fixed prompt 和附加节点特征后的总宽度.
         - config.edge_dim: int, 拼接半边 Embedding 与两维 fixed prompt 后的总宽度.
         - config.addition_node_features: list[str], 追加到节点表示的逐原子标量字段名; reduced 配置只含 ``is_peptide``.
@@ -77,10 +77,10 @@ class PMAsymDenoiser(Module):
         - pocket_pos: (P, 3), 与 pos_in 使用同一局部原点的口袋坐标, 单位 Å.
         - pocket_knn_edge_index: int64, (2, E_p), 有向 kNN 边端点索引 pocket_pos 第一维; RA 使用蛋白与核酸联合图, 批内不同实例由 PyG 图编号隔离; 同一口袋内不同链及蛋白与核酸之间均可连边.
         - pocket_pos_batch: int64, (P,), 每个口袋原子所属图编号.
-        - density_input: float32, (B, 56, 48, 48, 48), 密度模型未接收推理缓存时读取; 固定裁块的全部56通道, 空间轴 ZYX.
+        - pocket_density_feature: float32, (P,50), 已选RA受体原子的源49维特征与主链标记.
+        - density_input: float32, (B,56,80,80,80), 密度模型未接收推理缓存时读取；固定裁块的全部56通道，空间轴ZYX.
         - density_origin: float32, (B, 3), 实际裁块角点的局部 XYZ 坐标, 单位 Å, 与 pos_in 共用原点.
         - density_basis: float32, (B, 3, 3), 三行依次为源 X、Y、Z 一个体素步长的局部向量, 单位 Å.
-        - density_language: float32, (B, 768), D3 的冻结 SMI-TED 向量; 在未提供预测索引缓存时读取, 与密度裁块首维逐实例对齐.
         - is_peptide: 0/1, (N,), 小分子构象/docking 为全 0; 若配置不请求该附加特征则不读取.
 
     前向输出字段:
@@ -90,7 +90,6 @@ class PMAsymDenoiser(Module):
         - confidence_node: (N, 1), 原子主分类预测是否正确的二分类 logit, 未做 sigmoid.
         - confidence_pos: (N, 1), 原始位置置信度输出, 与配体原子第一维对齐; 当前训练配置由 ConfidenceLoss 以 sigmoid 后的数值拟合 0.2 ** 原子坐标误差_Å, 不是误差小于1 Å的分类概率.
         - confidence_halfedge: (H, 1), 半边主分类预测是否正确的二分类 logit, 与无向半边第一维对齐.
-        - density_logits: (B, 2, 48, 48, 48), D3 未复用预测索引时返回的背景/当前配体区域 logits; 仅外部辅助损失使用, 不替代原置信度.
 
     位置置信度的目标由外部 ConfidenceLoss 决定; 旧配置 prob_1A 不在(0,1)时直接回归负坐标误差, 本模型输出端不做 sigmoid.
 
@@ -191,19 +190,17 @@ class PMAsymDenoiser(Module):
         # ``self.denoiser``: Module, 输入节点/边总宽度分别为 ``node_dim``、``edge_dim``, 并用 ``pocket_dim`` 维口袋节点作为上下文.
         self.denoiser = denoiser_bb(node_dim, edge_dim,
                             context_dim=pocket_dim, **config.denoiser)
-        self.density_encoder = None
-        self.density_selection = None
+        self.local_cov_enabled = False
         if 'density' in config:
-            # 仅密度模型加载其卷积依赖, 既有无密度配置不要求安装 einops.
-            from models.density_backbone import DensityEncoder
-            from models.density_readout import DensityReadout
-            self.density_encoder = DensityEncoder(config.density)
-            if config.density.mode == 'D3':
-                from models.density_selection import DensitySelection
-                self.density_selection = DensitySelection()
-            self.denoiser.density_readers = nn.ModuleList([
-                DensityReadout(node_dim,config.density) for _ in range(config.denoiser.num_blocks)
-            ])
+            if config.density.get('name') != 'local_cov':
+                raise ValueError('model.density当前只允许name=local_cov。')
+            from models.density import LocalCovConditioner
+            self.local_cov_enabled = True
+            self.denoiser.local_cov = LocalCovConditioner(
+                node_dim=node_dim,
+                num_blocks=config.denoiser.num_blocks,
+                chunk_size=int(config.density.get('chunk_size', 4096)),
+            )
 
         # Output decoders
         # ``self.node_decoder``: MLP; [N, node_dim] -> [N, num_node_types] 的原子类别 logits 解码头.
@@ -223,7 +220,28 @@ class PMAsymDenoiser(Module):
             self.edge_cfd = MLP(edge_dim, 1, edge_dim//2)
             
 
-    def forward(self, batch, density_feature=None, density_indices=None, **kwargs):
+    def prepare_density_grid(self, batch):
+        """从单实例或PyG批次构造六层共享的固定106通道网格。
+
+        ``density_input``为``(B,56,80,80,80)``；``pocket_density_feature``与
+        ``pocket_pos``分别为``(P,50)``和``(P,3)``。单实例采样数据没有
+        ``pocket_pos_batch``时，全部P个受体原子归入实例0。返回值形状为
+        ``(B,106,80,80,80)``，空间轴为ZYX。
+        """
+        # (P,)，PyG批次直接读取图归属；单实例预处理显式补全为0。
+        receptor_batch = batch['pocket_pos_batch'] if 'pocket_pos_batch' in batch else torch.zeros(
+            len(batch['pocket_pos']), device=batch['pocket_pos'].device, dtype=torch.long
+        )
+        return self.denoiser.local_cov.build_grid(
+            batch['density_input'],
+            batch['pocket_density_feature'],
+            batch['pocket_pos'],
+            receptor_batch,
+            batch['density_origin'],
+            batch['density_basis'],
+        )
+
+    def forward(self, batch, density_grid=None, **kwargs):
         """编码带噪分子与口袋条件, 并返回干净变量及可选置信度预测.
 
         输入字段:
@@ -242,13 +260,11 @@ class PMAsymDenoiser(Module):
             - batch.pocket_pos: FloatTensor, 形状为 (P, 3), 与配体同原点的口袋局部坐标, 单位 Å.
             - batch.pocket_knn_edge_index: LongTensor, 形状为 (2, E_p), 口袋内部有向 kNN 边端点.
             - batch.pocket_pos_batch: LongTensor, 形状为 (P,), 每个口袋原子的图归属编号.
-            - batch.density_input: float32, (B, 56, 48, 48, 48), 密度模型未接收推理缓存时读取; B 个分子的固定裁块, 空间轴 ZYX.
+            - batch.density_input: float32, (B,56,80,80,80), 密度模型未接收推理缓存时读取；B个实例的固定裁块，空间轴ZYX.
             - batch.density_origin: float32, (B, 3), 实际裁块角点的局部 XYZ 坐标, 单位 Å, 与 pos_in 共用模型原点.
             - batch.density_basis: float32, (B, 3, 3), 三行依次为源 X、Y、Z 一个体素步长在局部坐标系的向量, 单位 Å.
             - batch.is_peptide: LongTensor, 形状为 (N,), 小分子构象/docking 为全 0; 仅配置请求时读取.
-            - density_feature: Tensor|None, 推理调用方为同一权重和固定裁块预先计算的体素特征; D1 为 (B, 256, 6, 6, 6), D2/D3/D4 为 (B, 48, 48, 48, 48), 空间轴 ZYX; None 从 batch.density_input 编码, 训练必须使用 None.
-            - density_indices: int64 Tensor|None, 仅 D3 推理可复用同权重、同裁块及同 SMI-TED 向量预测的 (B, 4096) ZYX 展平索引; 训练必须使用 None, 不接受 GT 选择.
-            - batch.density_language: float32, (B, 768), D3 未提供 density_indices 缓存时读取的冻结 SMI-TED 向量, 与实例首维对齐.
+            - density_grid: Tensor|None, (B,106,80,80,80), 推理时可复用同一实例的固定网格；训练必须从当前批次重新构造.
             - kwargs: Mapping, 本实现不读取其中任何字段, 保留给统一调用接口.
 
         返回字段:
@@ -258,7 +274,6 @@ class PMAsymDenoiser(Module):
             - confidence_node: FloatTensor, 形状为 (N, 1), 可选原子类别置信度 logit.
             - confidence_pos: FloatTensor, 形状为 (N, 1), 可选坐标置信度原始输出.
             - confidence_halfedge: FloatTensor, 形状为 (H, 1), 可选半边类别置信度 logit.
-            - density_logits: Tensor, (B, 2, 48, 48, 48), D3 新计算的背景/当前配体区域 logits; 使用 density_indices 缓存或非 D3 时不返回此字段.
         """
 
         # ``pos_in``: FloatTensor, 形状为 (N, 3); 带噪配体局部坐标, 后续坐标更新保持相同原点, 单位 Å.
@@ -316,25 +331,17 @@ class PMAsymDenoiser(Module):
         # ``h_node``: FloatTensor, 形状为 (N, self.config.node_dim), 完成 ``self.config.denoiser.num_blocks`` 个联合 block 后的配体节点隐藏特征.
         # ``pos_node``: FloatTensor, 形状为 (N, 3), 完成 ``self.config.denoiser.num_blocks`` 个坐标增量后的配体局部坐标, 单位 Å.
         # ``h_edge``: FloatTensor, 形状为 (2 * n_halfedges, self.config.edge_dim), 与双向 ``edge_index`` 列对齐的最终边隐藏特征.
-        density_arguments = {}  # 无密度时不传新增字段, 保持原去噪调用路径.
-        density_logits = None  # D3 未复用预测索引时产生 (B, 2, 48, 48, 48), 仅交给独立辅助损失.
-        if self.density_encoder is not None:
-            if density_feature is not None and self.training:
-                raise ValueError('训练必须重新编码当前密度输入, 不得传入缓存特征.')
-            # 训练每次编码, 六个去噪块共享; eval 可读取当前固定裁块在本次采样开始时的编码.
-            if density_feature is None:
-                density_feature = self.density_encoder(batch['density_input'])
-            density_arguments = dict(
-                density_feature=density_feature,
-                density_origin=batch['density_origin'],
-                density_basis=batch['density_basis'],
-            )
-            if self.density_selection is not None:
-                if density_indices is not None and self.training:
-                    raise ValueError('D3 训练必须重新预测体素概率, 不得传入缓存索引.')
-                if density_indices is None:
-                    density_logits,density_indices = self.density_selection(density_feature,batch['density_language'])
-                density_arguments['density_indices'] = density_indices
+        density_arguments = {}  # 无密度时不传新增字段，保持原去噪调用路径。
+        if self.local_cov_enabled:
+            if density_grid is not None and self.training:
+                raise ValueError('local_cov训练必须从当前批次重新构造固定网格。')
+            if density_grid is None:
+                density_grid = self.prepare_density_grid(batch)
+            density_arguments = {
+                'density_grid': density_grid,
+                'density_origin': batch['density_origin'],
+                'density_basis': batch['density_basis'],
+            }
         h_node, pos_node, h_edge = self.denoiser(
             h_node=h_node_in,
             pos_node=pos_in, 
@@ -378,9 +385,6 @@ class PMAsymDenoiser(Module):
                 # ``additional_outputs.confidence_halfedge``: FloatTensor, 形状为 (H, 1); 半边 confidence logit.
                 'confidence_halfedge': pred_edge_cfd,
             }
-        if density_logits is not None:
-            additional_outputs['density_logits'] = density_logits  # (B, 2, 48, 48, 48), 仅由辅助损失读取, 不改变 confidence 输出.
-        
         # ``return.pred_node``: FloatTensor, 形状为 (N, self.num_node_types), 原子类别 logits.
         # ``return.pred_pos``: FloatTensor, 形状为 (N, 3), 去噪局部坐标, 单位 Å.
         # ``return.pred_halfedge``: FloatTensor, 形状为 (n_halfedges, self.num_edge_types), 半边类别 logits.

@@ -103,9 +103,11 @@ def write_pdb(config, pdb_id, object_keys, molecules):
     res_type = np.array(list(range(20)) * 2 + list(range(20, 28)) * 5 + [28], dtype=np.uint8)
     atom_name = np.array(['CA'] * 40 + ['N9', "C1'", 'OP1', "O3'", 'O1P'] * 8 + ['UNK'], dtype='S4')
     elements = np.array([6] * 40 + [7, 6, 8, 8, 8] * 8 + [6], dtype=np.uint8)
-    np.savez_compressed(parse_dir / 'receptor_tokens.npz', coords=coords, element=elements, res_type=res_type, res_index=np.arange(81, dtype=np.int32), is_backbone=np.ones(81, dtype=bool), atom_name=atom_name)
+    # float32, (81,49)，构造与正式 receptor_tokens 对齐的受体源特征；最后一个UNK随后由读取层排除。
+    receptor_feature = np.arange(81 * 49, dtype=np.float32).reshape(81, 49) / 1000
+    np.savez_compressed(parse_dir / 'receptor_tokens.npz', coords=coords, element=elements, res_type=res_type, res_index=np.arange(81, dtype=np.int32), is_backbone=np.ones(81, dtype=bool), atom_name=atom_name, feat=receptor_feature)
     for name in ('exp', 'sim'):
-        np.save(density_dir / f'{name}.npy', np.zeros((1, 48, 48, 48), dtype=np.float32))
+        np.save(density_dir / f'{name}.npy', np.zeros((1, 80, 80, 80), dtype=np.float32))
         np.savez_compressed(density_dir / f'{name}.npz', origin=np.array([1., 2., 3.]), voxel_size=np.array([.9, 1., 1.1]))
     return occurrences
 

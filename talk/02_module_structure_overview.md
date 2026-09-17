@@ -313,14 +313,14 @@ return loss_dict['mixed/total']
 
 ## 10. 密度分支的阅读入口
 
-当前密度分支以`configs/docking/D1-C-T0-RA.yml`或`D4-C-T0-RA.yml`的`model.density`为唯一入口；包络配置只切换既定E口袋。原版通用入口的学习顺序保留，新增密度部分按下面的调用顺序阅读：
+当前密度分支以`configs/docking/local_cov-C-T0-RA.yml`或`local_cov-E-T0-RA.yml`的`model.density.name=local_cov`为唯一入口。原版通用入口的学习顺序保留，新增密度部分按下面的调用顺序阅读：
 
 1. `docking/dataset.py::OccurrenceDataset.__getitem__`：先完成定位和RA口袋，再按同一原点装配密度。
 2. `docking/density.py::read_density_source/load_density_input`：只读源图，内缩裁块起点，用完整原始受体生成通道需要的占据掩码。
 3. `docking/density_channels.py::build_density_channels`：保留Pocket_Plus原模块，采用ALL的56通道；不再次重采样。
-4. `models/density_backbone.py::VolumeAttention/DensityEncoder`及`density_blocks.py`：单次U-Net编码，无recycle；D1止于第三次下采样，D4完整解码。
-5. `models/density_readout.py::density_attention/DensityReadout`：按各原子的当前位置读取体素，批内分子的特征和几何相互隔离。
-6. `models/maskfill.py::PMAsymDenoiser.forward`与`models/graph_context.py::ContextNodeEdgeNet.forward`：六个节点更新后分别加入密度残差，再执行原边和坐标更新。
-7. `docking/sampling.py::sample_occurrence`：固定裁块只编码一次，以显式参数送入原采样循环；模型原点和口袋全程固定，世界坐标只还原一次。
+4. `models/density/local_cov.py::scatter_receptor_features`：把当前RA口袋原子的50维特征硬散射到80³网格，与56维密度组成固定106通道输入。
+5. `models/density/local_cov.py::gather_voxel_cube/LocalCubeEncoder`：每层按当前配体坐标计算home，读取11³零填充窗口，并用该层独立卷积编码为64维条件。
+6. `models/maskfill.py::PMAsymDenoiser.forward`与`models/graph_context.py::ContextNodeEdgeNet.forward`：六个节点更新后分别执行零初始化FiLMPlus，再执行原边和坐标更新。
+7. `docking/sampling.py::sample_occurrence`：固定106通道网格只构造一次，以显式参数送入原采样循环；模型原点和口袋全程固定，世界坐标只还原一次。
 
-先结合[输入输出概览](01_input_output_overview.md#12-当前密度分支增加的内存输入)核对张量，再读[密度接口说明](../models/README-density.md)中的轴顺序、体素中心和注意力公式。性能测量与当前验收状态仅在[预实验日志](<../日志/预实验（一 --二之间）/总日志.md>)维护；本节不作为正式训练已经启动的证据。
+先结合[输入输出概览](01_input_output_overview.md#12-当前密度分支增加的内存输入)核对张量，再读[local_cov模块说明](../models/density/README.md)中的轴顺序、体素中心、局部窗口与调制位置。正式运行状态只在[本轮实验日志](<../日志/第三次正式实验/local_cov/本轮实验日志.md>)维护；本节不作为正式训练已经启动的证据。

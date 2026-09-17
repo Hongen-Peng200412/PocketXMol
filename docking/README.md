@@ -23,11 +23,11 @@
 ├── calibration.jsonl            # 校准实例，不并入训练
 └── test.jsonl                   # 保留原测试成员、三个视图、C5及候选种子
 
-/storage/penghongen/Adaligand_Build/Ori_Data/pocketxmol/ligand_area/
-└── 9v7o/0.npy                   # 原occurrence 0的源ZYX体素标签，继续复用
-
-/storage/penghongen/AdaLigand/Ori_Data/stage1_preparation_box_pool_2/ligand_language_models/smi_ted_289m/
-└── 5irx/candidate_0.npz         # D3读取的冻结语言向量，路径由dataset.language_root决定
+/storage/penghongen/AdaLigand/Ori_Data/density/5irx/
+├── exp.npy                      # 已重采样为1 Å附近实际间距的实验密度
+├── exp.npz                      # 实际XYZ体素尺寸与边界角点
+├── sim.npy                      # 与实验密度对齐的模拟密度
+└── sim.npz                      # 与实验密度相同的几何元数据
 ```
 
 ### 其他文件
@@ -114,13 +114,11 @@
 
 迁移逐项保留原清单的顺序、实例成员、偏移、种子和视图，不重新运行`freeze`。历史CAP10和HF10_TO5按原完整模板身份冻结成员；本次SMILES身份合并不改变这些已冻结集合。C5半径来自原Uniform(0,5)、方向来自均匀球面，仅评测读取；中心训练和val/loss始终C0。
 
-### `ligand_area/{pdb_id}/{candidate_id}.npy`
+### 80³ 密度裁块与受体散射
 
-继续复用已有int32 `(K,3)` 源体素ZYX索引，只包含当前occurrence。例：源`[25,30,40]`减裁块起点`[20,20,20]`得到块内`[5,10,20]`；运行时只保留三分量均在`[0,48)`的索引。K可为0，不补其他实例标签，实际体素尺寸读取地图元数据。
+`local_cov`从现有实验密度和模拟密度直接切取80³源体素。任一源轴不足80时，该实例输入构造失败；源图足够时仅把裁块起点向图内移动，不补外围裁块，也不改变PocketXMol模型原点。`docking/density.py`在整块上构造固定56维`ALL`通道。
 
-### `language_root/{pdb_id}/candidate_{candidate_id}.npz`
-
-D3每个实例读取一份既有NPZ。`prepared_smiles`是标量精确字符串，须与冻结实例记录一致；`embedding`为float32 `(768,)`冻结SMI-TED向量。例如构造实例`train_demo/0`的字符串为`CCO`，读取`language_root/train_demo/candidate_0.npz`中的对应向量。Dataset增加首维为`(1,768)`，PyG按实例拼成`(B,768)`；模型内使用`detach()`，不更新语言模型。D3训练和采样均读取该向量，只有训练与val/loss读取配体区域标签。
+当前C0、C5或E口袋实际选中的RA标准受体原子另提供49维源特征和主链标记，合成50维后硬散射到同一几何网格。同一体素内逐通道求和，裁块外原子忽略。所得106通道网格在六个去噪块间共享；每层仍按当时配体坐标重新读取11³窗口，只有该窗口越出80³时填零。模型结构和张量角色见[local_cov模块说明](../models/density/README.md)。
 
 ## 历史准备入口
 
@@ -148,4 +146,4 @@ C0/C5仅是评测提供的实际中心不同，两者使用同一T0推理入口�
 
 历史准备入口为 `scripts/prepare_docking.py`；本次不调用。`tests/test_docking_data.py` 使用构造资产检查筛选、原子编号、几何与视图；SMILES迁移与验收记录见[预实验日志](../日志/预实验（一 --二之间）/1-SMILES构图与GPU验收.md)。本次使用迁移清单，不重新执行freeze。
 
-官方等价验收见[test_docking_official.py](../tests/test_docking_official.py)，参照本地Git提交`65488cf635c856101dbe703ac97e2f10f58e005c`的真实原先验、信息等级、噪声器、采样循环与解码。历史六模型源码和配置保存在`463d59098bca92b7278839992afd0efc84d5db81`；旧RB/T1运行须以其对应历史源码理解，当前入口维护RA＋T0、密度分支与官方蛋白兼容。密度字段保持[密度输入说明](../models/README-density.md)中的48³、ALL56、实际体素间距与模型原点契约。收口证据与历史结果见[非密度记录](../日志/第一类实验（不加密度信息）/总日志&分析/非密度收口记录.md)。
+官方等价验收见[test_docking_official.py](../tests/test_docking_official.py)，参照本地Git提交`65488cf635c856101dbe703ac97e2f10f58e005c`的真实原先验、信息等级、噪声器、采样循环与解码。历史六模型源码和配置保存在`463d59098bca92b7278839992afd0efc84d5db81`；旧RB/T1运行须以其对应历史源码理解，当前入口维护RA＋T0、`local_cov`与官方蛋白兼容。收口证据与历史结果见[非密度记录](../日志/第一类实验（不加密度信息）/总日志&分析/非密度收口记录.md)。

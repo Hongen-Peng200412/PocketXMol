@@ -152,8 +152,8 @@ class DataModule(pl.LightningDataModule):
             protocol = 'C0' if data_cfg.dataset.pocket_mode == 'center' else 'E'
             # Mapping|None, 与模型的密度配置共用唯一入口; 无密度配置不读地图、不改变原数据链.
             density_config = self.config.model.get('density')
-            train_set = OccurrenceDataset(data_cfg.dataset, 'train', self.transforms, self.config.model.nucleic_branch, protocol, True, density_config=density_config, density_supervision=True)
-            val_set = OccurrenceDataset(data_cfg.dataset, 'validation', self.transforms, self.config.model.nucleic_branch, protocol, False, density_config=density_config, density_supervision=True)
+            train_set = OccurrenceDataset(data_cfg.dataset, 'train', self.transforms, self.config.model.nucleic_branch, protocol, True, density_config=density_config)
+            val_set = OccurrenceDataset(data_cfg.dataset, 'validation', self.transforms, self.config.model.nucleic_branch, protocol, False, density_config=density_config)
             batch_size = train_cfg.batch_size
             val_workers = train_cfg.num_workers
         else:
@@ -244,7 +244,7 @@ class ModelLightning(pl.LightningModule):
         """构造原主干及 loss, 新实验只加载官方 model 权重, 自己续训交给 Lightning 恢复.
 
         config.train.initial_checkpoint 是 adaligand 首次训练的官方检查点路径; args.resume 非空时跳过该路径. num_node_types/num_edge_types 为配体类别数, kwargs.pocket_in_dim 保持蛋白25维.
-        官方参数去掉 model. 前缀后严格匹配旧主干, 只允许新增核酸投影、密度编码器和密度读出参数缺失; RA共享原pocket_encoder. 恢复自己检查点时不执行官方初始化.
+        官方参数去掉 model. 前缀后严格匹配旧主干，只允许新增核酸投影和 ``denoiser.local_cov`` 参数缺失；RA共享原pocket_encoder。恢复自己检查点时不执行官方初始化.
         """
         super().__init__()
         self.config = config
@@ -264,7 +264,7 @@ class ModelLightning(pl.LightningModule):
             if self.is_docking:
                 incompatible = self.model.load_state_dict(model_state, strict=False)
                 # 新参数按模型自身初始化; 官方原主干和置信度参数仍须完整匹配, 不接受其他缺失.
-                missing = [key for key in incompatible.missing_keys if not key.startswith(('nucleic_embedder.', 'density_encoder.', 'density_selection.', 'denoiser.density_readers.'))]
+                missing = [key for key in incompatible.missing_keys if not key.startswith(('nucleic_embedder.', 'denoiser.local_cov.'))]
                 if missing or incompatible.unexpected_keys:
                     raise RuntimeError(f'官方权重与原模型不匹配: missing={missing}, unexpected={incompatible.unexpected_keys}')
             else:
@@ -512,13 +512,8 @@ class ModelLightning(pl.LightningModule):
             - loss_dict.mixed/cfd_edge: 标量 Tensor, 可选半边 confidence BCE.
             - loss_dict.mixed/p_dist: 标量 Tensor, 可选配体—口袋距离损失.
 
-        D3附加字段与日志:
-            - batch.density_target: int64, (B,48,48,48), 当前B个实例的配体区域标签, 与各自密度裁块ZYX索引一致.
-            - outputs.density_logits: (B,2,48,48,48), 密度概率头预测的背景/配体区域logits, 只交给辅助监督.
-            - density_losses: dict[str, scalar Tensor], focal为全块焦点损失、dice为前景Dice-Tversky、weighted为0.1*(0.7*focal+0.3*dice), 分别记录为train/density_<key>.
-
         返回值:
-            - loss: 标量 Tensor, 优先取loss_dict['loss'], 当前IndividualTasksLoss路径取loss_dict['mixed/total']; D3再加density_losses['weighted'], 由Lightning自动反向传播.
+            - loss: 标量 Tensor, 优先取loss_dict['loss'], 当前IndividualTasksLoss路径取loss_dict['mixed/total'], 由Lightning自动反向传播.
 
         OOM 分支:
             - 消息含out of memory的RuntimeError调用原reduce_batch后重试; 其它异常原样抛出, 偶发裁批按既定契约记录.
@@ -549,11 +544,6 @@ class ModelLightning(pl.LightningModule):
                 # ``loss_dict.mixed/cfd_edge``: 标量 Tensor, 可选半边 confidence BCE.
                 # ``loss_dict.mixed/p_dist``: 标量 Tensor, 可选配体—口袋距离损失.
                 loss_dict = self.loss_func(batch, outputs)
-                # D3才返回(B,2,48,48,48)区域logits; 标签只由监督数据流读取, 不参与体素选择.
-                density_losses = {}
-                if 'density_logits' in outputs:
-                    from models.density_selection import density_segmentation_loss
-                    density_losses = density_segmentation_loss(outputs['density_logits'], batch.density_target)
                 # print('\n', len(batch.node_type_batch), len(batch.pocket_pos_batch))
                 break
             except Exception as e:
@@ -573,12 +563,6 @@ class ModelLightning(pl.LightningModule):
         else:
             # ``loss``: 标量 Tensor, 当前 reduced 配置的实际优化目标.
             loss = loss_dict['mixed/total']
-
-        if density_losses:
-            # weighted为0.1*(0.7*focal+0.3*dice); 只加到反传标量, 原dock损失字典保持原值.
-            loss = loss + density_losses['weighted']
-            self.log_dict({f'train/density_{key}': value for key, value in density_losses.items()}, batch_size=batch.num_graphs,
-                          sync_dist=self.sync_dist, prog_bar=False, logger=True)
 
         # ``k``: str, 当前未加训练阶段前缀的损失键.
         # ``v``: 标量 Tensor, 当前损失键对应的数值.
@@ -621,10 +605,6 @@ class ModelLightning(pl.LightningModule):
             - batch.dihedral_pairs_anno: LongTensor, 形状为 (Q, 3), 每行是扭转行号和两个二面角外侧端点.
             - batch_idx: int, 当前验证轮内批次编号; 本实现不参与数值计算.
 
-        D3附加输入与记录:
-            - batch.density_target: int64, (B,48,48,48), B个验证实例的实际裁块ZYX标签, 模型前向不读取.
-            - density_losses: dict[str, scalar Tensor], focal、dice与weighted定义同training_step, 只记录val/density_<key>; 不进入val/loss或返回的原dock损失字典.
-
         返回字段:
             - loss_dict.val_<scope>/node: 标量 Tensor, 待恢复原子类别损失.
             - loss_dict.val_<scope>/fixed_node: 标量 Tensor, 条件原子类别损失.
@@ -648,10 +628,6 @@ class ModelLightning(pl.LightningModule):
                 outputs = self.model(batch)
                 # ``loss_dict``: dict[str, scalar Tensor], 验证批次逐任务和 mixed 损失.
                 loss_dict = self.loss_func(batch, outputs)
-                density_losses = {}
-                if 'density_logits' in outputs:
-                    from models.density_selection import density_segmentation_loss
-                    density_losses = density_segmentation_loss(outputs['density_logits'], batch.density_target)
                 break
             except Exception as e:
                 if isinstance(e, RuntimeError) and "out of memory" in str(e):
@@ -684,10 +660,6 @@ class ModelLightning(pl.LightningModule):
         self.log_dict({k:v for k,v in loss_dict.items() if ('mixed/' not in k)}, batch_size=batch.num_graphs,
                       sync_dist=self.sync_dist, prog_bar=False, logger=True)
 
-        if density_losses:
-            # 验证辅助监督单独记录, val/loss仍只使用原dock的mixed/total选best和调度.
-            self.log_dict({f'val/density_{key}': value for key, value in density_losses.items()}, batch_size=batch.num_graphs,
-                          sync_dist=self.sync_dist, prog_bar=False, logger=True)
         self.log('val/loss', loss_dict['val_mixed/total'], batch_size=batch.num_graphs,
                       sync_dist=self.sync_dist, prog_bar=False, logger=True)
         return loss_dict
