@@ -87,7 +87,7 @@ data:
     knn: 32
 train:
   seed: 2023
-  batch_size: 36
+  batch_size: 72
   num_workers: 15
   prefetch_factor: 1
   cudnn_benchmark: true
@@ -116,7 +116,7 @@ train:
       min_lr: 0
       eps: 1.0e-08
   global_batch_size: 72
-  accumulate_grad_batches: 2
+  accumulate_grad_batches: 1
   log_every_n_steps: 50
   initial_checkpoint: /storage/penghongen/PocketXMol_official_test/extracted/data/trained_models/pxm/checkpoints/pocketxmol.ckpt
   wandb:

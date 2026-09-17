@@ -22,7 +22,7 @@
 - 后续科学构造固定RA＋T0，保留原dock噪声、loss、置信度与self-ranking。2026-09-17当前任务是按`想法/方案草稿/9-15.md`实现并完成`local_cov`中心、包络两个模型；外围密度裁块为80³，每个配体原子在六个去噪块中分别读取11³局部窗口。D1、D2属于第一次密度实验，不作为`local_cov`实现基础；D3、D4不启动。
 - `local_cov`分支删除且不再引用第一次密度实验专属的`models/density_selection.py`、`models/density_readout.py`、旧`models/density_backbone.py`、`models/density_blocks.py`及其专属配置、测试和入口。通用56维`ALL`密度通道、密度I/O、坐标几何和Dataset公共字段继续复用；新增密度逻辑统一放在`models/density/`。
 - 378693／gnode10负责`local_cov`中心模型及C0/C5测试评价；379402（Slurm显示`379402_0`）／gnode09负责包络模型及E测试评价。两个模型使用同一份不可变正式源码release。379403（Slurm显示`379403_1`）只继续D2包络的剩余训练、best E测试和CPU评价；371591不安排任务。所有资源沿真实锁协议保留`after_lock`与历史产物。
-- `local_cov`训练首发36×2、配置全局批量72；局部卷积分块首选4096，显存不足时只降到2048，之后仍显存不足才改24×3。训练使用bf16-mixed，正式推理沿官方FP32张量路径。优化器、验证、调度、停止、候选预算及W&B规则以`9-15.md`为准。
+- `local_cov`正式重启使用单卡72×1、配置全局批量72；局部卷积分块首选4096，显存不足时只降到2048，之后仍显存不足才改24×3。训练使用bf16-mixed，正式推理沿官方FP32张量路径。优化器、验证、调度、停止、候选预算及W&B规则以`9-15.md`为准。
 - 主代理在提交独立审查前完成两遍自查：第一遍检查新增或修改函数的职责、位置、调用关系、嵌套与Docstring；第二遍按`code-comment-style-cn`统一类、函数、数据形状、变量语义和关键科学步骤。随后只进行一轮独立全面审查，对发现的问题仅做窄口径复核。
 - 涉及代码编写、修改、重构、调试、审查、解释或学习注释时，使用 `ai-code-workflow`，由它调用本次任务需要的具体 skills。本项目对 git 使用双线历史管理策略，同时采用 `dual-track-git-workflow` 管理实现历史与学习历史，并在项目入口重复以下强制规则：
     - 本次`local_cov`得到一次明确例外：以`d3c1ed548bff97dfe61ab4c052d0c53c47029f2f`为共同基点，`codex/formal-density-strict-ablation`只保存第一次密度实验的真实实现与D1/D2收口；`codex/local-cov`从共同基点独立实现。稳定后从同一基点重建`Learn/local-cov`，端点等价后推进`Learn/CUMULATIVE`。D2交接、最终结果和日志通过独立纯文档提交同步，不把第一次密度实验旧实现带入`local_cov`。

@@ -2,17 +2,17 @@
 
 ## 当前有效状态
 
-2026-09-17 12:43状态快照：379402／gnode09已推进至优化器更新约81步。36×2、bf16-mixed和在线W&B正常，学习率为`1e-4`，未见OOM或非有限损失；训练流按既定规则记录并跳过空E口袋，尚未到第一次800步`val/loss`。
+2026-09-17 14:00状态快照：首次正式运行在进度条显示1398个训练批次时，因把该值误读为优化器更新数而按379402真实`kill_lock`提前停止。36×2下实际只约699次优化器更新，尚未到第一次800步验证，因此没有检查点属于正常现象。`after_lock`和全部产物保留，资源已恢复`try_lock`。原验证系统不修改；72×1 GPU验收通过后从官方参数在独立产物目录重启。
 
 | 项目 | 当前值 |
 |---|---|
 | 训练条件 | E，RA＋T0 |
 | 正式测试 | E；每实例50候选、100步，推理batch_size=50 |
 | 资源 | 379402／gnode09，单张A800 |
-| 正式release | `/home/penghongen/Feedback/PocketXMol/releases/PocketXMol_922fc651d3db/PocketXMol`，来源提交`3c0dd29` |
-| 训练产物 | `/storage/penghongen/PocketXMol/training/local_cov-E-T0-RA` |
+| 当前有效release | 待72×1配置验收后冻结；沿用原验证系统 |
+| 当前有效训练产物 | 待重启后生成 |
 | best与`val/loss` | 尚未产生 |
-| W&B | `pencounkdual-111/PocketXmol_density`，run id `wvrbzttx`，[在线运行](https://wandb.ai/pencounkdual-111/PocketXmol_density/runs/wvrbzttx) |
+| W&B | 重启run待生成；首次失败run `wvrbzttx`保留 |
 | CPU评价 | 尚未执行 |
 
 ## 正式运行命令
@@ -29,4 +29,4 @@ bash 训练与运行/sh/train_docking.sh local_cov-E-T0-RA
 
 ## 之前的尝试
 
-尚无。
+- 首次正式运行使用release`PocketXMol_922fc651d3db`、36×2和在线W&B [wvrbzttx](https://wandb.ai/pencounkdual-111/PocketXmol_density/runs/wvrbzttx)。模型训练本身无OOM或非有限损失，空E口袋按既定规则跳过；进度条的1398表示训练批次数，约对应699次优化器更新，尚未到第一次800步验证。2026-09-17 14:00因误读进度而按真实`kill_lock`提前停止；原训练目录`/storage/penghongen/PocketXMol/training/local_cov-E-T0-RA`和标准输出、错误输出全部保留，不作为有效模型或续训来源。
