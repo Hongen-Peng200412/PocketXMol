@@ -2,15 +2,15 @@
 
 ## 当前有效状态
 
-2026-09-17 14:00状态快照：首次正式运行在进度条显示1398个训练批次时，因把该值误读为优化器更新数而按379402真实`kill_lock`提前停止。36×2下实际只约699次优化器更新，尚未到第一次800步验证，因此没有检查点属于正常现象。`after_lock`和全部产物保留，资源已恢复`try_lock`。原验证系统不修改；72×1 GPU验收通过后从官方参数在独立产物目录重启。
+2026-09-17 14:30状态快照：72×1真实数据GPU门控已经通过，完整检查点恢复和E小规模FP32采样评价均成功。379402仍在`try_lock`，准备使用与中心相同的release`PocketXMol_ef9dd39`从官方参数在独立目录重启。
 
 | 项目 | 当前值 |
 |---|---|
 | 训练条件 | E，RA＋T0 |
 | 正式测试 | E；每实例50候选、100步，推理batch_size=50 |
 | 资源 | 379402／gnode09，单张A800 |
-| 当前有效release | 待72×1配置验收后冻结；沿用原验证系统 |
-| 当前有效训练产物 | 待重启后生成 |
+| 当前有效release | `/home/penghongen/Feedback/PocketXMol/releases/PocketXMol_ef9dd39/PocketXMol`，来源提交`ef9dd39` |
+| 当前有效训练产物 | `/storage/penghongen/PocketXMol/training/local_cov-E-T0-RA-b72` |
 | best与`val/loss` | 尚未产生 |
 | W&B | 重启run待生成；首次失败run `wvrbzttx`保留 |
 | CPU评价 | 尚未执行 |
@@ -18,14 +18,14 @@
 ## 正式运行命令
 
 ```bash
-bash 训练与运行/sh/train_docking.sh local_cov-E-T0-RA
+bash 训练与运行/sh/train_docking.sh local_cov-E-T0-RA --logdir /storage/penghongen/PocketXMol/training/local_cov-E-T0-RA-b72
 ```
 
-该命令由379402的动态命令在上述不可变release中执行；标准输出和错误分别写入`/storage/penghongen/tmp/pxm_local_cov_20260917/runs/local_cov-E-T0-RA/train.out`和`train.err`。
+该命令由379402的动态命令在上述不可变release中执行；标准输出和错误分别写入`/storage/penghongen/tmp/pxm_local_cov_20260917_b72/runs/local_cov-E-T0-RA/train.out`和`train.err`。
 
 ## 测试、门控与只读核查
 
-共享验收见[本轮实验日志](本轮实验日志.md)。A800门控以36×2完成两次优化器更新，峰值显存为32,042,027,520字节已分配、34,714,157,056字节保留，`val/loss=1.8953429461`；E生成并评价2个三步候选，完整检查点恢复逐值通过。
+共享验收见[本轮实验日志](本轮实验日志.md)。首次A800门控以36×2完成两次优化器更新。改为72×1后再次门控通过：两次更新耗时329.99秒，峰值显存为64,452,745,728字节已分配、67,159,195,648字节保留，`val/loss=1.9657713175`；E生成并评价2个三步候选，完整检查点恢复逐值通过。
 
 ## 之前的尝试
 
