@@ -2,7 +2,7 @@
 
 ## 当前有效状态
 
-2026-09-17：379402／gnode09处于`try_lock`。实现、独立审查、服务器CPU回归和A800真实数据门控均已通过，模型尚未训练，等待正式命令派发。
+2026-09-17 12:36：379402／gnode09已从官方参数启动正式训练。36×2、bf16-mixed和在线W&B已生效，当前正常运行；尚未到第一次800步`val/loss`。
 
 | 项目 | 当前值 |
 |---|---|
@@ -12,7 +12,7 @@
 | 正式release | `/home/penghongen/Feedback/PocketXMol/releases/PocketXMol_922fc651d3db/PocketXMol`，来源提交`3c0dd29` |
 | 训练产物 | `/storage/penghongen/PocketXMol/training/local_cov-E-T0-RA` |
 | best与`val/loss` | 尚未产生 |
-| W&B | 尚未启动 |
+| W&B | `pencounkdual-111/PocketXmol_density`，run id `wvrbzttx`，[在线运行](https://wandb.ai/pencounkdual-111/PocketXmol_density/runs/wvrbzttx) |
 | CPU评价 | 尚未执行 |
 
 ## 正式运行命令
