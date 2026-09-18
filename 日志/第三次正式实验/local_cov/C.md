@@ -2,7 +2,7 @@
 
 ## 当前有效状态
 
-2026-09-18 04:59状态快照：正式训练已推进至约6268次优化器更新；第5600步验证把当前best刷新为step5600、`val/loss=1.8007285594940186`。训练日志持续更新，无OOM、Traceback或非有限值；378693仍处于运行态。
+2026-09-18 09:21状态快照：正式训练已推进至约8286次优化器更新；第8000步验证把当前best刷新为step8000、`val/loss=1.6748944520950317`。训练日志持续更新，无OOM、Traceback或非有限值；378693仍处于运行态。
 
 | 项目 | 当前值 |
 |---|---|
@@ -11,7 +11,7 @@
 | 资源 | 378693／gnode10，单张A800 |
 | 当前有效release | `/home/penghongen/Feedback/PocketXMol/releases/PocketXMol_ef9dd39/PocketXMol`，来源提交`ef9dd39` |
 | 当前有效训练产物 | `/storage/penghongen/PocketXMol/training/local_cov-C-T0-RA-b72` |
-| best与`val/loss` | 当前best为`step=5600.ckpt`，1.8007285594940186 |
+| best与`val/loss` | 当前best为`step=8000.ckpt`，1.6748944520950317 |
 | W&B | 当前run [db4b74gn](https://wandb.ai/pencounkdual-111/PocketXmol_density/runs/db4b74gn)；首次提前停止run `w47t7b4j`保留 |
 | CPU评价 | 尚未执行 |
 
