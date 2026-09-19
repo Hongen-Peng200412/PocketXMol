@@ -2,7 +2,7 @@
 
 ## 当前有效状态
 
-2026-09-19 16:21状态快照：正式训练已推进至约16356次优化器更新；第16000步验证已完成，模型选择best仍为step8000、`val/loss=1.4848878383636475`。学习率保持`2e-5`、下降计数1、连续未达相对1%改善要求4次。训练日志持续更新，无OOM、Traceback或非有限值；空E口袋继续按既定规则跳过并记录，379402仍处于运行态。
+2026-09-19 17:52状态快照：正式训练已推进至约16830次优化器更新；第16800步验证把模型选择best刷新为step16800、`val/loss=1.4467853307724`，达到调度器的相对1%改善要求并把连续未达次数重置为0。学习率保持`2e-5`、下降计数1。训练日志持续更新，无OOM、Traceback或非有限值；空E口袋继续按既定规则跳过并记录，379402仍处于运行态。
 
 | 项目 | 当前值 |
 |---|---|
@@ -11,7 +11,7 @@
 | 资源 | 379402／gnode09，单张A800 |
 | 当前有效release | `/home/penghongen/Feedback/PocketXMol/releases/PocketXMol_ef9dd39/PocketXMol`，来源提交`ef9dd39` |
 | 当前有效训练产物 | `/storage/penghongen/PocketXMol/training/local_cov-E-T0-RA-b72` |
-| best与`val/loss` | 当前best为`step=8000.ckpt`，1.4848878383636475 |
+| best与`val/loss` | 当前best为`step=16800.ckpt`，1.4467853307724 |
 | W&B | 当前run [beds48bb](https://wandb.ai/pencounkdual-111/PocketXmol_density/runs/beds48bb)；首次提前停止run `wvrbzttx`保留 |
 | CPU评价 | 尚未执行 |
 
