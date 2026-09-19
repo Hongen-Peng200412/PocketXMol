@@ -2,7 +2,7 @@
 
 ## 当前有效状态
 
-2026-09-20 04:05状态快照：正式训练已推进至约25787次优化器更新；最近完整保存的是第25600步验证，模型选择best仍为`step=24800.ckpt`、`val/loss=1.61287522315979`。学习率保持`4e-6`、下降计数2、连续未达相对1%改善要求5次；若第26400步仍不满足阈值，将触发第三次下降并立即停止。训练日志持续更新，无OOM、Traceback或非有限值；378693仍处于运行态。
+2026-09-20 05:58状态快照：正式训练已在第26400次优化器更新后正常结束。第26400步验证触发第三次学习率下降，`stop_reason=plateau`，停止后没有继续更新参数；最终模型选择best为`step=24800.ckpt`、`val/loss=1.61287522315979`。训练输出含`Training finished!`和零退出标记，进程已经退出，378693保留`after_lock`并返回`try_lock`；正在准备best的C0/C5完整测试与CPU评价。
 
 | 项目 | 当前值 |
 |---|---|
@@ -19,9 +19,11 @@
 
 ```bash
 bash 训练与运行/sh/train_docking.sh local_cov-C-T0-RA --logdir /storage/penghongen/PocketXMol/training/local_cov-C-T0-RA-b72
+/storage/penghongen/PocketXMol/runtime/venv/bin/python scripts/sample_docking.py /storage/penghongen/tmp/pxm_local_cov_20260917_b72/runs/local_cov-C-T0-RA-test/sample-local_cov-C-T0-RA-test.yml
+CUDA_VISIBLE_DEVICES='' /storage/penghongen/PocketXMol/runtime/venv/bin/python scripts/evaluate_docking.py /storage/penghongen/tmp/pxm_local_cov_20260917_b72/runs/local_cov-C-T0-RA-test/sample-local_cov-C-T0-RA-test.yml
 ```
 
-该命令由378693的动态命令在上述不可变release中执行；标准输出和错误分别写入`/storage/penghongen/tmp/pxm_local_cov_20260917_b72/runs/local_cov-C-T0-RA/train.out`和`train.err`。
+以上命令由378693的动态命令在上述不可变release中顺序执行；训练标准输出和错误分别写入`/storage/penghongen/tmp/pxm_local_cov_20260917_b72/runs/local_cov-C-T0-RA/train.out`和`train.err`。测试配置、采样及评价输出统一保存到同级`local_cov-C-T0-RA-test`目录，采样成功后才执行CPU评价。
 
 ## 测试、门控与只读核查
 
