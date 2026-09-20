@@ -1,0 +1,100 @@
+# 读取入口：scripts/train_pl.py；包络 local_cov 正式训练配置。
+# 除 pocket_mode 与运行名称外，结构和优化规则与中心模型完全相同。
+model:
+  name: pm_asym_denoiser
+  pocket_dim: 128
+  node_dim: 320
+  addition_node_features: [is_peptide]
+  add_output: [confidence]
+  edge_dim: 96
+  pocket:
+    edge_dim: 32
+    hidden_dim: 128
+    num_blocks: 4
+    dist_cfg: {num_gaussians: 32}
+  denoiser:
+    hidden_dim: 320
+    num_blocks: 6
+    dist_cfg: {stop: 15, num_gaussians: 64}
+    gate_dim: 2
+    context_cfg:
+      edge_dim: 128
+      knn: 32
+      dist_cfg: {stop: 20, num_gaussians: 64, type_: linear}
+  nucleic_branch: RA
+  density:
+    name: local_cov
+    chunk_size: 4096  # int，逐层局部卷积的原子分块；显存不足时只改为2048。
+loss:
+  name: individual_tasks
+  weights: {node: 1.5, pos: 2.5, edge: 1.5, dist: 0.0005, dih: 0.0005, fixed_node: 0.1, fixed_pos: 0.1, fixed_edge: 0.1, fixed_dist: 0.0005}
+  tasks: [denovo, conf, sbdd, dock, maskfill, fbdd, pepdesign]
+  confidence:
+    prob_1A: 0.2
+    weights: {node: 1, pos: 20, edge: 1}
+noise:
+  name: mixed
+  individual:
+  - name: dock
+    reassign_in: true
+    prior:
+      pos:
+        name: allpos
+        pos: {name: gaussian_simple, sigma_func: sqrt, sigma_max: 1.0}
+        translation: {name: translation, ve: false, mean: 0, std: 1}
+        rotation: {name: rotation, sigma_max: 0.0002}
+        torsional: {name: torsional, sigma_max: 0.2}
+    level: {name: uniform, min: 0.0, max: 1.0}
+transforms:
+  featurizer:
+    use_mask_node: true
+    use_mask_edge: true
+    chem:
+      atomic_numbers: [6, 7, 8, 9, 15, 16, 17, 5, 35, 53, 34]
+      mol_bond_types: [1, 2, 3, 4]
+  task:
+    name: mixed
+    individual:
+    - name: dock
+      settings: {free: 1.0}
+      free_no_geometry: true
+data:
+  dataset:
+    name: adaligand
+    root: /storage/penghongen/AdaLigand/Ori_Data
+    derived_root: /storage/penghongen/Adaligand_Build/Ori_Data/pocketxmol
+    smiles_root: /storage/penghongen/AdaLigand/Ori_Data/smiles_assets
+    smiles_coords_root: /storage/penghongen/AdaLigand/Ori_Data/smiles_assets/SMILE_coords/v1
+    manifest_root: /storage/penghongen/PocketXMol/data/smiles-v1/frozen
+    pocket_mode: envelope
+    knn: 32
+train:
+  seed: 2023
+  batch_size: 72
+  num_workers: 15
+  prefetch_factor: 1
+  cudnn_benchmark: true
+  pin_memory: true
+  max_steps: 40000
+  val_check_interval: 800
+  precision: bf16-mixed
+  persistent_workers: true
+  optimizer:
+    type: adamw
+    lr: 0.0001
+    weight_decay: 0.001
+    beta1: 0.99
+    beta2: 0.999
+    eps: 1.0e-08
+  scheduler:
+    warmup_step: 0
+    instance: {type: plateau, mode: min, threshold_mode: rel, threshold: 0.01, patience: 5, factor: 0.2, cooldown: 0, min_lr: 0, eps: 1.0e-08}
+  global_batch_size: 72
+  accumulate_grad_batches: 1
+  log_every_n_steps: 50
+  initial_checkpoint: /storage/penghongen/PocketXMol_official_test/extracted/data/trained_models/pxm/checkpoints/pocketxmol.ckpt
+  wandb:
+    entity: pencounkdual-111
+    project: PocketXmol_density
+    name: local_cov-E-T0-RA
+    mode: online
