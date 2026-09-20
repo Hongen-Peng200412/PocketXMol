@@ -2,7 +2,7 @@
 
 ## 当前有效状态
 
-2026-09-20 22:16状态快照：正式训练已推进至约26261次优化器更新。最近完整验证仍是第25600步，`val/loss=1.4752132892608643`；best仍为`step=24800.ckpt`、1.4366419315338135。学习率保持`4e-6`、下降计数2、连续未达相对1%改善要求5次。训练日志持续更新，无OOM、Traceback或非有限值；若第26400步仍不满足改善阈值，将触发第三次下降并立即停止。
+2026-09-20 23:18状态快照：正式训练已在第26400次优化器更新后正常结束。第26400步`val/loss=1.6110507249832153`，触发第三次学习率下降并以`stop_reason=plateau`立即停止；最终模型选择best为`step=24800.ckpt`、1.4366419315338135。训练进程和控制器均零退出，379402保留`after_lock`并返回`try_lock`等待；best的E测试和CPU评价尚未启动。
 
 | 项目 | 当前值 |
 |---|---|
@@ -13,7 +13,7 @@
 | 当前有效训练产物 | `/storage/penghongen/PocketXMol/training/local_cov-E-T0-RA-b72` |
 | best与`val/loss` | 当前best为`step=24800.ckpt`，1.4366419315338135 |
 | W&B | 当前run [beds48bb](https://wandb.ai/pencounkdual-111/PocketXmol_density/runs/beds48bb)；首次提前停止run `wvrbzttx`保留 |
-| CPU评价 | 尚未执行 |
+| CPU评价 | 尚未执行；训练已完成，等待接续best的E测试 |
 
 ## 正式运行命令
 
@@ -26,6 +26,8 @@ bash 训练与运行/sh/train_docking.sh local_cov-E-T0-RA --logdir /storage/pen
 ## 测试、门控与只读核查
 
 共享验收见[本轮实验日志](本轮实验日志.md)。首次A800门控以36×2完成两次优化器更新。改为72×1后再次门控通过：两次更新耗时329.99秒，峰值显存为64,452,745,728字节已分配、67,159,195,648字节保留，`val/loss=1.9657713175`；E生成并评价2个三步候选，完整检查点恢复逐值通过。
+
+正式训练完成时核对`last.ckpt`：`global_step=26400`、下降计数3、`stop_reason=plateau`；第26400步`val/loss=1.6110507249832153`，best仍为第24800步。训练标准输出含`Training result`、`Training finished!`和`FORMAL_LOCAL_COV_TRAIN_PROCESS_EXIT_ZERO`，错误输出未发现OOM、Traceback或非有限值。锁框架第32次执行成功，父控制目录重新生成`try_lock_379402`并保留`after_lock`。
 
 ## 之前的尝试
 
