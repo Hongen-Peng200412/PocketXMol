@@ -52,7 +52,7 @@ def sample_occurrence(dataset, index, model, noiser, featurizer, config, protoco
             - protocol: str, 当前 C0、C5 或 E.
             - sample_index: int, 从0开始的原候选构象编号, 正式50个候选时为0至49; 与成功候选在SDF中的位置不同.
             - status: str, success 或 failed; 失败不补生成新候选.
-            - stage: str, 当前候选结束阶段; complete 表示完成, preprocess/density_encode/batch/prepare_loop/noise/forward/prediction_to_batch/trajectory/synchronize/split/reconstruct/confidence 分别定位预处理、固定密度编码、组批、循环准备、加噪、模型调用、预测写回、轨迹处理、CUDA同步、输出拆分、固定图重构及置信度聚合.
+            - stage: str, 当前候选结束阶段; complete 表示完成, preprocess/density_grid/batch/prepare_loop/noise/forward/prediction_to_batch/trajectory/synchronize/split/reconstruct/confidence 分别定位预处理、固定网格构造、组批、循环准备、加噪、模型调用、预测写回、轨迹处理、CUDA同步、输出拆分、固定图重构及置信度聚合.
             - error: str|None, 失败的异常类型和消息; 成功为 None.
             - sdf_index: int|None, 当前候选在poses.sdf中从0开始的位置; 失败为None. 如原候选0失败、1首先成功, 则该分子sample_index=1而sdf_index=0.
             - cfd_traj: float|None, 原 get_cfd_traj 分数; 正式100步先对全部配体原子取均值, 再平均后50步的原始位置置信度, 全程不做 sigmoid; 非有限分数使候选失败.
@@ -129,8 +129,7 @@ def sample_occurrence(dataset, index, model, noiser, featurizer, config, protoco
     model_forward_attempt_count = model_forward_completed_count = 0
     pocket_protein_count = pocket_nucleic_count = None
     pocket_center = None
-    density_feature = None  # Tensor|None, 此实例固定裁块的单份编码, 只在当前函数调用内复用.
-    density_indices = None  # int64 Tensor|None, (1,4096), D3按冻结语言与当前编码选出的ZYX平铺索引, 与整条轨迹共用.
+    density_grid = None  # Tensor|None，(1,106,80,80,80)，此实例整条采样轨迹复用的固定网格。
     stage = "preprocess"
 
     try:
@@ -146,19 +145,24 @@ def sample_occurrence(dataset, index, model, noiser, featurizer, config, protoco
         template = Chem.Mol(template)
         template.AddConformer(Chem.Conformer(template.GetNumAtoms()), assignId=True)
         if 'density_input' in data:
-            stage = 'density_encode'
+            stage = 'density_grid'
             encoding_started = time.perf_counter()
             try:
                 with torch.no_grad():
-                    density_feature = model.density_encoder(data.density_input.to(config.device))
-                    if 'density_language' in data:
-                        # D3只使用SMILES语言向量与密度特征选点; 推理数据没有配体区域标签, 不用真实坐标修正所选体素.
-                        _, density_indices = model.density_selection(density_feature, data.density_language.to(config.device))
+                    # 固定输入只搬到GPU并构造一次；六层仍在每次forward按各自当前配体坐标重新读取局部块。
+                    density_source = {
+                        name: data[name].to(config.device)
+                        for name in (
+                            'density_input', 'pocket_density_feature', 'pocket_pos',
+                            'density_origin', 'density_basis',
+                        )
+                    }
+                    density_grid = model.prepare_density_grid(density_source)
                 if sampling_device.type == 'cuda':
                     torch.cuda.synchronize(sampling_device)
             finally:
                 inference_seconds += time.perf_counter() - encoding_started
-            # 不为50个候选复制56通道原始裁块; 几何仍随候选拼批, 权重和裁块固定时编码可共用.
+            # 不为50个候选复制80³固定网格；候选坐标和六层home仍分别计算。
             del data.density_input
     except Exception as error:
         if isinstance(error, OSError):
@@ -181,11 +185,12 @@ def sample_occurrence(dataset, index, model, noiser, featurizer, config, protoco
                     # 同一个 occurrence 的复制候选沿 PyG 图维排列, 每个候选的二维图与口袋条件相同.
                     batch = Batch.from_data_list([data.clone() for _ in range(stop - start)], follow_batch=follow_batch, exclude_keys=exclude_keys).to(config.device)
                     sampling_model = model
-                    if density_feature is not None:
-                        # 仅展开分子首维, 不复制底层体素; 各候选的位置和逐层查询仍分别计算.
-                        sampling_model = partial(model, density_feature=density_feature.expand(stop - start, -1, -1, -1, -1))
-                        if density_indices is not None:
-                            sampling_model = partial(sampling_model, density_indices=density_indices.expand(stop - start, -1))
+                    if density_grid is not None:
+                        # 仅展开实例首维，不复制底层体素；各候选位置和逐层11³读取仍分别计算。
+                        sampling_model = partial(
+                            model,
+                            density_grid=density_grid.expand(stop - start, -1, -1, -1, -1),
+                        )
                     # 保留原 100 步循环和置信度轨迹聚合; 坐标和类别轨迹仅在内存短暂存在, 不另存完整去噪轨迹.
                     sampling_batch_attempt_count += 1
                     batch, outputs, trajectories = sample_loop3(batch, sampling_model, noiser, device=config.device, off_tqdm=True, progress=progress)
