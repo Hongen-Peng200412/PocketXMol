@@ -52,9 +52,7 @@ class OccurrenceDataset(IterableDataset):
         - receptor_branch: str, protein 走官方蛋白特征入口, RA 在蛋白与核酸联合图中共享编码器.
         - protocol: str, C0、C5 或 E, 决定定位输入条件; 中心训练和监督验证固定C0; C0 用真实配体几何中心, C5 用中心加已有冻结偏移, E 用包络口袋.
         - shuffle: bool, True 为无限均匀有放回训练流; False 为一次完整有限流, 不控制定位或噪声机制.
-        - density_config: Mapping|None, 调用方从model.density传入的密度配置; None兼容原无密度入口, 不另设独立数据科学开关.
-        - density_supervision: bool, 仅训练与val/loss入口设为True, 允许D3读取分割标签; 正式采样保留False, 无论清单属于哪个划分都不读取标签.
-        - dataset_config.language_root: str, 仅D3读取的冻结SMI-TED逐实例NPZ根目录, 文件为<pdb_id>/candidate_<candidate_id>.npz.
+        - density_config: Mapping|None, 调用方从model.density传入的唯一密度入口；None兼容原无密度模型，非None固定为`local_cov`。
 
     清单每条记录:
         - pdb_id: str, 如 9v7o, 定位源 parse 和 density 子目录.
@@ -71,17 +69,16 @@ class OccurrenceDataset(IterableDataset):
         - pocket_atom_feature: float32, (P, 25), 原蛋白4元素+20氨基酸+1主链特征; 核酸位置为0.
         - pocket_protein_count/pocket_nucleic_count: int, 当前协议选袋在官方蛋白过滤前的两类重原子数, 供报告核酸占比.
         - pos_all_confs: float32, (1, N, 3), 源沉积世界坐标的单个构象; 原 FeaturizeMol 随后减去 pocket_center.
-        - density_input: float32, (1, 56, 48, 48, 48), 仅密度模型提供, 一个实例实际裁块的固定通道, PyG沿首维拼成批量B.
+        - pocket_density_feature: float32, (P,50), 仅`local_cov`提供；源49维受体特征后拼主链0/1标记，与pocket_pos逐原子对齐.
+        - density_input: float32, (1, 56, 80, 80, 80), 仅密度模型提供, 一个实例实际裁块的固定通道, PyG沿首维拼成批量B.
         - density_origin: float32, (1, 3), 实际裁块边界角点减pocket_center, 模型局部XYZ坐标, 单位Å.
         - density_basis: float32, (1, 3, 3), 三行分别是源XYZ方向单体素在模型坐标中的向量, 初始为实际间距的对角阵, 单位Å.
         - density_start_zyx: int64, (1, 3), 实际源裁块起点, 如[[10,12,8]], 内缩后仍不改变pocket_center.
-        - density_language: float32, (1, 768), 仅D3提供的冻结SMI-TED向量, 与精确prepared_smiles匹配.
-        - density_target: int64, (1, 48, 48, 48), 仅D3训练与val/loss提供; 标签1为ligand_area中的配体体素, 0为背景, 与实际裁块的ZYX索引对齐.
 
     原字段 num_atoms、bond_index、bond_type 和 matches_iso 仍按公共SMILES原子顺序解释; 配体类别、fixed prompt、空刚体域和噪声叶由原变换生成.
     """
 
-    def __init__(self, dataset_config, split, transforms, receptor_branch, protocol, shuffle, density_config=None, density_supervision=False):
+    def __init__(self, dataset_config, split, transforms, receptor_branch, protocol, shuffle, density_config=None):
         """保存明确配置并读取唯一的冻结实例清单; 不枚举目录补回被排除的实例."""
         super().__init__()
         self.config = dataset_config
@@ -91,7 +88,8 @@ class OccurrenceDataset(IterableDataset):
         self.protocol = protocol
         self.shuffle = shuffle
         self.density_config = density_config
-        self.density_supervision = density_supervision
+        if density_config is not None and density_config.get("name") != "local_cov":
+            raise ValueError("model.density当前只允许name=local_cov。")
         self.root = Path(dataset_config.root)
         self.derived_root = Path(dataset_config.derived_root)
         with (Path(dataset_config.manifest_root) / f"{split}.jsonl").open(encoding="utf-8") as stream:
@@ -189,28 +187,18 @@ class OccurrenceDataset(IterableDataset):
             else:
                 data.pocket_knn_edge_index = torch.empty((2, 0), dtype=torch.long)
         if self.density_config is not None:
+            if "feat" not in pocket:
+                raise KeyError(f"{pdb_id}/{candidate_id}: receptor_tokens.npz缺少local_cov所需的feat字段。")
+            # (P,50)，仅使用当前口袋图实际选中的标准RA原子；UNK已在read_receptor中排除。
+            data.pocket_density_feature = torch.from_numpy(np.concatenate([
+                pocket["feat"].astype(np.float32),
+                pocket["is_backbone"].astype(np.float32)[:, None],
+            ], axis=1))
             # (3,), 中心模式只按实际给定中心裁图; E按配体中心请求, 但原点仍为已选受体均值.
             query_center = given_center if self.config.pocket_mode == "center" else ligand_center
             # 密度在原特征化和噪声之前构造, 局部几何使用与配体和受体一致的唯一原点.
             for name, value in load_density_input(self.root, pdb_id, query_center, data.pocket_center.numpy()).items():
                 data[name] = value
-            if self.density_config['mode'] == 'D3':
-                # 冻结语言表示只由当前精确SMILES确定; 不读取旧ligand_object或在训练热路径重新运行语言模型.
-                language_path = Path(self.config.language_root) / pdb_id / f'candidate_{candidate_id}.npz'
-                with np.load(language_path, allow_pickle=False) as language:
-                    if str(language['prepared_smiles'].item()) != record['prepared_smiles']:
-                        raise ValueError(f'language_smiles_mismatch: {pdb_id}/{candidate_id}')
-                    data.density_language = torch.from_numpy(language['embedding'].astype(np.float32)[None])
-                if self.density_supervision:
-                    # int32, (K,3), 源地图的K个配体区域ZYX体素索引; 同一内缩起点用于密度和标签, 不改变模型原点.
-                    area = np.load(self.derived_root / 'ligand_area' / pdb_id / f'{candidate_id}.npy', allow_pickle=False)
-                    # int64, (K,3) -> (K_inside,3), 减起点后只保留三轴均在[0,48)的索引, 指向target的ZYX三维.
-                    local_indices = area.astype(np.int64) - data.density_start_zyx.numpy()[0]
-                    local_indices = local_indices[np.all((local_indices >= 0) & (local_indices < 48), axis=1)]
-                    target = np.zeros((48, 48, 48), dtype=np.int64)
-                    target[tuple(local_indices.T)] = 1
-                    # 标签仅供辅助损失, 不参与密度token选择、口袋定位或采样; PyG沿首维拼接为(B,48,48,48).
-                    data.density_target = torch.from_numpy(target[None])
         return self.transforms(data)
 
     def __iter__(self):
