@@ -2,7 +2,7 @@
 
 ## 当前有效状态
 
-2026-09-21 03:57状态快照：正式训练最终best为`step=24800.ckpt`、`val/loss=1.4366419315338135`。379402上的完整测试集E推理已完成393／446个实例、19650个候选，全部成功；采样错误输出为空，`after_lock`保留。CPU评价将在全部E候选生成成功后由同一动态命令执行。
+2026-09-21 04:59状态快照：正式训练最终best为`step=24800.ckpt`、`val/loss=1.4366419315338135`。完整测试集E推理已完成全部446个实例、22300个候选，全部成功；采样进程零退出，错误输出为空。379402已于04:34:50转入8进程CPU评价，`after_lock`保留。
 
 | 项目 | 当前值 |
 |---|---|
@@ -15,7 +15,7 @@
 | W&B | 当前run [beds48bb](https://wandb.ai/pencounkdual-111/PocketXmol_density/runs/beds48bb)；首次提前停止run `wvrbzttx`保留 |
 | 测试与评价产物 | `/storage/penghongen/PocketXMol/sampling/local_cov-E-T0-RA/test` |
 | 测试配置与运行记录 | `/storage/penghongen/tmp/pxm_local_cov_20260917_b72/runs/local_cov-E-T0-RA-test` |
-| CPU评价 | 尚未执行；E推理运行中，成功后自动接续 |
+| CPU评价 | 运行中；E推理446个实例、22300个候选全部成功 |
 
 ## 正式运行命令
 
