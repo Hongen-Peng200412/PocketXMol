@@ -2,7 +2,7 @@
 
 ## 当前有效状态
 
-2026-09-20 16:03状态快照：正式训练在第26400次优化器更新后正常结束，最终模型选择best为`step=24800.ckpt`、`val/loss=1.61287522315979`。C0、C5各446个实例、各22300个候选已经全部生成成功，共44600个候选；采样进程零退出，错误输出为空。同一动态命令已于15:47转入8进程CPU评价，评价错误输出当前为空；`after_lock`和全部训练、候选产物保留。
+2026-09-20 17:05状态快照：正式训练在第26400次优化器更新后正常结束，最终模型选择best为`step=24800.ckpt`、`val/loss=1.61287522315979`。C0、C5各446个实例、共44600个候选已经全部生成成功。8进程CPU评价已完成C0，当前输出的原self-ranking Top-1成功率为73.7668%；C5评价仍在运行。评价错误输出只有既有RDKit allene立体化学提示，未发现Traceback或失败标记；`after_lock`和全部产物保留。
 
 | 项目 | 当前值 |
 |---|---|
@@ -13,7 +13,7 @@
 | 当前有效训练产物 | `/storage/penghongen/PocketXMol/training/local_cov-C-T0-RA-b72` |
 | best与`val/loss` | 当前best为`step=24800.ckpt`，1.61287522315979 |
 | W&B | 当前run [db4b74gn](https://wandb.ai/pencounkdual-111/PocketXmol_density/runs/db4b74gn)；首次提前停止run `w47t7b4j`保留 |
-| CPU评价 | 尚未执行 |
+| CPU评价 | C0已完成，原self-ranking Top-1成功率73.7668%；C5运行中 |
 
 ## 正式运行命令
 
