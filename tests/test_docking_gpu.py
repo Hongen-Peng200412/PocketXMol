@@ -75,15 +75,22 @@ def test_official_weights_native_bf16_training_and_stopped_restore(prepared_data
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason='需要实际授权的CUDA GPU')
-@pytest.mark.parametrize('experiment', ['B-C-T0-RA', 'B-E-T0-RA', 'D1-C-T0-RA', 'D1-E-T0-RA', 'D4-C-T0-RA', 'D4-E-T0-RA', 'D2-C-T0-RA', 'D2-E-T0-RA', 'D3-C-T0-RA', 'D3-E-T0-RA'])
+@pytest.mark.parametrize('experiment', ['local_cov-C-T0-RA', 'local_cov-E-T0-RA'])
 def test_real_data_training_and_sampling_budget(tmp_path, monkeypatch, experiment):
-    """用真实非test资产检查中心C0和包络E训练的显存、原损失及采样评价, 不设姿态质量通过阈值."""
+    """用真实非test资产检查local_cov训练、显存、原损失及采样评价，不设姿态质量阈值。"""
     root = Path(__file__).resolve().parents[1]
     config = make_config(str(root / f'configs/docking/{experiment}.yml'))
+    # 门控只运行2次优化器更新, 因此把本次回调验证间隔缩为2; 正式YAML仍为每800次更新验证.
+    config.train.val_check_interval = 2
     pl.seed_everything(config.train.seed, workers=True)
     data_module = DataModule(config)
     args = SimpleNamespace(num_gpus=1, multi_node=False, resume='')
     model = ModelLightning(config, args, **data_module.get_in_dims())
+    # 第一次更新先使零初始化FiLM获得非零参数; 第二次更新应让六套局部卷积都收到梯度并改变参数.
+    initial_encoder_weights = [
+        encoder.convolutions[0].weight.detach().cpu().clone()
+        for encoder in model.model.denoiser.local_cov.encoders
+    ]
 
     def reject_oom(batch):
         # 验收若OOM必须显露, 才能按已批准的成对batch/累积调整; 不在门控内静默裁小样本批.
@@ -92,7 +99,9 @@ def test_real_data_training_and_sampling_budget(tmp_path, monkeypatch, experimen
     monkeypatch.setattr(model, 'reduce_batch', reject_oom)
     assert config.train.batch_size * config.train.accumulate_grad_batches == 72
     # 只把本次门控缩为2次更新、1个验证批; 正式YAML不变, 原模型/loss/AdamW/数据加载资源均照配置.
-    trainer = pl.Trainer(accelerator='gpu', devices=1, precision=config.train.precision, max_steps=2, max_epochs=-1, logger=False, enable_checkpointing=False, enable_progress_bar=False, enable_model_summary=False, num_sanity_val_steps=0, limit_val_batches=1, check_val_every_n_epoch=None, val_check_interval=2*config.train.accumulate_grad_batches, accumulate_grad_batches=config.train.accumulate_grad_batches)
+    checkpoint = DockingCheckpoint(str(tmp_path / 'checkpoints'), f'gate-{experiment}')
+    trainer_options = dict(accelerator='gpu', devices=1, precision=config.train.precision, max_steps=2, max_epochs=-1, logger=False, enable_progress_bar=False, enable_model_summary=False, num_sanity_val_steps=0, limit_val_batches=1, check_val_every_n_epoch=None, val_check_interval=2*config.train.accumulate_grad_batches, accumulate_grad_batches=config.train.accumulate_grad_batches)
+    trainer = pl.Trainer(**trainer_options, callbacks=[checkpoint])
     torch.cuda.reset_peak_memory_stats()
     started = time.perf_counter()
     trainer.fit(model, datamodule=data_module, weights_only=False)
@@ -100,8 +109,24 @@ def test_real_data_training_and_sampling_budget(tmp_path, monkeypatch, experimen
     elapsed = time.perf_counter() - started
     assert trainer.global_step == 2 and torch.isfinite(trainer.callback_metrics['val/loss'])
     assert all(torch.isfinite(parameter).all() for parameter in model.parameters())
-    if config.model.get('density', {}).get('mode') == 'D3':
-        assert torch.isfinite(trainer.callback_metrics['val/density_weighted'])
+    for encoder, initial_weight in zip(model.model.denoiser.local_cov.encoders, initial_encoder_weights):
+        assert not torch.equal(encoder.convolutions[0].weight.detach().cpu(), initial_weight)
+    saved = torch.load(checkpoint.last_model_path, map_location='cpu', weights_only=False)
+    local_parameter_names = [
+        name for name, _ in model.model.named_parameters()
+        if name.startswith('denoiser.local_cov.')
+    ]
+    assert local_parameter_names
+    assert all(f'model.{name}' in saved['state_dict'] for name in local_parameter_names)
+    saved_optimizer = saved['optimizer_states'][0]
+    saved_parameter_ids = [parameter_id for group in saved_optimizer['param_groups'] for parameter_id in group['params']]
+    model_parameter_names = [name for name, _ in model.model.named_parameters()]
+    parameter_id_by_name = dict(zip(model_parameter_names, saved_parameter_ids))
+    assert all(parameter_id_by_name[name] in saved_optimizer['state'] for name in local_parameter_names)
+    saved_control = saved['callbacks'][checkpoint.state_key]['pocketxmol']
+    assert saved_control['scheduler']['last_epoch'] == 1
+    assert saved_control['last_validation_step'] == 2
+    assert saved_control['stop_reason'] == 'max_steps'
     # 此耗时包含首次真实资产读取与1批验证, 不能当成稳定每步训练速度.
     report = dict(experiment=experiment, scope='gate_not_formal', global_batch=72, batch_size=config.train.batch_size, accumulation=config.train.accumulate_grad_batches, updates=2, fit_elapsed_seconds=elapsed, peak_memory_allocated_bytes=torch.cuda.max_memory_allocated(), peak_memory_reserved_bytes=torch.cuda.max_memory_reserved(), val_loss=float(trainer.callback_metrics['val/loss']))
     report.update(training_protocol=data_module.train_dataloader().dataset.protocol, supervised_validation_protocol=data_module.val_dataloader().dataset.protocol)
@@ -109,18 +134,46 @@ def test_real_data_training_and_sampling_budget(tmp_path, monkeypatch, experimen
     model.model.to('cuda').eval()
     featurizer = FeaturizeMol(config.transforms.featurizer)
     task = ConfTransform(EasyDict(settings=dict(free=1.0), free_no_geometry=True), mode='test')
-    protocol = 'C5' if config.data.dataset.pocket_mode == 'center' else 'E'
-    dataset = OccurrenceDataset(config.data.dataset, 'validation', Compose([featurizer, task]), config.model.nucleic_branch, protocol, False, density_config=config.model.get('density'))
     sampling = EasyDict(model_name=f'gate_{experiment}', split='validation', output_root=str(tmp_path / 'sampling'), dataset=config.data.dataset, num_candidates=2, num_steps=3, batch_size=2, device='cuda')
     noise_config = make_config(str(root / 'configs/sample/test/dock_poseboff/base.yml')).noise
     noise_config.num_steps = 3
     noiser = get_sample_noiser(noise_config, featurizer.num_node_types, featurizer.num_edge_types, mode='sample', device='cuda', ref_config=config.noise)
-    result = sample_occurrence(dataset, 0, model.model, noiser, featurizer, sampling, protocol)
-    assert result['success_count'] == 2, result
-    assessment = evaluate_occurrence((sampling, protocol, dataset.records[0]))
-    assert assessment['rmsd_count'] == 2, assessment
-    assert assessment['evaluation_status'] == 'success', assessment
-    report.update(validation_record=dataset.records[0], protocol=protocol, sampling=result, assessment=assessment)
+    protocols = ('C0', 'C5') if config.data.dataset.pocket_mode == 'center' else ('E',)
+    protocol_results = {}
+    for protocol in protocols:
+        dataset = OccurrenceDataset(config.data.dataset, 'validation', Compose([featurizer, task]), config.model.nucleic_branch, protocol, False, density_config=config.model.get('density'))
+        result = sample_occurrence(dataset, 0, model.model, noiser, featurizer, sampling, protocol)
+        assert result['success_count'] == 2, result
+        assessment = evaluate_occurrence((sampling, protocol, dataset.records[0]))
+        assert assessment['rmsd_count'] == 2, assessment
+        assert assessment['evaluation_status'] == 'success', assessment
+        protocol_results[protocol] = dict(validation_record=dataset.records[0], sampling=result, assessment=assessment)
+    report['protocols'] = protocol_results
+
+    expected_weights = saved['state_dict']
+    del trainer
+    del model
+    torch.cuda.empty_cache()
+    resume_args = SimpleNamespace(num_gpus=1, multi_node=False, resume=checkpoint.last_model_path)
+    restored = ModelLightning(deepcopy(config), resume_args, **data_module.get_in_dims())
+    restored_callback = DockingCheckpoint(str(tmp_path / 'checkpoints'), f'gate-{experiment}')
+    resumed_trainer = pl.Trainer(**dict(trainer_options, max_steps=3), callbacks=[restored_callback])
+    resumed_trainer.fit(restored, datamodule=DataModule(config), ckpt_path=checkpoint.last_model_path, weights_only=False)
+    assert resumed_trainer.global_step == 2
+    assert restored_callback.stop_reason == 'max_steps'
+    assert restored_callback.decline_count == saved_control['decline_count']
+    assert restored_callback.scheduler_state == saved_control['scheduler']
+    for name, value in restored.state_dict().items():
+        torch.testing.assert_close(value.cpu(), expected_weights[name], rtol=0, atol=0)
+    restored_optimizer = resumed_trainer.optimizers[0].state_dict()
+    assert restored_optimizer['param_groups'] == saved_optimizer['param_groups']
+    for parameter_id, state in saved_optimizer['state'].items():
+        for key, expected_value in state.items():
+            observed_value = restored_optimizer['state'][parameter_id][key]
+            if torch.is_tensor(expected_value):
+                torch.testing.assert_close(observed_value.cpu(), expected_value, rtol=0, atol=0)
+            else:
+                assert observed_value == expected_value
     # JSON只记录本次门控来源、资源和结果; SDF与逐候选结果位于同一pytest临时目录, 不接入正式候选池.
     (tmp_path / 'real_data_gate.json').write_text(json.dumps(report, ensure_ascii=False, indent=2, allow_nan=False) + '\n', encoding='utf-8')
-    print(f'REAL_DATA_GATE {experiment} global_batch=72 fit_seconds={elapsed:.3f} peak_allocated_bytes={report["peak_memory_allocated_bytes"]} sampling=2/2 evaluation=2/2')
+    print(f'REAL_DATA_GATE {experiment} global_batch=72 fit_seconds={elapsed:.3f} peak_allocated_bytes={report["peak_memory_allocated_bytes"]} protocols={list(protocol_results)} restore_exact=True')
