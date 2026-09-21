@@ -10,4 +10,3 @@ python_bin=/storage/penghongen/PocketXMol/runtime/venv/bin/python
 for name in local_cov-C-GT local_cov-E-GT official-GT; do
     "$python_bin" scripts/summarize_docking_thresholds.py "configs/docking/report-${name}.yml"
 done
-

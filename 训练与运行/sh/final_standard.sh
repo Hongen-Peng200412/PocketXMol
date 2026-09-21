@@ -12,4 +12,3 @@ python_bin=/storage/penghongen/PocketXMol/runtime/venv/bin/python
 "$python_bin" scripts/sample_docking.py "$config"
 CUDA_VISIBLE_DEVICES='' "$python_bin" scripts/evaluate_docking.py "$config"
 CUDA_VISIBLE_DEVICES='' "$python_bin" scripts/summarize_docking_thresholds.py "$config"
-

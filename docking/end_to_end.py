@@ -386,4 +386,3 @@ def sample_end_to_end_stage(config, stage):
             flush=True,
         )
     return results
-

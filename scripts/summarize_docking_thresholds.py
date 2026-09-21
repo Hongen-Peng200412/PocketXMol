@@ -15,4 +15,3 @@ if __name__ == "__main__":
     parser.add_argument("config", help="与采样和评价相同的YAML配置路径")
     arguments = parser.parse_args()
     summarize_docking_thresholds(make_config(arguments.config))
-

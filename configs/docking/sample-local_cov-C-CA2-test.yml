@@ -24,4 +24,3 @@ wandb:
   project: PocketXmol_final
   name: standard_CA2_local_cov_C
   mode: online
-

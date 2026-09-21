@@ -6,4 +6,3 @@ protocols: [C0, C5, E]
 split: test
 output_root: /storage/penghongen/PocketXMol/sampling/official-SMILES
 final_thresholds_A: [2.0, 3.0]
-

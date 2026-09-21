@@ -24,4 +24,3 @@ if __name__ == "__main__":
         prepare_initial_records(configuration)
     else:
         prepare_followup_records(configuration, arguments.stage)
-

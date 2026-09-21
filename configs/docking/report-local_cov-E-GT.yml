@@ -6,4 +6,3 @@ protocols: [E]
 split: test
 output_root: /storage/penghongen/PocketXMol/sampling/local_cov-E-T0-RA
 final_thresholds_A: [2.0, 3.0]
-

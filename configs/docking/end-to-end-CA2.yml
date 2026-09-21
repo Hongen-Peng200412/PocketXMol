@@ -35,4 +35,3 @@ wandb:
   project: PocketXmol_final
   name: end_to_end_strongest1_CA2
   mode: online
-
