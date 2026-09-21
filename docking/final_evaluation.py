@@ -305,17 +305,6 @@ def evaluate_end_to_end(config):
                 )
                 receptor_cache[pdb_id] = build_receptor_molecule(receptor)
             template, reference = _reference_molecule(config, record)
-            stage_results = {
-                stage: _evaluate_stage(
-                    config,
-                    stage,
-                    record,
-                    receptor_cache[pdb_id],
-                    template,
-                    reference,
-                )
-                for stage in ("official-c", "local-c1", "local-c2", "local-e")
-            }
         except Exception as error:
             failed = {
                 "status": "evaluation_asset_failed",
@@ -332,6 +321,31 @@ def evaluate_end_to_end(config):
                 stage: dict(failed)
                 for stage in ("official-c", "local-c1", "local-c2", "local-e")
             }
+        else:
+            stage_results = {}
+            for stage in ("official-c", "local-c1", "local-c2", "local-e"):
+                try:
+                    stage_results[stage] = _evaluate_stage(
+                        config,
+                        stage,
+                        record,
+                        receptor_cache[pdb_id],
+                        template,
+                        reference,
+                    )
+                except Exception as error:
+                    stage_results[stage] = {
+                        "status": "evaluation_stage_failed",
+                        "output_dir": str(candidate_output_dir(config, stage, record)),
+                        "error": f"{type(error).__name__}: {error}",
+                        "success_count": 0,
+                        "top1_sample_index": None,
+                        "pose_min_rmsd_A": {"1": None, "5": None, "50": None},
+                        "success": {
+                            threshold: {limit: False for limit in ("1", "5", "50")}
+                            for threshold in ("2.0", "3.0")
+                        },
+                    }
         stage_results["local-c2"]["intermediate_top1"] = _read_ranking(
             config,
             "local-c1",

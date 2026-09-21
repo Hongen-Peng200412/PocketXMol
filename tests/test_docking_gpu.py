@@ -20,13 +20,19 @@ from rdkit import Chem
 from torch_geometric.transforms import Compose
 
 from docking.dataset import ConditionedDockingDataset, OccurrenceDataset
-from docking.evaluation import evaluate_occurrence
+from docking.evaluation import (
+    build_receptor_molecule,
+    evaluate_occurrence,
+    rank_candidate_metrics,
+    score_saved_candidates,
+)
+from docking.assets import read_receptor
 from docking.sampling import (
     build_sampling_noiser,
     load_sampling_runtime,
     sample_occurrence,
 )
-from docking.smiles import read_smiles_coords
+from docking.smiles import read_smiles_coords, read_smiles_graph
 from scripts.train_pl import DataModule, DockingCheckpoint, ModelLightning
 from utils.misc import make_config
 from utils.sample_noise import get_sample_noiser
@@ -144,6 +150,34 @@ def test_conditioned_non_test_sampling_uses_real_models(
         np.isfinite(pose.GetConformer().GetPositions()).all()
         for pose in poses
     )
+    template = read_smiles_graph(
+        sampling.dataset.smiles_root,
+        source['prepared_smiles'],
+    )['mol']
+    reference = Chem.Mol(template)
+    conformer = Chem.Conformer(len(coordinates))
+    for atom_index, position in enumerate(coordinates):
+        conformer.SetAtomPosition(atom_index, position.tolist())
+    reference.AddConformer(conformer, assignId=True)
+    receptor = read_receptor(
+        Path(sampling.dataset.root)
+        / 'parse'
+        / source['pdb_id']
+        / 'receptor_tokens.npz'
+    )
+    receptor_molecule = build_receptor_molecule(receptor)
+    candidates = json.loads((output_dir / result['candidate_file']).read_text())
+    with_coords = score_saved_candidates(
+        candidates, poses, receptor_molecule, reference, rmsd_reference=None
+    )
+    without_coords = score_saved_candidates(
+        candidates, poses, receptor_molecule, template, rmsd_reference=None
+    )
+    assert [item['stereo'] for item in with_coords] == [item['stereo'] for item in without_coords]
+    assert [item['self_ranking'] for item in with_coords] == [item['self_ranking'] for item in without_coords]
+    assert [item['sample_index'] for item in rank_candidate_metrics(with_coords)] == [
+        item['sample_index'] for item in rank_candidate_metrics(without_coords)
+    ]
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason='需要实际授权的CUDA GPU')
