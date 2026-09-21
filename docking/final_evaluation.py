@@ -14,7 +14,7 @@ import numpy as np
 from rdkit import Chem
 
 from docking.assets import read_receptor
-from docking.end_to_end import candidate_output_dir, read_jsonl, write_json, write_jsonl
+from docking.final_artifacts import candidate_output_dir, read_jsonl, write_json, write_jsonl
 from docking.evaluation import (
     build_receptor_molecule,
     rank_candidate_metrics,
@@ -295,26 +295,43 @@ def evaluate_end_to_end(config):
     receptor_cache = {}
     for record in base_records:
         pdb_id = record["pdb_id"]
-        if pdb_id not in receptor_cache:
-            receptor = read_receptor(
-                Path(config.receptor_root)
-                / "parse"
-                / pdb_id
-                / "receptor_tokens.npz"
-            )
-            receptor_cache[pdb_id] = build_receptor_molecule(receptor)
-        template, reference = _reference_molecule(config, record)
-        stage_results = {
-            stage: _evaluate_stage(
-                config,
-                stage,
-                record,
-                receptor_cache[pdb_id],
-                template,
-                reference,
-            )
-            for stage in ("official-c", "local-c1", "local-c2", "local-e")
-        }
+        try:
+            if pdb_id not in receptor_cache:
+                receptor = read_receptor(
+                    Path(config.receptor_root)
+                    / "parse"
+                    / pdb_id
+                    / "receptor_tokens.npz"
+                )
+                receptor_cache[pdb_id] = build_receptor_molecule(receptor)
+            template, reference = _reference_molecule(config, record)
+            stage_results = {
+                stage: _evaluate_stage(
+                    config,
+                    stage,
+                    record,
+                    receptor_cache[pdb_id],
+                    template,
+                    reference,
+                )
+                for stage in ("official-c", "local-c1", "local-c2", "local-e")
+            }
+        except Exception as error:
+            failed = {
+                "status": "evaluation_asset_failed",
+                "error": f"{type(error).__name__}: {error}",
+                "success_count": 0,
+                "top1_sample_index": None,
+                "pose_min_rmsd_A": {"1": None, "5": None, "50": None},
+                "success": {
+                    threshold: {limit: False for limit in ("1", "5", "50")}
+                    for threshold in ("2.0", "3.0")
+                },
+            }
+            stage_results = {
+                stage: dict(failed)
+                for stage in ("official-c", "local-c1", "local-c2", "local-e")
+            }
         stage_results["local-c2"]["intermediate_top1"] = _read_ranking(
             config,
             "local-c1",

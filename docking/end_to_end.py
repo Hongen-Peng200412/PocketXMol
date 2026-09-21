@@ -19,6 +19,14 @@ from docking.evaluation import (
     rank_candidate_metrics,
     score_saved_candidates,
 )
+from docking.final_artifacts import (
+    candidate_output_dir,
+    read_jsonl,
+    stage_input_path,
+    stage_output_root,
+    write_json,
+    write_jsonl,
+)
 from docking.sampling import (
     build_sampling_noiser,
     load_sampling_runtime,
@@ -29,40 +37,6 @@ from docking.smiles import read_smiles_graph
 
 STAGES = ("official-c", "local-c1", "local-c2", "local-e")
 STAGE_SEED_OFFSET = {stage: offset for offset, stage in enumerate(STAGES)}
-
-
-def read_jsonl(path):
-    """读取非空JSONL记录并保持文件顺序。"""
-    with Path(path).open(encoding="utf-8") as stream:
-        return [json.loads(line) for line in stream if line.strip()]
-
-
-def write_json(path, value):
-    """在同目录写临时JSON后原子替换目标文件。"""
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f"{path.name}.tmp")
-    temporary.write_text(
-        json.dumps(value, ensure_ascii=False, indent=2, allow_nan=False),
-        encoding="utf-8",
-    )
-    temporary.replace(path)
-
-
-def write_jsonl(path, records):
-    """在同目录写完整JSONL后原子替换目标文件。"""
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f"{path.name}.tmp")
-    with temporary.open("w", encoding="utf-8", newline="\n") as stream:
-        for record in records:
-            stream.write(json.dumps(record, ensure_ascii=False, allow_nan=False) + "\n")
-    temporary.replace(path)
-
-
-def _input_path(config, stage):
-    """返回当前受体条件下一个推理阶段的冻结JSONL路径。"""
-    return Path(config.output_root) / "inputs" / f"{stage}.jsonl"
 
 
 def _model_key(stage):
@@ -76,26 +50,23 @@ def _model_key(stage):
     raise ValueError(f"未知端到端阶段: {stage}")
 
 
-def _stage_output_root(config, stage):
-    """返回official或local_cov的独立采样根；具体阶段继续作为protocol子目录。"""
-    family = "official" if stage == "official-c" else "local_cov"
-    return Path(config.output_root) / family
-
-
-def candidate_output_dir(config, stage, record):
-    """返回一条Matcher候选在指定阶段的正式产物目录。"""
-    return (
-        _stage_output_root(config, stage)
-        / "test"
-        / stage
-        / record["pdb_id"]
-        / str(record["candidate_id"])
-    )
-
-
 def _stage_record(base_record, stage):
-    """从公共Matcher记录建立中心阶段的采样记录。"""
-    record = dict(base_record)
+    """只复制推理必需字段, 评价真值保留在 base.jsonl."""
+    record = {
+        key: base_record[key]
+        for key in (
+            "receptor_condition",
+            "pdb_id",
+            "candidate_id",
+            "source_blob_index",
+            "centered_box_index",
+            "prepared_smiles",
+            "blob_center_world_xyz_A",
+            "stage_seeds",
+            "views",
+            "center_offset_xyz_A",
+        )
+    }
     record["sampling_seed"] = int(record["stage_seeds"][stage])
     record["given_center_xyz_A"] = record["blob_center_world_xyz_A"]
     return record
@@ -186,11 +157,11 @@ def prepare_initial_records(config):
         )
     write_jsonl(Path(config.output_root) / "inputs" / "base.jsonl", records)
     write_jsonl(
-        _input_path(config, "official-c"),
+        stage_input_path(config, "official-c"),
         [_stage_record(record, "official-c") for record in records],
     )
     write_jsonl(
-        _input_path(config, "local-c1"),
+        stage_input_path(config, "local-c1"),
         [_stage_record(record, "local-c1") for record in records],
     )
     return records
@@ -259,7 +230,7 @@ def prepare_followup_records(config, target_stage):
         source_stage = "local-c2"
     else:
         raise ValueError("后续输入只允许local-c2或local-e。")
-    source_records = read_jsonl(_input_path(config, source_stage))
+    source_records = read_jsonl(stage_input_path(config, source_stage))
     target_records = []
     for source_record in source_records:
         target_record = {
@@ -295,7 +266,7 @@ def prepare_followup_records(config, target_stage):
         except Exception as error:
             target_record["input_error"] = f"{type(error).__name__}: {error}"
         target_records.append(target_record)
-    write_jsonl(_input_path(config, target_stage), target_records)
+    write_jsonl(stage_input_path(config, target_stage), target_records)
     return target_records
 
 
@@ -314,7 +285,7 @@ def _sampling_config(config, stage):
             pocket_mode="envelope" if stage == "local-e" else "center",
         ),
         split="test",
-        output_root=str(_stage_output_root(config, stage)),
+        output_root=str(stage_output_root(config, stage)),
         batch_size=int(config.batch_size),
         num_candidates=int(config.num_candidates),
         num_steps=int(config.num_steps),
@@ -326,12 +297,12 @@ def sample_end_to_end_stage(config, stage):
     """加载一个冻结模型并为当前受体条件顺序完成一个端到端阶段。"""
     if stage not in STAGES:
         raise ValueError(f"未知端到端阶段: {stage}")
-    records = read_jsonl(_input_path(config, stage))
+    records = read_jsonl(stage_input_path(config, stage))
     sampling_config = _sampling_config(config, stage)
     train_config, model_config, model, featurizer, transforms, sample_config = (
         load_sampling_runtime(sampling_config)
     )
-    stage_dir = _stage_output_root(config, stage) / "test" / stage
+    stage_dir = stage_output_root(config, stage) / "test" / stage
     run_path = stage_dir / "run.json"
     run_record = {
         "receptor_condition": config.receptor_condition,
@@ -362,6 +333,29 @@ def sample_end_to_end_stage(config, stage):
     )
     results = []
     for index in range(len(dataset)):
+        record = records[index]
+        scientific_input = {
+            key: record[key]
+            for key in (
+                "pdb_id",
+                "candidate_id",
+                "prepared_smiles",
+                "sampling_seed",
+            )
+        }
+        for key in ("given_center_xyz_A", "envelope_coords_xyz_A", "input_error"):
+            if key in record:
+                scientific_input[key] = record[key]
+        output_dir = candidate_output_dir(config, stage, record)
+        input_path = output_dir / "scientific_input.json"
+        result_path = output_dir / "result.json"
+        if input_path.exists():
+            if json.loads(input_path.read_text(encoding="utf-8")) != scientific_input:
+                raise ValueError(f"{stage}现有候选的科学输入与当前清单不一致。")
+        elif result_path.exists():
+            raise ValueError(f"{stage}现有候选缺少可核对的科学输入记录。")
+        else:
+            write_json(input_path, scientific_input)
         result = sample_occurrence(
             dataset,
             index,

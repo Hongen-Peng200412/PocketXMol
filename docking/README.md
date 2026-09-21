@@ -4,6 +4,8 @@
 
 `smiles.py`读取公共图和坐标；`dataset.py`构造模型输入，`sampling.py`与`evaluation.py`共享同一SMILES图。`assets.py`还保留历史read_template，`preparation.py`保留原冻结资产的准备逻辑，均不作为新训练、采样或评价的配体图入口。
 
+最终测评按 `dataset.py → sampling.py/end_to_end.py → evaluation.py/final_evaluation.py` 阅读。`ConditionedDockingDataset` 只接收 Matcher 给定中心或上一轮预测构象, 不读取沉积配体坐标。`end_to_end.py` 冻结各阶段输入并调用原采样循环, `final_artifacts.py` 只负责 JSON 和产物路径, `final_evaluation.py` 生成标准测评的 `threshold_summary.json` 以及端到端的 `docking_results.jsonl`、扩展 `evaluation.json` 和 W&B 汇报。
+
 ## 产物位置
 
 下列SMILES公共包与迁移坐标、清单已在服务器核对存在。正式运行直接读取已有资产。配置中的`smiles_root`、`smiles_coords_root`、`manifest_root`明确选择对应目录。

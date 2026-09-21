@@ -6,15 +6,41 @@ from pathlib import Path
 
 import torch
 from easydict import EasyDict
+from rdkit import Chem
+from rdkit.Chem import AllChem
 from torch_geometric.transforms import Compose
 
 from docking.dataset import ConditionedDockingDataset, OccurrenceDataset
 from docking.end_to_end import prepare_initial_records
+from docking.evaluation import rank_candidate_metrics, score_saved_candidates
 from docking.final_evaluation import summarize_end_to_end
 from docking.smiles import read_smiles_coords
 from utils.misc import make_config
 from utils.transforms import ConfTransform, FeaturizeMol
 from test_docking_data import prepared_data
+
+
+def test_smiles_template_preserves_stereo_ranking_without_reference_coordinates():
+    """去除沉积参考坐标不改变 stereo、self-ranking 或 Top-1."""
+    template = Chem.MolFromSmiles("C[C@H](O)F")
+    reference = Chem.AddHs(Chem.Mol(template))
+    AllChem.EmbedMolecule(reference, randomSeed=91021)
+    reference = Chem.RemoveHs(reference)
+    poses = [Chem.Mol(reference), Chem.Mol(reference)]
+    candidates = [
+        {"sample_index": 0, "status": "success", "sdf_index": 0, "cfd_traj": 0.4},
+        {"sample_index": 1, "status": "success", "sdf_index": 1, "cfd_traj": 0.2},
+    ]
+    receptor = Chem.MolFromSmiles("")
+    with_coords = score_saved_candidates(
+        candidates, poses, receptor, reference, rmsd_reference=None
+    )
+    without_coords = score_saved_candidates(
+        candidates, poses, receptor, template, rmsd_reference=None
+    )
+    assert [item["stereo"] for item in with_coords] == [item["stereo"] for item in without_coords]
+    assert [item["self_ranking"] for item in with_coords] == [item["self_ranking"] for item in without_coords]
+    assert rank_candidate_metrics(with_coords)[0]["sample_index"] == rank_candidate_metrics(without_coords)[0]["sample_index"]
 
 
 def test_predicted_envelope_reuses_standard_envelope_condition(prepared_data):
@@ -166,6 +192,15 @@ def test_initial_manifest_keeps_unselected_and_rank_beyond_twenty(tmp_path):
     assert records[1]["raw_rank"] == records[1]["attempt_index"] == 25
     assert not records[1]["candidate_selected"]
     assert all("sha" not in key.lower() for record in records for key in record)
+    for stage in ("official-c", "local-c1"):
+        stage_records = [
+            json.loads(line)
+            for line in (tmp_path / "output" / "inputs" / f"{stage}.jsonl")
+            .read_text(encoding="utf-8")
+            .splitlines()
+        ]
+        assert all("matched_occurrence_id" not in item for item in stage_records)
+        assert all("target_smiles" not in item for item in stage_records)
     assert records[0]["stage_seeds"] == {
         "official-c": 1000,
         "local-c1": 1001,

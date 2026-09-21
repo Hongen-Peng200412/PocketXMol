@@ -150,4 +150,6 @@ bash ops/run_docking_gpu_checks.sh -k real_data
 
 实际正式命令、release、launch、job id、产物、测试结果和失败处理写入所属阶段总日志及独立实验日志，入口见[全项目阶段索引](../日志/总日志.md)。无密度W&B使用 `pencounkdual-111/PocketXmol_raw`，密度配置使用同账号下的 `PocketXmol_density`，默认online；私密API key不写入配置或日志。
 
+最终测评的短入口为 `final_standard.sh <配置名>`、`report_standard_gt.sh` 和 `final_end_to_end.sh <end-to-end-GT|end-to-end-CA2>`。前者顺序完成一个 CA2 标准协议的采样、CPU 评价与 2/3 Å 汇总; 第二个只汇总已有 GT 候选; 第三个顺序完成 strongest-1 的 official-C、local_cov-C、C-C、C-C-E 及 CPU 评价。正式 release、资源分配和产物根以最终测试日志为准。
+
 本地T0官方等价检查使用`tests/test_docking_official.py`与`tests/test_docking_centers.py`，从本地Git对象读取官方提交65488cf，无需网络下载。真实非测试副本通过环境变量PXM_ACCEPTANCE_ASSETS指定；具体环境、命令、结果和资产来源见[收口记录](../日志/第一类实验（不加密度信息）/总日志&分析/非密度收口记录.md)，不与正式训练／采样命令混记。
