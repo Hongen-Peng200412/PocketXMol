@@ -28,6 +28,177 @@ from utils.buster_tools import check_identity, check_intermolecular_distance
 STANDARD_RESIDUES = ("ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS", "ILE", "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL", "A", "C", "G", "U", "DA", "DC", "DG", "DT")
 
 
+def build_receptor_molecule(receptor):
+    """把完整标准受体数组转为碰撞检查使用的无键RDKit分子。
+
+    输入 ``receptor`` 来自 ``read_receptor``，坐标为世界XYZ、Å，第一维为全部标准蛋白
+    与标准核酸重原子。返回分子不猜测受体共价键，也不用于生成模型，只服务原
+    ``check_intermolecular_distance`` 距离检查。
+    """
+    molecule = Chem.RWMol()
+    conformer = Chem.Conformer(len(receptor["coords"]))
+    for atom_index, element in enumerate(receptor["element"]):
+        atom = Chem.Atom(int(element))
+        residue_info = Chem.AtomPDBResidueInfo(
+            receptor["atom_name"][atom_index].decode("ascii")
+        )
+        residue_info.SetResidueName(STANDARD_RESIDUES[int(receptor["res_type"][atom_index])])
+        residue_info.SetResidueNumber(int(receptor["res_index"][atom_index]))
+        residue_info.SetIsHeteroAtom(False)
+        atom.SetMonomerInfo(residue_info)
+        molecule.AddAtom(atom)
+        conformer.SetAtomPosition(atom_index, receptor["coords"][atom_index].tolist())
+    molecule.AddConformer(conformer, assignId=True)
+    return molecule.GetMol()
+
+
+def score_saved_candidates(
+    candidates,
+    poses,
+    receptor_molecule,
+    stereo_reference,
+    rmsd_reference=None,
+    asset_error=None,
+    pose_error=None,
+):
+    """按原碰撞、立体和self-ranking规则评价一个已保存候选池。
+
+    输入参数:
+        - candidates: list[dict]，``sample_occurrence`` 保存的完整候选记录。
+        - poses: list[RDKit Mol|None]，成功候选按 ``sdf_index`` 对齐的世界坐标分子。
+        - receptor_molecule: RDKit Mol，当前受体条件的完整标准受体。
+        - stereo_reference: RDKit Mol，标准评价可带沉积构象；端到端中间轮使用无构象的
+          精确SMILES模板，因此排序控制不读取真值坐标。
+        - rmsd_reference: RDKit Mol|None，最终评价使用带沉积构象的参考；``None`` 表示
+          中间轮只排名，不计算RMSD。
+        - asset_error/pose_error: str|None，上游资产或SDF读取失败，保留到每个候选错误。
+
+    返回值:
+        - metrics: list[dict]，逐候选增加碰撞、立体、self_ranking和可选RMSD字段。
+
+    ``self_ranking = cfd_traj + int(no_clashes) + int(stereo)``，不读取RMSD；并列顺序
+    由 ``rank_candidate_metrics`` 按 ``sample_index`` 决定。
+    """
+    metrics = []
+    for candidate in candidates:
+        metric = {
+            **candidate,
+            "no_clashes": False,
+            "stereo": False,
+            "num_clashes": None,
+            "rel_clashes": None,
+            "self_ranking": None,
+            "rmsd_A": None,
+            "rmsd_identity_fallback": False,
+            "errors": [],
+        }
+        if candidate["status"] != "success":
+            metric["errors"].append(
+                {"stage": candidate["stage"], "error": candidate["error"]}
+            )
+        elif asset_error is not None or pose_error is not None:
+            metric["errors"].append(
+                {
+                    "stage": "evaluation_assets" if asset_error is not None else "read_pose",
+                    "error": asset_error if asset_error is not None else pose_error,
+                }
+            )
+        else:
+            try:
+                molecule = poses[candidate["sdf_index"]]
+                if molecule is None:
+                    raise ValueError("unreadable_saved_pose")
+                if int(molecule.GetProp("sample_index")) != candidate["sample_index"]:
+                    raise ValueError("saved_pose_candidate_index_mismatch")
+            except Exception as error:
+                metric["errors"].append(
+                    {"stage": "read_pose", "error": f"{type(error).__name__}: {error}"}
+                )
+            else:
+                try:
+                    clash = check_intermolecular_distance(
+                        molecule,
+                        receptor_molecule,
+                        ignore_types={
+                            "hydrogens",
+                            "organic_cofactors",
+                            "inorganic_cofactors",
+                            "waters",
+                        },
+                        clash_cutoff=0.75,
+                    )["results"]
+                    num_clashes = int(clash["num_pairwise_clashes"])
+                    metric.update(
+                        no_clashes=bool(clash["no_clashes"]),
+                        num_clashes=num_clashes,
+                        rel_clashes=num_clashes / molecule.GetNumAtoms(),
+                    )
+                except Exception as error:
+                    metric["errors"].append(
+                        {"stage": "clashes", "error": f"{type(error).__name__}: {error}"}
+                    )
+                try:
+                    metric["stereo"] = bool(
+                        check_identity(
+                            molecule,
+                            stereo_reference,
+                            inchi_options="w",
+                        )["results"]["stereo"]
+                    )
+                except Exception as error:
+                    metric["errors"].append(
+                        {"stage": "stereo", "error": f"{type(error).__name__}: {error}"}
+                    )
+                if rmsd_reference is not None:
+                    try:
+                        try:
+                            rmsd = rdMolAlign.CalcRMS(
+                                deepcopy(molecule),
+                                deepcopy(rmsd_reference),
+                                maxMatches=30000,
+                            )
+                        except RuntimeError:
+                            metric["rmsd_identity_fallback"] = True
+                            atom_map = [
+                                [
+                                    (atom_index, atom_index)
+                                    for atom_index in range(molecule.GetNumAtoms())
+                                ]
+                            ]
+                            rmsd = rdMolAlign.CalcRMS(
+                                deepcopy(molecule),
+                                deepcopy(rmsd_reference),
+                                map=atom_map,
+                            )
+                        if not np.isfinite(rmsd):
+                            raise ValueError("non_finite_rmsd")
+                        metric["rmsd_A"] = float(rmsd)
+                    except Exception as error:
+                        metric["errors"].append(
+                            {"stage": "rmsd", "error": f"{type(error).__name__}: {error}"}
+                        )
+        if (
+            candidate["status"] == "success"
+            and candidate["cfd_traj"] is not None
+            and np.isfinite(candidate["cfd_traj"])
+        ):
+            metric["self_ranking"] = float(
+                candidate["cfd_traj"]
+                + int(metric["no_clashes"])
+                + int(metric["stereo"])
+            )
+        metrics.append(metric)
+    return metrics
+
+
+def rank_candidate_metrics(metrics):
+    """按冻结self-ranking降序和sample_index升序返回可排名候选。"""
+    return sorted(
+        (metric for metric in metrics if metric["self_ranking"] is not None),
+        key=lambda metric: (-metric["self_ranking"], metric["sample_index"]),
+    )
+
+
 def summarize_occurrences(results):
     """汇总一个模型、定位协议和视图的逐实例评价, 不跨occurrence拼接候选.
 
@@ -243,20 +414,7 @@ def evaluate_occurrence(arguments):
         selected = select_pocket(receptor, ligand_coords, ligand_coords.mean(axis=0) + offset, "envelope" if protocol == "E" else "center")
         pocket_protein_count = int(np.sum(selected & (receptor["res_type"] < 20)))
         pocket_nucleic_count = int(np.sum(selected & (receptor["res_type"] >= 20)))
-        # 完整标准受体的 RDKit 容器只服务距离检查, 不猜测受体共价键, 不把它送给官方生成模型.
-        receptor_molecule = Chem.RWMol()
-        receptor_conformer = Chem.Conformer(len(receptor["coords"]))
-        for atom_index, element in enumerate(receptor["element"]):
-            atom = Chem.Atom(int(element))
-            residue_info = Chem.AtomPDBResidueInfo(receptor["atom_name"][atom_index].decode("ascii"))
-            residue_info.SetResidueName(STANDARD_RESIDUES[int(receptor["res_type"][atom_index])])
-            residue_info.SetResidueNumber(int(receptor["res_index"][atom_index]))
-            residue_info.SetIsHeteroAtom(False)
-            atom.SetMonomerInfo(residue_info)
-            receptor_molecule.AddAtom(atom)
-            receptor_conformer.SetAtomPosition(atom_index, receptor["coords"][atom_index].tolist())
-        receptor_molecule.AddConformer(receptor_conformer, assignId=True)
-        receptor_molecule = receptor_molecule.GetMol()
+        receptor_molecule = build_receptor_molecule(receptor)
     except Exception as error:
         if isinstance(error, OSError):
             raise
@@ -271,50 +429,16 @@ def evaluate_occurrence(arguments):
             if isinstance(error, OSError):
                 raise
             pose_error = f"{type(error).__name__}: {error}"
-    for candidate in candidates:
-        metric = {**candidate, "no_clashes": False, "stereo": False, "num_clashes": None, "rel_clashes": None, "self_ranking": None, "rmsd_A": None, "rmsd_identity_fallback": False, "errors": []}
-        if candidate["status"] != "success":
-            metric["errors"].append({"stage": candidate["stage"], "error": candidate["error"]})
-        elif asset_error is not None or pose_error is not None:
-            metric["errors"].append({"stage": "evaluation_assets" if asset_error is not None else "read_pose", "error": asset_error if asset_error is not None else pose_error})
-        else:
-            try:
-                molecule = poses[candidate["sdf_index"]]
-                if molecule is None:
-                    raise ValueError("unreadable_saved_pose")
-                if int(molecule.GetProp("sample_index")) != candidate["sample_index"]:
-                    raise ValueError("saved_pose_candidate_index_mismatch")
-            except Exception as error:
-                metric["errors"].append({"stage": "read_pose", "error": f"{type(error).__name__}: {error}"})
-            else:
-                try:
-                    # 原公式、半径、搜索半径及0.75比例阈值完全保留; 条件表已排除水、UNK和辅因子.
-                    clash = check_intermolecular_distance(molecule, receptor_molecule, ignore_types={"hydrogens", "organic_cofactors", "inorganic_cofactors", "waters"}, clash_cutoff=0.75)["results"]
-                    metric.update(no_clashes=bool(clash["no_clashes"]), num_clashes=int(clash["num_pairwise_clashes"]), rel_clashes=int(clash["num_pairwise_clashes"]) / molecule.GetNumAtoms())
-                except Exception as error:
-                    metric["errors"].append({"stage": "clashes", "error": f"{type(error).__name__}: {error}"})
-                try:
-                    metric["stereo"] = bool(check_identity(molecule, reference, inchi_options="w")["results"]["stereo"])
-                except Exception as error:
-                    metric["errors"].append({"stage": "stereo", "error": f"{type(error).__name__}: {error}"})
-                try:
-                    # 原 evaluate_dock.get_rmsd 的正常分支和 RuntimeError 回退, 不用训练的 matches_iso 替代RDKit对称匹配.
-                    try:
-                        rmsd = rdMolAlign.CalcRMS(deepcopy(molecule), deepcopy(reference), maxMatches=30000)
-                    except RuntimeError:
-                        metric["rmsd_identity_fallback"] = True
-                        atom_map = [[(atom_index, atom_index) for atom_index in range(molecule.GetNumAtoms())]]
-                        rmsd = rdMolAlign.CalcRMS(deepcopy(molecule), deepcopy(reference), map=atom_map)
-                    if not np.isfinite(rmsd):
-                        raise ValueError("non_finite_rmsd")
-                    metric["rmsd_A"] = float(rmsd)
-                except Exception as error:
-                    metric["errors"].append({"stage": "rmsd", "error": f"{type(error).__name__}: {error}"})
-        if candidate["status"] == "success" and candidate["cfd_traj"] is not None and np.isfinite(candidate["cfd_traj"]):
-            # 评分始终不读取上面计算的rmsd_A; 检查失败的False值按原calc_clash贡献0分.
-            metric["self_ranking"] = float(candidate["cfd_traj"] + int(metric["no_clashes"]) + int(metric["stereo"]))
-        metrics.append(metric)
-    ranked = sorted((metric for metric in metrics if metric["self_ranking"] is not None), key=lambda metric: (-metric["self_ranking"], metric["sample_index"]))
+    metrics = score_saved_candidates(
+        candidates,
+        poses,
+        receptor_molecule if asset_error is None else None,
+        reference if asset_error is None else None,
+        rmsd_reference=reference if asset_error is None else None,
+        asset_error=asset_error,
+        pose_error=pose_error,
+    )
+    ranked = rank_candidate_metrics(metrics)
     assessment = {
         **identity,
         "prepared_smiles": record["prepared_smiles"],

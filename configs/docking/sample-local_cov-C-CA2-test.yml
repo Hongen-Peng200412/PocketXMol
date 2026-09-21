@@ -1,0 +1,27 @@
+# CryoAtom2完整输入组合下的local_cov中心模型标准C0/C5测评。
+model_name: local_cov-C-CA2
+train_config: configs/docking/local_cov-C-T0-RA.yml
+checkpoint: /storage/penghongen/PocketXMol/training/local_cov-C-T0-RA-b72/checkpoints/step=24800.ckpt
+receptor_branch: RA
+dataset:
+  root: /storage/penghongen/Adaligand_infered_receptor_data/cryoatom2/test_0_chain06/Ori_Data
+  derived_root: /storage/penghongen/Adaligand_Build/Ori_Data/pocketxmol
+  smiles_root: /storage/penghongen/AdaLigand/Ori_Data/smiles_assets
+  smiles_coords_root: /storage/penghongen/AdaLigand/Ori_Data/smiles_assets/SMILE_coords/v1
+  manifest_root: /storage/penghongen/PocketXMol/data/smiles-v1/frozen
+  knn: 32
+protocols: [C0, C5]
+split: test
+output_root: /storage/penghongen/PocketXMol/final_evaluation/standard/ca2/local_cov-C
+batch_size: 50
+num_candidates: 50
+num_steps: 100
+device: cuda
+evaluation_workers: 8
+final_thresholds_A: [2.0, 3.0]
+wandb:
+  entity: pencounkdual-111
+  project: PocketXmol_final
+  name: standard_CA2_local_cov_C
+  mode: online
+

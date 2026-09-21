@@ -1,0 +1,38 @@
+# strongest-1到PocketXMol的CryoAtom2受体与配套模拟密度端到端测评。
+receptor_condition: cryoatom2_receptor
+matcher_evaluation: /storage/penghongen/Matcher/evaluation/test_smallmolecule_v1/strongest-1/train_strongest1_revised_job378587_20260920T230727/evaluation.json
+matcher_handoff: /storage/penghongen/Matcher/evaluation/test_smallmolecule_v1/strongest-1/train_strongest1_revised_job378587_20260920T230727/docking_handoff_candidates.jsonl
+receptor_root: /storage/penghongen/Adaligand_infered_receptor_data/cryoatom2/test_0_chain06/Ori_Data
+smiles_root: /storage/penghongen/AdaLigand/Ori_Data/smiles_assets
+smiles_coords_root: /storage/penghongen/AdaLigand/Ori_Data/smiles_assets/SMILE_coords/v1
+output_root: /storage/penghongen/PocketXMol/final_evaluation/end_to_end/CA2
+expected_handoff_count: 268
+expected_pdb_count: 77
+seed_base: 42200000
+knn: 32
+batch_size: 50
+num_candidates: 50
+num_steps: 100
+device: cuda
+models:
+  official:
+    name: official-strongest1-CA2
+    train_config: /storage/penghongen/PocketXMol_official_test/extracted/data/trained_models/pxm/train_config/train.yml
+    checkpoint: /storage/penghongen/PocketXMol_official_test/extracted/data/trained_models/pxm/checkpoints/pocketxmol.ckpt
+    receptor_branch: protein
+  local_c:
+    name: local_cov-C-strongest1-CA2
+    train_config: configs/docking/local_cov-C-T0-RA.yml
+    checkpoint: /storage/penghongen/PocketXMol/training/local_cov-C-T0-RA-b72/checkpoints/step=24800.ckpt
+    receptor_branch: RA
+  local_e:
+    name: local_cov-E-strongest1-CA2
+    train_config: configs/docking/local_cov-E-T0-RA.yml
+    checkpoint: /storage/penghongen/PocketXMol/training/local_cov-E-T0-RA-b72/checkpoints/step=24800.ckpt
+    receptor_branch: RA
+wandb:
+  entity: pencounkdual-111
+  project: PocketXmol_final
+  name: end_to_end_strongest1_CA2
+  mode: online
+

@@ -1,0 +1,27 @@
+# CryoAtom2受体下的官方冻结PocketXMol标准C0/C5/E测评；官方模型不读取密度。
+model_name: official-CA2
+train_config: /storage/penghongen/PocketXMol_official_test/extracted/data/trained_models/pxm/train_config/train.yml
+checkpoint: /storage/penghongen/PocketXMol_official_test/extracted/data/trained_models/pxm/checkpoints/pocketxmol.ckpt
+receptor_branch: protein
+dataset:
+  root: /storage/penghongen/Adaligand_infered_receptor_data/cryoatom2/test_0_chain06/Ori_Data
+  derived_root: /storage/penghongen/Adaligand_Build/Ori_Data/pocketxmol
+  smiles_root: /storage/penghongen/AdaLigand/Ori_Data/smiles_assets
+  smiles_coords_root: /storage/penghongen/AdaLigand/Ori_Data/smiles_assets/SMILE_coords/v1
+  manifest_root: /storage/penghongen/PocketXMol/data/smiles-v1/frozen
+  knn: 32
+protocols: [C0, C5, E]
+split: test
+output_root: /storage/penghongen/PocketXMol/final_evaluation/standard/ca2/official
+batch_size: 50
+num_candidates: 50
+num_steps: 100
+device: cuda
+evaluation_workers: 8
+final_thresholds_A: [2.0, 3.0]
+wandb:
+  entity: pencounkdual-111
+  project: PocketXmol_final
+  name: standard_CA2_official
+  mode: online
+

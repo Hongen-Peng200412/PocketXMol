@@ -1,0 +1,9 @@
+# 既有GT官方冻结权重候选的2/3 Å只读汇总配置，不生成新候选。
+model_name: official-SMILES
+dataset:
+  manifest_root: /storage/penghongen/PocketXMol/data/smiles-v1/frozen
+protocols: [C0, C5, E]
+split: test
+output_root: /storage/penghongen/PocketXMol/sampling/official-SMILES
+final_thresholds_A: [2.0, 3.0]
+

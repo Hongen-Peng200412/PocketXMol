@@ -300,6 +300,77 @@ def sample_occurrence(dataset, index, model, noiser, featurizer, config, protoco
     return result
 
 
+def load_sampling_runtime(config):
+    """从明确训练配置与checkpoint装配标准测评和端到端测评共用的推理运行时。
+
+    输入参数:
+        - config: EasyDict，必须含 ``train_config``、``checkpoint``、``receptor_branch``
+          和 ``device``；字段语义与 ``sample_docking`` 相同。
+
+    返回值:
+        - train_config: EasyDict，实际训练YAML。
+        - model_config: EasyDict，已经按当前受体分支写入 ``nucleic_branch`` 的模型配置。
+        - model: PMAsymDenoiser，严格加载checkpoint中 ``model.`` 参数并切到eval模式。
+        - featurizer: FeaturizeMol，负责原配体类别和世界坐标解码。
+        - transforms: Compose，依次执行原配体特征化和free dock任务变换。
+        - sample_config: EasyDict，原dock采样调度配置；调用方只覆盖 ``num_steps``。
+
+    本函数不读取实例清单、不写运行记录，也不生成候选。两个测评入口据此共享模型加载、
+    T0采样器配置和原free dock变换，避免端到端入口另建一套模型或噪声系统。
+    """
+    train_config = make_config(config.train_config)
+    featurizer = FeaturizeMol(train_config.transforms.featurizer)
+    model_config = deepcopy(train_config.model)
+    model_config.nucleic_branch = (
+        None if config.receptor_branch == "protein" else config.receptor_branch
+    )
+    model = PMAsymDenoiser(
+        model_config,
+        featurizer.num_node_types,
+        featurizer.num_edge_types,
+        pocket_in_dim=25,
+    ).to(config.device)
+    checkpoint = torch.load(config.checkpoint, map_location="cpu", weights_only=False)
+    # 只加载Lightning state_dict中的model.参数；loss、优化器和调度状态不进入推理。
+    model.load_state_dict(
+        {
+            key[len("model.") :]: value
+            for key, value in checkpoint["state_dict"].items()
+            if key.startswith("model.")
+        },
+        strict=True,
+    )
+    model.eval()
+    del checkpoint
+
+    task_transform = get_transforms(
+        EasyDict(name="dock", settings={"free": 1}, free_no_geometry=True),
+        mode="test",
+    )
+    transforms = Compose([featurizer, task_transform])
+    sample_config = make_config(
+        str(
+            Path(__file__).resolve().parents[1]
+            / "configs/sample/test/dock_poseboff/base.yml"
+        )
+    )
+    return train_config, model_config, model, featurizer, transforms, sample_config
+
+
+def build_sampling_noiser(config, train_config, sample_config, featurizer):
+    """按当前正式步数构造原dock采样器，中心、包络和端到端阶段共用T0公式。"""
+    noise_config = deepcopy(sample_config.noise)
+    noise_config.num_steps = config.num_steps
+    return get_sample_noiser(
+        noise_config,
+        featurizer.num_node_types,
+        featurizer.num_edge_types,
+        mode="sample",
+        device=config.device,
+        ref_config=train_config.noise,
+    )
+
+
 def sample_docking(config):
     """装配明确 checkpoint, 顺序完成一个模型获准的全部定位协议.
 
@@ -327,7 +398,9 @@ def sample_docking(config):
 
     模型确实加载成功后才冻结run.json. 各实例文件由sample_occurrence保存; 标准输出打印身份、协议、成功数和耗时, 由正式任务日志留存. 续跑只放行资源和记录偏好变化, 不覆盖已完成候选.
     """
-    train_config = make_config(config.train_config)
+    train_config, model_config, model, featurizer, transforms, sample_config = (
+        load_sampling_runtime(config)
+    )
     split_dir = Path(config.output_root) / config.split
     split_dir.mkdir(parents=True, exist_ok=True)
     run_path = split_dir / "run.json"
@@ -337,27 +410,12 @@ def sample_docking(config):
         previous = json.loads(run_path.read_text(encoding="utf-8"))
         if previous["science_config"] != science_config or previous["training_config"] != train_config:
             raise ValueError("sampling_output_contains_a_different_experiment")
-    featurizer = FeaturizeMol(train_config.transforms.featurizer)
-
-    model_config = deepcopy(train_config.model)
-    model_config.nucleic_branch = None if config.receptor_branch == "protein" else config.receptor_branch
-
-    model = PMAsymDenoiser(model_config, featurizer.num_node_types, featurizer.num_edge_types, pocket_in_dim=25).to(config.device)
-    checkpoint = torch.load(config.checkpoint, map_location="cpu", weights_only=False)
-    # 只加载 Lightning state_dict 中 model. 参数; loss、优化器和调度器状态不进入推理模型.
-    model.load_state_dict({key[len("model."):]: value for key, value in checkpoint["state_dict"].items() if key.startswith("model.")}, strict=True)
-    model.eval()
-    del checkpoint
     if not run_path.exists():
         # 模型确实加载成功后才冻结首次运行记录, 避免错误checkpoint路径占据尚未开始的实验目录.
         run_record = {"started_at": datetime.now(timezone.utc).isoformat(), "science_config": science_config, "configuration": config, "training_config": train_config}
         temporary_run = split_dir / "run.json.tmp"
         temporary_run.write_text(json.dumps(run_record, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
         temporary_run.replace(run_path)
-    task_transform = get_transforms(EasyDict(name="dock", settings={"free": 1}, free_no_geometry=True), mode="test")
-    transforms = Compose([featurizer, task_transform])
-    # 原 docking 测试配置定义 advance 调度, 直接复用该成熟配置, 只接入已批准的步数; C0/C5使用同一T0噪声公式.
-    sample_config = make_config(str(Path(__file__).resolve().parents[1] / "configs/sample/test/dock_poseboff/base.yml"))
     for protocol in config.protocols:
         dataset_config = deepcopy(config.dataset)
         dataset_config.pocket_mode = "envelope" if protocol == "E" else "center"
@@ -365,9 +423,8 @@ def sample_docking(config):
         # 模型配置唯一决定是否读取密度; C0/C5只改变实际给定中心, 不改变T0采样公式.
         dataset = OccurrenceDataset(dataset_config, config.split, transforms, config.receptor_branch, protocol, shuffle=False, density_config=model_config.get('density'))
 
-        noise_config = deepcopy(sample_config.noise)
-        noise_config.num_steps = config.num_steps
-        noiser = get_sample_noiser(noise_config, featurizer.num_node_types, featurizer.num_edge_types, mode="sample", device=config.device, ref_config=train_config.noise)
+        # 每个协议重新装配同一原advance调度；C0、C5与E都使用相同T0噪声公式。
+        noiser = build_sampling_noiser(config, train_config, sample_config, featurizer)
         for index in range(len(dataset.records)):
             result = sample_occurrence(dataset, index, model, noiser, featurizer, config, protocol)
             print(json.dumps({key: result[key] for key in ("model_name", "protocol", "pdb_id", "occurrence_id", "status", "success_count", "num_candidates", "elapsed_seconds")}, ensure_ascii=False), flush=True)
