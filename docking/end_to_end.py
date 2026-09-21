@@ -78,6 +78,10 @@ def prepare_initial_records(config):
     只读取 ``source_probability_mean``、``small_molecule`` 和当前 ``receptor_condition``。
     Matcher handoff必须能按 ``(pdb_id, source_blob_index)`` 唯一回连prediction与完整trace；
     记录不保留Matcher文件哈希、checkpoint哈希、运行环境或耗时。
+
+    ``base.jsonl`` 保留 matched occurrence、目标 SMILES、排名和计费字段, 只供最终评价。
+    ``official-c.jsonl`` 与 ``local-c1.jsonl`` 只含推理身份、预测 SMILES、实际中心和种子;
+    后续 C2/E 清单继承同一边界, 不含目标身份或沉积坐标。
     """
     evaluation = json.loads(Path(config.matcher_evaluation).read_text(encoding="utf-8"))
     handoff = [
@@ -294,7 +298,13 @@ def _sampling_config(config, stage):
 
 
 def sample_end_to_end_stage(config, stage):
-    """加载一个冻结模型并为当前受体条件顺序完成一个端到端阶段。"""
+    """加载冻结模型并在核对科学身份后完成一个端到端阶段。
+
+    阶段 ``run.json`` 冻结模型、checkpoint、受体与 SMILES 根、受体分支、口袋模式、
+    kNN 和采样预算。每候选 ``scientific_input.json`` 冻结 PDB、候选编号、精确 SMILES、
+    种子及实际中心、预测包络或上一步错误, 不含评价真值。任一字段不一致, 或旧
+    ``result.json`` 缺少该身份记录时, 均拒绝复用已有结果。
+    """
     if stage not in STAGES:
         raise ValueError(f"未知端到端阶段: {stage}")
     records = read_jsonl(stage_input_path(config, stage))

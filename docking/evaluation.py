@@ -138,10 +138,19 @@ def score_saved_candidates(
                         {"stage": "clashes", "error": f"{type(error).__name__}: {error}"}
                     )
                 try:
+                    # 无坐标SMILES模板复用当前候选坐标, 让InChI只由精确SMILES的
+                    # 化学图/显式手性与该候选自身几何共同决定, 不读取沉积构象。
+                    stereo_template = stereo_reference
+                    if stereo_reference.GetNumConformers() == 0:
+                        stereo_template = Chem.Mol(stereo_reference)
+                        stereo_template.AddConformer(
+                            Chem.Conformer(molecule.GetConformer()),
+                            assignId=True,
+                        )
                     metric["stereo"] = bool(
                         check_identity(
                             molecule,
-                            stereo_reference,
+                            stereo_template,
                             inchi_options="w",
                         )["results"]["stereo"]
                     )

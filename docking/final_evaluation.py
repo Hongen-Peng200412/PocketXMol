@@ -246,7 +246,12 @@ def _read_ranking(config, stage, record):
 
 
 def summarize_end_to_end(direct_results, pdb_ids):
-    """计算固定77个PDB的site@K×pose@M×严格RMSD阈值主表。"""
+    """计算固定77个PDB的site@K×pose@M×严格RMSD阈值主表。
+
+    site@K 只纳入 ``attempt_index <= K`` 的计费候选; K=20 是汇总边界, 不是推理
+    截断。``pdb_ids`` 的77个PDB始终构成分母。未采样、公共评价资产失败或单阶段
+    评价失败均在各 pose@M 和严格小于2/3 Å阈值下计为失败。
+    """
     by_pdb = defaultdict(list)
     for result in direct_results:
         by_pdb[result["pdb_id"]].append(result)
@@ -284,7 +289,13 @@ def summarize_end_to_end(direct_results, pdb_ids):
 
 
 def evaluate_end_to_end(config):
-    """评价四种获准方法并生成候选索引、完整轨迹和77-PDB主表。"""
+    """评价四种方法并生成直接结果、扩展轨迹和77-PDB主表。
+
+    ``docking_results.jsonl`` 只逐项记录身份正确且实际要求 docking 的 handoff 候选。
+    扩展 ``evaluation.json`` 保留背景、非Stage3免费跳过和身份错误在内的完整 Matcher
+    轨迹, 并增加各方法的推理与评价状态。二者共用固定77个PDB分母; 失败状态不会
+    从 site@K×pose@M 汇总中删除。
+    """
     base_records = read_jsonl(Path(config.output_root) / "inputs" / "base.jsonl")
     evaluation = json.loads(Path(config.matcher_evaluation).read_text(encoding="utf-8"))
     predictions = {
