@@ -2,7 +2,7 @@
 
 ## 当前状态与产物
 
-- 状态：验收完成；GT第一次`local_cov-C`已完成280/280，正在依据其Top-1预测准备第二次C输入；CA2第一次`local_cov-C`为48/268，完成后再进入第二次C。
+- 状态：验收完成；GT与CA2的第一次`local_cov-C`分别完成280/280和268/268，两套输入域均正在依据第一次C的Top-1预测准备第二次C输入。
 - 过程：复用第一次local_cov-C，按冻结self-ranking选择Top-1质心，再执行第二次local_cov-C；第二次50候选是唯一最终候选池。
 - 正式release：`/home/penghongen/Feedback/PocketXMol/releases/PocketXMol_5032ab445d5e/PocketXMol`。
 - GT产物根：`/storage/penghongen/PocketXMol/final_evaluation/end_to_end/GT`；结果与W&B待运行完成后填写。

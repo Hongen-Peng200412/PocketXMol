@@ -2,7 +2,7 @@
 
 ## 当前状态与产物
 
-- 状态：验收完成；GT第一次`local_cov-C`已完成并正在准备第二次C输入，CA2第一次`local_cov-C`为48/268；两套输入域仍需各自完成第二次C，之后才进入预测E。
+- 状态：验收完成；GT与CA2的第一次`local_cov-C`均已完成，两套输入域正在准备第二次C输入；各自完成第二次C后才进入预测E。
 - 过程：复用两次local_cov-C，以第二次C的Top-1预测重原子坐标构造现行E口袋，再执行local_cov-E；E的50候选是唯一最终候选池。
 - 正式release：`/home/penghongen/Feedback/PocketXMol/releases/PocketXMol_5032ab445d5e/PocketXMol`。
 - GT产物根：`/storage/penghongen/PocketXMol/final_evaluation/end_to_end/GT`；结果与W&B待运行完成后填写。
