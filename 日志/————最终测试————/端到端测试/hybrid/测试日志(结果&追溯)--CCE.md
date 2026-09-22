@@ -2,7 +2,7 @@
 
 ## 当前状态与产物
 
-- 状态：验收完成；GT正式流程已启动，当前等待两次local_cov-C候选；CA2尚未启动。
+- 状态：验收完成；GT与CA2正式流程均已启动，当前等待各自两次local_cov-C候选后进入E。
 - 过程：复用两次local_cov-C，以第二次C的Top-1预测重原子坐标构造现行E口袋，再执行local_cov-E；E的50候选是唯一最终候选池。
 - 正式release：`/home/penghongen/Feedback/PocketXMol/releases/PocketXMol_5032ab445d5e/PocketXMol`。
 - GT产物根：`/storage/penghongen/PocketXMol/final_evaluation/end_to_end/GT`；结果与W&B待运行完成后填写。
@@ -11,6 +11,7 @@
 
 ```bash
 bash 训练与运行/sh/final_end_to_end.sh end-to-end-GT
+bash 训练与运行/sh/final_end_to_end.sh end-to-end-CA2
 ```
 
 ## 测试、门控与只读核查命令
