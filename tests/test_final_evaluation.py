@@ -44,6 +44,8 @@ def test_unmarked_smiles_template_keeps_stereo_term_in_self_ranking():
     """无显式立体标记时, 端到端候选均获得冻结公式中的 stereo 项. """
     template = Chem.MolFromSmiles("CC(O)F")
     poses = [Chem.Mol(template), Chem.Mol(template)]
+    for sample_index, pose in enumerate(poses):
+        pose.SetIntProp("sample_index", sample_index)
     candidates = [
         {"sample_index": 0, "status": "success", "sdf_index": 0, "cfd_traj": 0.4},
         {"sample_index": 1, "status": "success", "sdf_index": 1, "cfd_traj": 0.2},
