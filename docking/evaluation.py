@@ -28,6 +28,37 @@ from utils.buster_tools import check_identity, check_intermolecular_distance
 STANDARD_RESIDUES = ("ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS", "ILE", "LEU", "LYS", "MET", "PHE", "PRO", "SER", "THR", "TRP", "TYR", "VAL", "A", "C", "G", "U", "DA", "DC", "DG", "DT")
 
 
+def matches_explicit_stereo(molecule, smiles_template):
+    """只检查精确SMILES模板明确声明的原子和双键立体化学。
+
+    ``smiles_template`` 是无三维构象的精确预测SMILES分子。模板未声明的潜在立体中心
+    不参与端到端中间轮判定；模板明确声明立体化学时，候选的三维构象必须与之相符。
+    两个分子的原子数和键数还必须一致，避免把子结构匹配误当成完整身份匹配。
+    """
+    has_explicit_atom_stereo = any(
+        atom.GetChiralTag() != Chem.ChiralType.CHI_UNSPECIFIED
+        for atom in smiles_template.GetAtoms()
+    )
+    has_explicit_bond_stereo = any(
+        bond.GetStereo() != Chem.BondStereo.STEREONONE
+        for bond in smiles_template.GetBonds()
+    )
+    if not has_explicit_atom_stereo and not has_explicit_bond_stereo:
+        return True
+    if (
+        molecule.GetNumAtoms() != smiles_template.GetNumAtoms()
+        or molecule.GetNumBonds() != smiles_template.GetNumBonds()
+    ):
+        return False
+
+    candidate = Chem.Mol(molecule)
+    if candidate.GetNumConformers() > 0:
+        Chem.AssignAtomChiralTagsFromStructure(candidate, replaceExistingTags=True)
+        Chem.AssignStereochemistryFrom3D(candidate)
+    Chem.AssignStereochemistry(candidate, cleanIt=True, force=True)
+    return bool(candidate.HasSubstructMatch(smiles_template, useChirality=True))
+
+
 def build_receptor_molecule(receptor):
     """把完整标准受体数组转为碰撞检查使用的无键RDKit分子。
 
@@ -138,13 +169,19 @@ def score_saved_candidates(
                         {"stage": "clashes", "error": f"{type(error).__name__}: {error}"}
                     )
                 try:
-                    metric["stereo"] = bool(
-                        check_identity(
+                    if stereo_reference.GetNumConformers() == 0:
+                        metric["stereo"] = matches_explicit_stereo(
                             molecule,
                             stereo_reference,
-                            inchi_options="w",
-                        )["results"]["stereo"]
-                    )
+                        )
+                    else:
+                        metric["stereo"] = bool(
+                            check_identity(
+                                molecule,
+                                stereo_reference,
+                                inchi_options="w",
+                            )["results"]["stereo"]
+                        )
                 except Exception as error:
                     metric["errors"].append(
                         {"stage": "stereo", "error": f"{type(error).__name__}: {error}"}

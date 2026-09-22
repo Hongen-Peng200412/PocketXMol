@@ -154,11 +154,6 @@ def test_conditioned_non_test_sampling_uses_real_models(
         sampling.dataset.smiles_root,
         source['prepared_smiles'],
     )['mol']
-    reference = Chem.Mol(template)
-    conformer = Chem.Conformer(len(coordinates))
-    for atom_index, position in enumerate(coordinates):
-        conformer.SetAtomPosition(atom_index, position.tolist())
-    reference.AddConformer(conformer, assignId=True)
     receptor = read_receptor(
         Path(sampling.dataset.root)
         / 'parse'
@@ -167,16 +162,24 @@ def test_conditioned_non_test_sampling_uses_real_models(
     )
     receptor_molecule = build_receptor_molecule(receptor)
     candidates = json.loads((output_dir / result['candidate_file']).read_text())
-    with_coords = score_saved_candidates(
-        candidates, poses, receptor_molecule, reference, rmsd_reference=None
-    )
-    without_coords = score_saved_candidates(
+    metrics = score_saved_candidates(
         candidates, poses, receptor_molecule, template, rmsd_reference=None
     )
-    assert [item['stereo'] for item in with_coords] == [item['stereo'] for item in without_coords]
-    assert [item['self_ranking'] for item in with_coords] == [item['self_ranking'] for item in without_coords]
-    assert [item['sample_index'] for item in rank_candidate_metrics(with_coords)] == [
-        item['sample_index'] for item in rank_candidate_metrics(without_coords)
+    assert not any(
+        atom.GetChiralTag() != Chem.ChiralType.CHI_UNSPECIFIED
+        for atom in template.GetAtoms()
+    )
+    assert not any(
+        bond.GetStereo() != Chem.BondStereo.STEREONONE
+        for bond in template.GetBonds()
+    )
+    assert all(item['stereo'] for item in metrics)
+    assert [item['sample_index'] for item in rank_candidate_metrics(metrics)] == [
+        item['sample_index']
+        for item in sorted(
+            metrics,
+            key=lambda item: (-item['self_ranking'], item['sample_index']),
+        )
     ]
 
 

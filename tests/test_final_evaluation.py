@@ -7,12 +7,15 @@ from pathlib import Path
 import torch
 from easydict import EasyDict
 from rdkit import Chem
-from rdkit.Chem import AllChem
 from torch_geometric.transforms import Compose
 
 from docking.dataset import ConditionedDockingDataset, OccurrenceDataset
 from docking.end_to_end import prepare_initial_records
-from docking.evaluation import rank_candidate_metrics, score_saved_candidates
+from docking.evaluation import (
+    matches_explicit_stereo,
+    rank_candidate_metrics,
+    score_saved_candidates,
+)
 from docking.final_evaluation import summarize_end_to_end
 from docking.smiles import read_smiles_coords
 from utils.misc import make_config
@@ -20,27 +23,31 @@ from utils.transforms import ConfTransform, FeaturizeMol
 from test_docking_data import prepared_data
 
 
-def test_smiles_template_preserves_stereo_ranking_without_reference_coordinates():
-    """去除沉积参考坐标不改变 stereo、self-ranking 或 Top-1."""
-    template = Chem.MolFromSmiles("C[C@H](O)F")
-    reference = Chem.AddHs(Chem.Mol(template))
-    AllChem.EmbedMolecule(reference, randomSeed=91021)
-    reference = Chem.RemoveHs(reference)
-    poses = [Chem.Mol(reference), Chem.Mol(reference)]
+def test_smiles_template_only_checks_explicit_stereo():
+    """未声明立体中心不判错，显式模板仍区分相反构型。"""
+    unspecified = Chem.MolFromSmiles("CC(O)F")
+    expected = Chem.MolFromSmiles("C[C@H](O)F")
+    opposite = Chem.MolFromSmiles("C[C@@H](O)F")
+    assert matches_explicit_stereo(opposite, unspecified)
+    assert matches_explicit_stereo(expected, expected)
+    assert not matches_explicit_stereo(opposite, expected)
+
+
+def test_unmarked_smiles_template_keeps_stereo_term_in_self_ranking():
+    """无显式立体标记时，端到端候选均获得冻结公式中的 stereo 项。"""
+    template = Chem.MolFromSmiles("CC(O)F")
+    poses = [Chem.Mol(template), Chem.Mol(template)]
     candidates = [
         {"sample_index": 0, "status": "success", "sdf_index": 0, "cfd_traj": 0.4},
         {"sample_index": 1, "status": "success", "sdf_index": 1, "cfd_traj": 0.2},
     ]
     receptor = Chem.MolFromSmiles("")
-    with_coords = score_saved_candidates(
-        candidates, poses, receptor, reference, rmsd_reference=None
-    )
-    without_coords = score_saved_candidates(
+    metrics = score_saved_candidates(
         candidates, poses, receptor, template, rmsd_reference=None
     )
-    assert [item["stereo"] for item in with_coords] == [item["stereo"] for item in without_coords]
-    assert [item["self_ranking"] for item in with_coords] == [item["self_ranking"] for item in without_coords]
-    assert rank_candidate_metrics(with_coords)[0]["sample_index"] == rank_candidate_metrics(without_coords)[0]["sample_index"]
+    assert [item["stereo"] for item in metrics] == [True, True]
+    assert [item["self_ranking"] for item in metrics] == [1.4, 1.2]
+    assert rank_candidate_metrics(metrics)[0]["sample_index"] == 0
 
 
 def test_predicted_envelope_reuses_standard_envelope_condition(prepared_data):
