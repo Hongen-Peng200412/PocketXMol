@@ -55,7 +55,7 @@ def test_conditioned_non_test_sampling_uses_real_models(
     config_name,
     protocol,
 ):
-    """用validation实例核对无真值入口可完成真实模型GPU采样并只还原一次世界坐标。"""
+    """用validation实例核对无真值入口可完成真实模型GPU采样并只还原一次世界坐标. """
     root = Path(__file__).resolve().parents[1]
     sampling = make_config(str(root / 'configs' / 'docking' / config_name))
     sampling.update(
@@ -66,7 +66,7 @@ def test_conditioned_non_test_sampling_uses_real_models(
         batch_size=2,
         device='cuda',
     )
-    # 非测试门控读取已验收的GT validation资产；CA2正式根只覆盖冻结test对象。
+    # 非测试门控读取已验收的GT validation资产; CA2正式根只覆盖冻结test对象.
     sampling.dataset.root = '/storage/penghongen/AdaLigand/Ori_Data'
     train_config, model_config, model, featurizer, transforms, sample_config = (
         load_sampling_runtime(sampling)
@@ -199,7 +199,7 @@ def test_official_weights_native_bf16_training_and_stopped_restore(prepared_data
         if name.startswith('model.'):
             torch.testing.assert_close(model.state_dict()[name], value, rtol=0, atol=0)
     del official
-    # float32, (128,15), 保存核酸投影初值, 后面确认原loss确实训练新增参数.
+    # float32, (128, 15), 保存核酸投影初值, 后面确认原loss确实训练新增参数.
     initial_nucleic_weight = model.model.nucleic_embedder.weight.detach().clone()
     checkpoint = DockingCheckpoint(str(tmp_path / 'checkpoints'), 'gpu-contract-check')
     trainer_config = dict(accelerator='gpu', devices=1, precision='bf16-mixed', max_steps=1, max_epochs=-1, logger=False, enable_progress_bar=False, enable_model_summary=False, num_sanity_val_steps=0, check_val_every_n_epoch=None, val_check_interval=1, accumulate_grad_batches=2)
@@ -233,7 +233,7 @@ def test_official_weights_native_bf16_training_and_stopped_restore(prepared_data
 @pytest.mark.skipif(not torch.cuda.is_available(), reason='需要实际授权的CUDA GPU')
 @pytest.mark.parametrize('experiment', ['local_cov-C-T0-RA', 'local_cov-E-T0-RA'])
 def test_real_data_training_and_sampling_budget(tmp_path, monkeypatch, experiment):
-    """用真实非test资产检查local_cov训练、显存、原损失及采样评价，不设姿态质量阈值。"""
+    """用真实非test资产检查local_cov训练、显存、原损失及采样评价, 不设姿态质量阈值. """
     root = Path(__file__).resolve().parents[1]
     config = make_config(str(root / f'configs/docking/{experiment}.yml'))
     # 门控只运行2次优化器更新, 因此把本次回调验证间隔缩为2; 正式YAML仍为每800次更新验证.

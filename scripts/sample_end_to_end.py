@@ -1,4 +1,9 @@
-"""读取一个端到端冻结阶段清单并调用原PocketXMol采样循环。"""
+"""读取一个端到端冻结阶段清单并调用原 PocketXMol 采样循环.
+
+命令行接收端到端 YAML 和唯一阶段名. 主逻辑由
+``docking.end_to_end.sample_end_to_end_stage`` 提供, 在 official 或 local_cov 阶段目录保存
+逐候选科学身份、50 个候选、世界坐标 SDF、原置信度、完成记录和无真值 ranking.
+"""
 
 import argparse
 import sys

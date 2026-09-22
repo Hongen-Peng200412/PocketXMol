@@ -1,4 +1,4 @@
-"""核对CA2标准汇总与strongest-1端到端输入、迭代和计费契约。"""
+"""核对CA2标准汇总与strongest-1端到端输入、迭代和计费契约. """
 
 import json
 from copy import deepcopy
@@ -24,7 +24,7 @@ from test_docking_data import prepared_data
 
 
 def test_smiles_template_only_checks_explicit_stereo():
-    """未声明立体中心不判错，显式模板仍区分相反构型。"""
+    """未声明立体中心不判错, 显式原子与双键模板仍区分相反构型."""
     unspecified = Chem.MolFromSmiles("CC(O)F")
     expected = Chem.MolFromSmiles("C[C@H](O)F")
     opposite = Chem.MolFromSmiles("C[C@@H](O)F")
@@ -32,9 +32,16 @@ def test_smiles_template_only_checks_explicit_stereo():
     assert matches_explicit_stereo(expected, expected)
     assert not matches_explicit_stereo(opposite, expected)
 
+    unspecified_bond = Chem.MolFromSmiles("FC=CF")
+    expected_bond = Chem.MolFromSmiles("F/C=C/F")
+    opposite_bond = Chem.MolFromSmiles("F/C=C\\F")
+    assert matches_explicit_stereo(opposite_bond, unspecified_bond)
+    assert matches_explicit_stereo(expected_bond, expected_bond)
+    assert not matches_explicit_stereo(opposite_bond, expected_bond)
+
 
 def test_unmarked_smiles_template_keeps_stereo_term_in_self_ranking():
-    """无显式立体标记时，端到端候选均获得冻结公式中的 stereo 项。"""
+    """无显式立体标记时, 端到端候选均获得冻结公式中的 stereo 项. """
     template = Chem.MolFromSmiles("CC(O)F")
     poses = [Chem.Mol(template), Chem.Mol(template)]
     candidates = [
@@ -51,7 +58,7 @@ def test_unmarked_smiles_template_keeps_stereo_term_in_self_ranking():
 
 
 def test_predicted_envelope_reuses_standard_envelope_condition(prepared_data):
-    """同一坐标进入标准E与预测E时，口袋、原点、密度几何和模型输入逐项一致。"""
+    """同一坐标进入标准E与预测E时, 口袋、原点、密度几何和模型输入逐项一致. """
     root = Path(__file__).resolve().parents[1]
     training = make_config(str(root / "configs/docking/local_cov-E-T0-RA.yml"))
     featurizer = FeaturizeMol(training.transforms.featurizer)
@@ -123,7 +130,7 @@ def test_predicted_envelope_reuses_standard_envelope_condition(prepared_data):
 
 
 def test_initial_manifest_keeps_unselected_and_rank_beyond_twenty(tmp_path):
-    """身份正确handoff不受selected、raw_rank或attempt_index 20截断。"""
+    """身份正确handoff不受selected、raw_rank或attempt_index 20截断. """
     predictions = []
     trace = []
     handoff = []
@@ -217,7 +224,7 @@ def test_initial_manifest_keeps_unselected_and_rank_beyond_twenty(tmp_path):
 
 
 def test_site_twenty_is_summary_boundary_not_candidate_boundary():
-    """attempt 21保留在直接结果中，但不会误计入site@20。"""
+    """attempt 21保留在直接结果中, 但不会误计入site@20. """
     failed = {
         "success": {
             "2.0": {"1": False, "5": False, "50": False},

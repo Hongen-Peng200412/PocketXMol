@@ -1,6 +1,8 @@
 """把冻结 occurrence 清单装配为原 PocketMolData, 接入原 free docking 变换.
 
-主要入口是 OccurrenceDataset. 它读取公共SMILES图、沉积配体坐标和完整标准受体, 在内存选择口袋、编码蛋白/核酸、确定模型原点, 最后交给调用方提供的原配体特征、任务和噪声变换.
+公共入口 ``assemble_docking_condition`` 统一完成受体条件装配. ``OccurrenceDataset`` 为标准
+训练与测评读取沉积配体坐标, ``ConditionedDockingDataset`` 为端到端推理读取冻结中心或上一轮
+预测构象. 三个入口共用口袋选择、RA 编码、模型原点、密度输入和原 free docking 变换.
 本模块不落盘, 不重新构建科学资产. 训练对合法实例均匀有放回抽样; 有限验证按 worker 跨步分片, 不丢尾部.
 """
 
@@ -46,33 +48,39 @@ def assemble_docking_condition(
     ligand_coords,
     given_center,
 ):
-    """以一组世界坐标装配中心或包络条件，并执行原配体变换。
+    """以一组世界坐标装配中心或包络条件, 并执行原配体变换.
 
-    该函数是标准 ``OccurrenceDataset`` 与无真值端到端 Dataset 的唯一受体条件入口。
-    两者只在 ``ligand_coords`` 和 ``given_center`` 的来源上不同；残基选择、RA 过滤、
-    模型原点、密度查询与原 ``FeaturizeMol``/dock 任务变换完全共用。
+    该函数是标准 ``OccurrenceDataset`` 与无真值端到端 Dataset 的唯一受体条件入口.
+    两者只在 ``ligand_coords`` 和 ``given_center`` 的来源上不同; 残基选择、RA 过滤、
+    模型原点、密度查询与原 ``FeaturizeMol``/dock 任务变换完全共用.
+
+    形状符号:
+        - N: 完整配体重原子数.
+        - P_full: 完整标准受体重原子数.
+        - P: 当前模型实际输入的口袋受体重原子数.
+        - P_na: P 个口袋原子中的核酸重原子数.
+        - M: 配体无向化学键数.
+        - E_p: 口袋受体 kNN 图的有向边数.
 
     输入参数:
-        - dataset_config: Mapping，至少含 ``pocket_mode`` 与 ``knn``；前者为 ``center``
-          或 ``envelope``。
-        - root: Path，当前受体条件的资产根，含 ``parse``，密度模型还须含 ``density``。
-        - transforms: callable，原配体特征化与 dock 任务变换的组合。
-        - receptor_branch: str，``protein`` 使用官方蛋白入口，``RA`` 使用共享蛋白/核酸图。
-        - density_config: Mapping|None，``None`` 为无密度模型，否则必须是 ``local_cov``。
-        - pdb_id: str，当前结构编号。
-        - sample_id: int，当前输入在其冻结清单中的实例编号，只用于模型数据身份。
-        - prepared_smiles: str，精确 SMILES 字符串。
-        - graph: dict，由 ``read_smiles_graph`` 返回，原子顺序与 ``ligand_coords`` 一致。
-        - ligand_coords: float32，(N,3)，世界 XYZ、Å。包络模式用它选择残基和查询密度；
-          中心模式只把它作为原任务变换所需的坐标占位，正式采样随后清零局部坐标。
-        - given_center: float32，(3,)，中心模式的实际给定中心；包络模式不以它定义口袋。
+        - dataset_config: Mapping, 至少含 ``pocket_mode`` 与 ``knn``; 前者为 ``center`` 或 ``envelope``.
+        - root: Path, 当前受体条件的资产根, 含 ``parse``, 密度模型还须含 ``density``.
+        - transforms: callable, 原配体特征化与 dock 任务变换的组合.
+        - receptor_branch: str, ``protein`` 使用官方蛋白入口, ``RA`` 使用共享蛋白/核酸图.
+        - density_config: Mapping|None, ``None`` 为无密度模型, 否则必须是 ``local_cov``.
+        - pdb_id: str, 当前结构编号.
+        - sample_id: int, 当前输入在其冻结清单中的实例编号, 只用于模型数据身份.
+        - prepared_smiles: str, 精确 SMILES 字符串.
+        - graph: dict, 由 ``read_smiles_graph`` 返回, 原子顺序与 ``ligand_coords`` 一致.
+        - ligand_coords: float32, (N, 3), 世界 XYZ 坐标, 单位 Å; 包络模式用它选择残基和查询密度, 中心模式只把它作为原任务变换所需的坐标占位, 正式采样随后清零局部坐标.
+        - given_center: float32, (3,), 中心模式的实际给定中心, 世界 XYZ 坐标, 单位 Å; 包络模式不以它定义口袋.
 
     返回值:
-        - data: PocketMolData，已经完成受体装配及调用方传入的原配体变换。
+        - data: PocketMolData, 已经完成受体装配及调用方传入的原配体变换.
 
     异常:
-        - EmptyEnvelopePocketError: RA 包络没有选入任何标准受体原子。
-        - KeyError: ``local_cov`` 受体资产缺少 ``feat``。
+        - EmptyEnvelopePocketError: RA 包络没有选入任何标准受体原子.
+        - KeyError: ``local_cov`` 受体资产缺少 ``feat``.
     """
     ligand_coords = np.asarray(ligand_coords, dtype=np.float32)
     given_center = np.asarray(given_center, dtype=np.float32).reshape(3)
@@ -83,20 +91,20 @@ def assemble_docking_condition(
         )
 
     receptor = read_receptor(root / "parse" / pdb_id / "receptor_tokens.npz")
-    # bool, (P_full,), P_full为完整标准受体重原子数；True保留该原子所属的完整残基。
+    # bool, (P_full,), P_full为完整标准受体重原子数; True保留该原子所属的完整残基.
     selected = select_pocket(receptor, ligand_coords, given_center, dataset_config.pocket_mode)
     protein_count = int(np.sum(selected & (receptor["res_type"] < 20)))
     nucleic_count = int(np.sum(selected & (receptor["res_type"] >= 20)))
     if receptor_branch == "protein":
         selected &= receptor["res_type"] < 20
-    # 逐原子数组沿同一个掩码切分；P是当前模型实际输入的口袋重原子数。
+    # 逐原子数组沿同一个掩码切分; P是当前模型实际输入的口袋重原子数.
     pocket = {key: value[selected] for key, value in receptor.items()}
     if dataset_config.pocket_mode == "envelope" and receptor_branch == "RA" and len(pocket["coords"]) == 0:
         raise EmptyEnvelopePocketError(f"empty_envelope_pocket: {pdb_id}/{sample_id}")
 
     pocket_pos = torch.from_numpy(pocket["coords"])
     pocket_is_nucleic = torch.from_numpy(pocket["res_type"] >= 20)
-    # (M,)和(2,M)，公共SMILES图已经映射为原模型键类别与公共原子顺序。
+    # (M,) 和 (2, M), 公共 SMILES 图已经映射为原模型键类别与公共原子顺序.
     bond_types, bond_index = graph["bond_type"], graph["bond_index"]
     data = PocketMolData(
         data_id=f"{pdb_id}_{sample_id}",
@@ -119,7 +127,7 @@ def assemble_docking_condition(
         pocket_nucleic_count=nucleic_count,
     )
     if receptor_branch == "protein":
-        # 官方只读蛋白，并保留原FeaturizePocket对空蛋白的实际行为。
+        # 官方只读蛋白, 并保留原FeaturizePocket对空蛋白的实际行为.
         data.pocket_element = torch.from_numpy(pocket["element"].astype(np.int64))
         data.pocket_atom_to_aa_type = torch.from_numpy(PROTEIN_CLASS[pocket["res_type"]])
         data.pocket_is_backbone = torch.from_numpy(pocket["is_backbone"])
@@ -128,7 +136,7 @@ def assemble_docking_condition(
             pocket_config.center = given_center.tolist()
         data = FeaturizePocket(pocket_config)(data)
     else:
-        # (1,3)，中心模式取实际给定中心；包络模式取实际选入受体原子的算术均值。
+        # (1, 3), 中心模式取实际给定中心; 包络模式取实际选入受体原子的算术均值.
         center = (
             given_center[None]
             if dataset_config.pocket_mode == "center"
@@ -137,7 +145,7 @@ def assemble_docking_condition(
         data.pocket_center = torch.from_numpy(center.astype(np.float32))
         data.pocket_pos = pocket_pos - data.pocket_center
         data.pocket_is_nucleic = pocket_is_nucleic
-        # (P,25)与(P,15)，蛋白和核酸特征按同一口袋原子顺序对齐，另一类型位置保持0。
+        # (P, 25) 与 (P, 15), 蛋白和核酸特征按同一口袋原子顺序对齐, 另一类型位置保持 0.
         protein_features = torch.zeros((len(pocket_pos), 25))
         nucleic_features = torch.zeros((len(pocket_pos), 15))
         protein = ~pocket_is_nucleic
@@ -164,12 +172,12 @@ def assemble_docking_condition(
             ),
             num_classes=8,
         ).float()
-        # list[str]，长度P_na；将C1*等源原子名规范为C1'后判定核酸组分。
+        # list[str], 长度P_na; 将C1*等源原子名规范为C1'后判定核酸组分.
         names = [
             name.decode("ascii").strip().replace("*", "'")
             for name in pocket["atom_name"][pocket_is_nucleic.numpy()]
         ]
-        # int64, (P_na,)，0/1/2分别表示碱基、糖和磷酸。
+        # int64, (P_na,), 0/1/2分别表示碱基、糖和磷酸.
         components = torch.tensor(
             [
                 1 if name in SUGAR_ATOMS else 2 if name in PHOSPHATE_ATOMS else 0
@@ -183,7 +191,7 @@ def assemble_docking_condition(
         ).float()
         data.pocket_atom_feature = protein_features
         data.pocket_nucleic_feature = nucleic_features
-        # int64, (2,E_p)，蛋白和核酸共同组成kNN图，端点索引当前pocket_pos。
+        # int64, (2, E_p), 蛋白和核酸共同组成kNN图, 端点索引当前pocket_pos.
         if len(pocket_pos) > 1:
             data.pocket_knn_edge_index = knn_graph(
                 data.pocket_pos,
@@ -196,7 +204,7 @@ def assemble_docking_condition(
     if density_config is not None:
         if "feat" not in pocket:
             raise KeyError(f"{pdb_id}/{sample_id}: receptor_tokens.npz缺少local_cov所需的feat字段。")
-        # (P,50)，只使用当前口袋实际选中的标准RA原子；UNK已经由read_receptor排除。
+        # (P, 50), 只使用当前口袋实际选中的标准RA原子; UNK已经由read_receptor排除.
         data.pocket_density_feature = torch.from_numpy(
             np.concatenate(
                 [
@@ -206,7 +214,7 @@ def assemble_docking_condition(
                 axis=1,
             )
         )
-        # (3,)，中心按实际给定中心裁图；包络按用于选袋的配体坐标质心裁图。
+        # float32, (3,), 密度查询中心的世界 XYZ 坐标, 单位 Å; 中心模式取实际给定中心, 包络模式取用于选袋的配体坐标质心.
         query_center = (
             given_center
             if dataset_config.pocket_mode == "center"
@@ -241,7 +249,7 @@ class OccurrenceDataset(IterableDataset):
         - receptor_branch: str, protein 走官方蛋白特征入口, RA 在蛋白与核酸联合图中共享编码器.
         - protocol: str, C0、C5 或 E, 决定定位输入条件; 中心训练和监督验证固定C0; C0 用真实配体几何中心, C5 用中心加已有冻结偏移, E 用包络口袋.
         - shuffle: bool, True 为无限均匀有放回训练流; False 为一次完整有限流, 不控制定位或噪声机制.
-        - density_config: Mapping|None, 调用方从model.density传入的唯一密度入口；None兼容原无密度模型，非None固定为`local_cov`。
+        - density_config: Mapping|None, 调用方从model.density传入的唯一密度入口; None兼容原无密度模型, 非None固定为`local_cov`.
 
     清单每条记录:
         - pdb_id: str, 如 9v7o, 定位源 parse 和 density 子目录.
@@ -258,7 +266,7 @@ class OccurrenceDataset(IterableDataset):
         - pocket_atom_feature: float32, (P, 25), 原蛋白4元素+20氨基酸+1主链特征; 核酸位置为0.
         - pocket_protein_count/pocket_nucleic_count: int, 当前协议选袋在官方蛋白过滤前的两类重原子数, 供报告核酸占比.
         - pos_all_confs: float32, (1, N, 3), 源沉积世界坐标的单个构象; 原 FeaturizeMol 随后减去 pocket_center.
-        - pocket_density_feature: float32, (P,50), 仅`local_cov`提供；源49维受体特征后拼主链0/1标记，与pocket_pos逐原子对齐.
+        - pocket_density_feature: float32, (P, 50), 仅`local_cov`提供; 源49维受体特征后拼主链0/1标记, 与pocket_pos逐原子对齐.
         - density_input: float32, (1, 56, 80, 80, 80), 仅密度模型提供, 一个实例实际裁块的固定通道, PyG沿首维拼成批量B.
         - density_origin: float32, (1, 3), 实际裁块边界角点减pocket_center, 模型局部XYZ坐标, 单位Å.
         - density_basis: float32, (1, 3, 3), 三行分别是源XYZ方向单体素在模型坐标中的向量, 初始为实际间距的对角阵, 单位Å.
@@ -268,7 +276,13 @@ class OccurrenceDataset(IterableDataset):
     """
 
     def __init__(self, dataset_config, split, transforms, receptor_branch, protocol, shuffle, density_config=None):
-        """保存明确配置并读取唯一的冻结实例清单; 不枚举目录补回被排除的实例."""
+        """保存 Dataset 配置并读取唯一冻结清单.
+
+        输入参数字段由类 Docstring 定义. 本构造函数只读取
+        ``<manifest_root>/<split>.jsonl`` 并保持文件顺序, 不枚举资产目录补回被筛选排除的
+        occurrence. ``self.records`` 是 list[dict], 每项对应一个冻结实例; ``self.rng`` 在首个
+        worker 开始训练抽样时才按该 worker 的 PyTorch seed 建立.
+        """
         super().__init__()
         self.config = dataset_config
         self.split = split
@@ -277,8 +291,6 @@ class OccurrenceDataset(IterableDataset):
         self.protocol = protocol
         self.shuffle = shuffle
         self.density_config = density_config
-        if density_config is not None and density_config.get("name") != "local_cov":
-            raise ValueError("model.density当前只允许name=local_cov。")
         self.root = Path(dataset_config.root)
         self.derived_root = Path(dataset_config.derived_root)
         with (Path(dataset_config.manifest_root) / f"{split}.jsonl").open(encoding="utf-8") as stream:
@@ -287,10 +299,16 @@ class OccurrenceDataset(IterableDataset):
         self.rng = None
 
     def __getitem__(self, index):
-        """装配 records[index] 的口袋与完整配体图, 再执行调用方指定的原变换.
+        """装配 ``records[index]`` 的口袋、完整配体图和调用方指定的原变换.
 
-        返回 PocketMolData, 核心字段见类说明. 中心C0原点为完整配体几何中心g, 评测C5原点为g+delta; delta是清单中已冻结的XYZ向量, 单位Å. 实际给定中心用于选袋和原点, 局部真值质心相应为0或-delta. 本类不抽取随机偏移, 不添加带噪坐标的整体平移.
-        已记录的SMILES不支持实例抛出UnsupportedSmilesError; RA空E在求均值前抛出EmptyEnvelopePocketError, 信息包含pdb_id/occurrence_id; __iter__仅在train/validation跳过, 正式采样直接索引并记录输入失败. 其它缺失或损坏资产直接抛出源异常, 不在训练热路径修复.
+        返回 PocketMolData, 核心字段见类 Docstring. C0 的世界 XYZ 原点是完整配体重原子
+        几何中心 g; C5 的原点是 g 加冻结偏移 delta, 单位 Å; E 的原点是实际选入口袋受体
+        原子的世界坐标均值. 实际给定中心同时决定中心选袋和中心原点. 本类不抽随机偏移,
+        不向带噪配体增加整分子共享平移.
+
+        清单标记的不支持 SMILES 抛 ``UnsupportedSmilesError``; RA 空 E 抛
+        ``EmptyEnvelopePocketError``. ``__iter__`` 只在 train/validation 跳过这两类输入,
+        正式采样直接索引并把异常记录为输入失败.
         """
         record = self.records[index]
         pdb_id, candidate_id = record["pdb_id"], int(record["candidate_id"])
@@ -306,15 +324,15 @@ class OccurrenceDataset(IterableDataset):
             record["prepared_smiles"],
         )
 
-        # (3,)，occurrence沉积重原子的几何中心，只用于已经批准的定位条件。
+        # (3,), occurrence沉积重原子的几何中心, 只用于已经批准的定位条件.
         ligand_center = ligand_coords.mean(axis=0)
-        # float32, (3,)，C5读取冻结偏移；C0和E不增加中心偏移。
+        # float32, (3,), C5读取冻结偏移; C0和E不增加中心偏移.
         offset = (
             np.asarray(record["center_offset_xyz_A"], dtype=np.float32)
             if self.protocol == "C5"
             else np.zeros(3, dtype=np.float32)
         )
-        # float32, (3,)，实际给定中心同时决定中心口袋和中心模型原点。
+        # float32, (3,), 实际给定中心同时决定中心口袋和中心模型原点.
         given_center = (ligand_center + offset).astype(np.float32)
         return assemble_docking_condition(
             dataset_config=self.config,
@@ -331,9 +349,13 @@ class OccurrenceDataset(IterableDataset):
         )
 
     def __iter__(self):
-        """训练无限均匀抽实例, 有限流按worker跨步读取; 仅train/validation跳过并警告RA空E或明确不支持的SMILES实例.
+        """迭代训练或有限验证记录, 并在组批前跳过两类已批准异常.
 
-        跳过发生在组批前, 训练仍由有效实例组成完整batch; 验证只对有效E计算原val/loss. 警告记录划分和pdb_id/occurrence_id, 冻结清单不变. 其它异常直接传播; 正式采样按records索引, 不经过这里的跳过逻辑.
+        ``shuffle=True`` 时, 每个 worker 从完整冻结清单独立均匀有放回抽样并形成无限流;
+        ``shuffle=False`` 时, worker ``i`` 读取 ``i, i + num_workers, ...`` 的有限索引. train 与
+        validation 遇到不支持 SMILES 或 RA 空 E 时发出含划分和实例身份的警告后继续, 因此
+        batch 只由有效实例组成. 其它异常直接传播; 正式采样按 ``records`` 索引, 不使用此
+        跳过路径.
         """
         worker = get_worker_info()
         worker_id, worker_count = (0, 1) if worker is None else (worker.id, worker.num_workers)
@@ -355,17 +377,32 @@ class OccurrenceDataset(IterableDataset):
 
 
 class ConditionedDockingDataset(Dataset):
-    """从冻结的给定中心或预测构象装配端到端推理输入，不读取沉积配体坐标。
+    """从冻结给定中心或预测构象装配端到端推理输入, 不读取沉积配体坐标.
 
-    ``records`` 中每项固定含 ``pdb_id``、``candidate_id``、``prepared_smiles``、
-    ``sampling_seed``、``views`` 和 ``center_offset_xyz_A``，以便直接复用
-    ``sampling.sample_occurrence``。中心记录另含 ``given_center_xyz_A``；包络记录另含
-    ``envelope_coords_xyz_A``。后者是第二次中心推理Top-1的完整重原子世界XYZ坐标，
-    原子顺序必须与 ``prepared_smiles`` 的公共图一致。
+    构造参数:
+        - dataset_config: Mapping, 含受体 ``root``、公共 ``smiles_root``、``pocket_mode`` 和 ``knn``; 不含 ``smiles_coords_root``.
+        - records: list[dict], 一个端到端阶段的冻结输入清单, 保持 Matcher handoff 顺序.
+        - transforms: callable, 原 ``FeaturizeMol`` 与 free dock 任务变换组合.
+        - receptor_branch: str, ``protein`` 或 ``RA``.
+        - density_config: Mapping|None, local_cov 模型配置; None 表示 official 无密度模型.
 
-    本类没有 ``smiles_coords_root``，也不接受 occurrence 真值坐标。中心模式为原任务变换
-    构造位于给定中心的零跨度坐标占位；``sample_occurrence`` 在进入原采样器前仍会把局部
-    ``node_pos`` 与 ``gt_node_pos`` 清零。包络模式把预测构象同时交给公共选袋和密度查询。
+    records 每项字段:
+        - receptor_condition: str, 当前受体和模拟密度条件, 为 GT 或 CA2.
+        - pdb_id/candidate_id: str 与 int, 当前 Matcher handoff 候选身份.
+        - source_blob_index: int, Matcher 完整候选序列中的 blob 编号, 与 candidate_id 相同.
+        - centered_box_index: int, Matcher 保存的中心化候选盒编号.
+        - prepared_smiles: str, 精确预测 SMILES, 决定完整重原子图与原子顺序.
+        - stage_seeds: dict[str,int], 四个端到端推理阶段各自的冻结候选池种子.
+        - sampling_seed: int, 当前阶段的固定候选池种子.
+        - views: list[str], 端到端阶段保留的冻结视图名称, 当前 strongest-1 清单为空列表.
+        - center_offset_xyz_A: list[float], (3,), 保留的冻结 C5 世界 XYZ 偏移, 单位 Å; 端到端阶段为零且不施加.
+        - given_center_xyz_A: list[float], (3,), 仅中心阶段存在; 实际给定中心的世界 XYZ 坐标, 单位 Å.
+        - envelope_coords_xyz_A: list[list[float]], (N, 3), 仅 E 阶段存在; 上一轮 Top-1 的重原子世界 XYZ 坐标, 单位 Å, 原子顺序与 prepared_smiles 一致.
+        - input_error: str, 仅上一阶段无法提供所需中心或构象时存在; 当前阶段据此产生失败记录而不删除评价分母.
+
+    中心模式为原任务变换构造位于给定中心的零跨度坐标占位; ``sample_occurrence`` 进入原
+    采样器前仍把局部 ``node_pos`` 与 ``gt_node_pos`` 清零. E 模式把预测构象同时用于严格
+    小于 10 Å 的残基选择和密度裁块查询, 模型原点仍为实际选入受体原子均值.
     """
 
     def __init__(
@@ -376,22 +413,30 @@ class ConditionedDockingDataset(Dataset):
         receptor_branch,
         density_config=None,
     ):
-        """保存一组已冻结端到端记录与当前模型条件，不枚举或补充其它候选。"""
+        """保存冻结端到端清单与模型条件, 不枚举或补充其它候选.
+
+        参数与字段契约见类 Docstring. ``self.records`` 保持输入列表顺序和失败记录;
+        ``self.root`` 只指向当前 GT 或 CA2 受体资产根.
+        """
         self.config = dataset_config
         self.records = records
         self.transforms = transforms
         self.receptor_branch = receptor_branch
         self.density_config = density_config
-        if density_config is not None and density_config.get("name") != "local_cov":
-            raise ValueError("model.density当前只允许name=local_cov。")
         self.root = Path(dataset_config.root)
 
     def __len__(self):
-        """返回冻结清单的记录数；失败的上一步记录仍保留在长度中。"""
+        """返回冻结清单记录数, 包括带 ``input_error`` 的上一步失败记录."""
         return len(self.records)
 
     def __getitem__(self, index):
-        """装配一条端到端记录；上一步失败时以明确错误进入采样失败记录。"""
+        """装配 ``records[index]`` 对应的中心或预测包络输入.
+
+        返回经过 ``assemble_docking_condition`` 和原 transforms 的 PocketMolData. 中心模式
+        用 ``given_center_xyz_A`` 构造 (N, 3) 零跨度世界坐标占位; E 模式直接使用
+        ``envelope_coords_xyz_A``. 记录含 ``input_error`` 时抛出该错误, 由
+        ``sample_occurrence`` 保存为当前候选的输入失败, 不运行模型.
+        """
         record = self.records[index]
         pdb_id = record["pdb_id"]
         sample_id = int(record["candidate_id"])
@@ -399,16 +444,14 @@ class ConditionedDockingDataset(Dataset):
             raise ValueError(record["input_error"])
         graph = read_smiles_graph(self.config.smiles_root, record["prepared_smiles"])
         if self.config.pocket_mode == "center":
-            # float32, (3,)，Matcher中心或第一次C的Top-1预测质心，直接作为模型原点。
+            # float32, (3,), Matcher中心或第一次C的Top-1预测质心, 直接作为模型原点.
             given_center = np.asarray(record["given_center_xyz_A"], dtype=np.float32)
-            # float32, (N,3)，仅满足原任务变换的形状契约，不表示任何真值或预测构象。
+            # float32, (N, 3), 仅满足原任务变换的形状契约, 不表示任何真值或预测构象.
             ligand_coords = np.repeat(given_center.reshape(1, 3), len(graph["element"]), axis=0)
-        elif self.config.pocket_mode == "envelope":
-            # float32, (N,3)，第二次C的Top-1预测重原子世界坐标，用于严格<10 Å选袋。
+        else:
+            # float32, (N, 3), 第二次C的Top-1预测重原子世界坐标, 用于严格<10 Å选袋.
             ligand_coords = np.asarray(record["envelope_coords_xyz_A"], dtype=np.float32)
             given_center = ligand_coords.mean(axis=0)
-        else:
-            raise ValueError(f"未知pocket_mode: {self.config.pocket_mode}")
         return assemble_docking_condition(
             dataset_config=self.config,
             root=self.root,

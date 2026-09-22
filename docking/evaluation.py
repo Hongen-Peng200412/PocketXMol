@@ -1,8 +1,10 @@
-"""评价已保存的 docking 候选池, 复用原 self_ranking、碰撞、立体化学和未对齐 RMSD 定义.
+"""评价已保存的 docking 候选池, 复用原 self-ranking、碰撞、立体与未对齐 RMSD 定义.
 
-先读 summarize_occurrences 的纯统计, 再顺序读 evaluate_occurrence 的单实例评价和 evaluate_docking 的有限清单与 CPU 并行装配.
-本模块不生成新候选. ALL、CAP10、HF10_TO5 从同一冻结清单选择实例, 共用 poses.sdf 和原置信度. 失败和未采样实例始终保留在成功率分母中.
-输出在 <output_root>/<split>/<protocol>/<pdb_id>/<occurrence_id>/ 下增加 candidate_metrics.json 和 assessment.json, 在每个 protocol 下保存 occurrences.json 与 summary.json, 在 split 下保存汇集全部协议的 summary.json.
+主要入口是 ``score_saved_candidates``、``evaluate_occurrence`` 和 ``evaluate_docking``.
+本模块不生成候选. 标准评价在每个实例目录写 ``candidate_metrics.json`` 与
+``assessment.json``, 在协议目录写 ``occurrences.json`` 与 ``summary.json``. ALL、CAP10、
+HF10_TO5 只从同一冻结清单选择实例, 共用 ``poses.sdf`` 与原置信度; 失败和未采样实例
+始终保留在成功率分母中.
 """
 
 import json
@@ -20,7 +22,7 @@ from scipy.stats import spearmanr
 from sklearn.metrics import roc_auc_score
 
 from docking.assets import read_receptor, select_pocket
-from docking.smiles import read_smiles_graph, read_smiles_coords, UnsupportedSmilesError
+from docking.smiles import read_smiles_coords, read_smiles_graph
 from utils.buster_tools import check_identity, check_intermolecular_distance
 
 
@@ -29,11 +31,14 @@ STANDARD_RESIDUES = ("ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HI
 
 
 def matches_explicit_stereo(molecule, smiles_template):
-    """只检查精确SMILES模板明确声明的原子和双键立体化学。
+    """只检查精确 SMILES 模板明确声明的原子和双键立体化学.
 
-    ``smiles_template`` 是无三维构象的精确预测SMILES分子。模板未声明的潜在立体中心
-    不参与端到端中间轮判定；模板明确声明立体化学时，候选的三维构象必须与之相符。
-    两个分子的原子数和键数还必须一致，避免把子结构匹配误当成完整身份匹配。
+    输入参数:
+        - molecule: RDKit Mol, 生成候选; 若含三维构象, 从该候选世界坐标重新指派原子与双键立体标记.
+        - smiles_template: RDKit Mol, 由精确预测 SMILES 构造且不含真值构象; 未声明的潜在立体中心不形成约束.
+
+    返回 bool. 模板没有显式原子或双键立体标记时直接为 True. 模板含显式标记时, 候选
+    必须具有相同原子数、键数和带手性的完整图匹配. 本函数不读取 RMSD 参考或沉积坐标.
     """
     has_explicit_atom_stereo = any(
         atom.GetChiralTag() != Chem.ChiralType.CHI_UNSPECIFIED
@@ -60,11 +65,14 @@ def matches_explicit_stereo(molecule, smiles_template):
 
 
 def build_receptor_molecule(receptor):
-    """把完整标准受体数组转为碰撞检查使用的无键RDKit分子。
+    """把完整标准受体数组转为碰撞检查使用的无键 RDKit 分子.
 
-    输入 ``receptor`` 来自 ``read_receptor``，坐标为世界XYZ、Å，第一维为全部标准蛋白
-    与标准核酸重原子。返回分子不猜测受体共价键，也不用于生成模型，只服务原
-    ``check_intermolecular_distance`` 距离检查。
+    输入 ``receptor`` 来自 ``read_receptor``:
+        - coords: float32, (P, 3), 标准蛋白与核酸重原子的世界 XYZ 坐标, 单位 Å.
+        - element/atom_name/res_type/res_index: (P,), 与 coords 第一维逐原子对齐的元素、PDB 原子名、标准残基类别和残基编号.
+
+    返回 RDKit Mol, 含 P 个原子和一个世界坐标构象. 函数写入残基元数据供原碰撞检查器
+    识别受体原子, 不猜测受体共价键, 也不把该分子送入生成模型.
     """
     molecule = Chem.RWMol()
     conformer = Chem.Conformer(len(receptor["coords"]))
@@ -92,23 +100,28 @@ def score_saved_candidates(
     asset_error=None,
     pose_error=None,
 ):
-    """按原碰撞、立体和self-ranking规则评价一个已保存候选池。
+    """按原碰撞、立体和 self-ranking 规则评价一个已保存候选池.
 
     输入参数:
-        - candidates: list[dict]，``sample_occurrence`` 保存的完整候选记录。
-        - poses: list[RDKit Mol|None]，成功候选按 ``sdf_index`` 对齐的世界坐标分子。
-        - receptor_molecule: RDKit Mol，当前受体条件的完整标准受体。
-        - stereo_reference: RDKit Mol，标准评价可带沉积构象；端到端中间轮使用无构象的
-          精确SMILES模板，因此排序控制不读取真值坐标。
-        - rmsd_reference: RDKit Mol|None，最终评价使用带沉积构象的参考；``None`` 表示
-          中间轮只排名，不计算RMSD。
-        - asset_error/pose_error: str|None，上游资产或SDF读取失败，保留到每个候选错误。
+        - candidates: list[dict], ``sample_occurrence`` 保存的候选记录; ``sample_index`` 是候选编号, ``sdf_index`` 指向 poses, ``cfd_traj`` 是原轨迹置信度.
+        - poses: list[RDKit Mol|None], 成功候选按 ``sdf_index`` 对齐的世界坐标分子.
+        - receptor_molecule: RDKit Mol, 当前 GT 或 CA2 条件的完整标准受体, 只用于距离碰撞检查.
+        - stereo_reference: RDKit Mol, 有构象时沿用标准评价的沉积构象 stereo; 无构象时只检查精确预测 SMILES 显式声明的立体标记.
+        - rmsd_reference: RDKit Mol|None, 最终评价使用带沉积构象的参考; None 表示中间轮只排名, 不计算 RMSD.
+        - asset_error: str|None, 受体、SMILES 或真值坐标资产失败; 非空时复制到每个成功采样候选的 errors.
+        - pose_error: str|None, SDF 整体读取失败; 非空时复制到每个成功采样候选的 errors.
 
     返回值:
-        - metrics: list[dict]，逐候选增加碰撞、立体、self_ranking和可选RMSD字段。
+        - metrics: list[dict], 与 candidates 顺序和长度相同; 保留原候选字段并增加以下字段.
+            - metrics[*].no_clashes: bool, 原 0.75 比例阈值碰撞检查是否通过.
+            - metrics[*].stereo: bool, 当前标准或显式模板立体检查是否通过.
+            - metrics[*].num_clashes/rel_clashes: int 与 float|None, 碰撞原子对数及其除以配体重原子数的比例.
+            - metrics[*].self_ranking: float|None, ``cfd_traj + int(no_clashes) + int(stereo)``; 不读取 RMSD.
+            - metrics[*].rmsd_A: float|None, 未对齐 RMSD, 单位 Å; 中间轮或评价失败时为 None.
+            - metrics[*].rmsd_identity_fallback: bool, RMSD 是否因图同构匹配失败而回退到同序原子坐标计算.
+            - metrics[*].errors: list[dict], 每项含失败 stage 和错误文本; 单个检查失败不删除候选.
 
-    ``self_ranking = cfd_traj + int(no_clashes) + int(stereo)``，不读取RMSD；并列顺序
-    由 ``rank_candidate_metrics`` 按 ``sample_index`` 决定。
+    并列顺序由 ``rank_candidate_metrics`` 按 ``sample_index`` 决定.
     """
     metrics = []
     for candidate in candidates:
@@ -135,15 +148,25 @@ def score_saved_candidates(
                 }
             )
         else:
+            # RDKit Mol|None, ``sdf_index`` 只索引成功写入 SDF 的候选, 不等于 sample_index.
+            molecule = None
+            pose_read_error = None
             try:
                 molecule = poses[candidate["sdf_index"]]
-                if molecule is None:
-                    raise ValueError("unreadable_saved_pose")
-                if int(molecule.GetProp("sample_index")) != candidate["sample_index"]:
-                    raise ValueError("saved_pose_candidate_index_mismatch")
-            except Exception as error:
+            except (IndexError, TypeError) as error:
+                pose_read_error = f"{type(error).__name__}: {error}"
+            if pose_read_error is not None:
+                metric["errors"].append({"stage": "read_pose", "error": pose_read_error})
+            elif molecule is None:
                 metric["errors"].append(
-                    {"stage": "read_pose", "error": f"{type(error).__name__}: {error}"}
+                    {"stage": "read_pose", "error": "unreadable_saved_pose"}
+                )
+            elif (
+                not molecule.HasProp("sample_index")
+                or molecule.GetIntProp("sample_index") != candidate["sample_index"]
+            ):
+                metric["errors"].append(
+                    {"stage": "read_pose", "error": "saved_pose_candidate_index_mismatch"}
                 )
             else:
                 try:
@@ -207,9 +230,12 @@ def score_saved_candidates(
                                 deepcopy(rmsd_reference),
                                 map=atom_map,
                             )
-                        if not np.isfinite(rmsd):
-                            raise ValueError("non_finite_rmsd")
-                        metric["rmsd_A"] = float(rmsd)
+                        if np.isfinite(rmsd):
+                            metric["rmsd_A"] = float(rmsd)
+                        else:
+                            metric["errors"].append(
+                                {"stage": "rmsd", "error": "non_finite_rmsd"}
+                            )
                     except Exception as error:
                         metric["errors"].append(
                             {"stage": "rmsd", "error": f"{type(error).__name__}: {error}"}
@@ -229,7 +255,12 @@ def score_saved_candidates(
 
 
 def rank_candidate_metrics(metrics):
-    """按冻结self-ranking降序和sample_index升序返回可排名候选。"""
+    """按冻结 self-ranking 返回可排名候选.
+
+    输入 ``metrics`` 是 ``score_saved_candidates`` 的候选级记录. 过滤 ``self_ranking=None``
+    的候选, 按 self-ranking 降序排列; 分数相同时按 ``sample_index`` 升序稳定破同分. 返回
+    list[dict], 元素仍引用输入记录, 不修改分数或候选字段.
+    """
     return sorted(
         (metric for metric in metrics if metric["self_ranking"] is not None),
         key=lambda metric: (-metric["self_ranking"], metric["sample_index"]),
@@ -432,30 +463,33 @@ def evaluate_occurrence(arguments):
     candidates = json.loads((occurrence_dir / sampling["candidate_file"]).read_text(encoding="utf-8")) if sampling is not None else []
     metrics = []
     pocket_protein_count = pocket_nucleic_count = None
-    asset_error = None
-    try:
-        root = Path(config.dataset.root)
-        if "unsupported_smiles_reason" in record:
-            raise UnsupportedSmilesError(record["unsupported_smiles_reason"])
-        template = read_smiles_graph(config.dataset.smiles_root, record["prepared_smiles"])["mol"]
-        # (N, 3), 公共 SMILES 原子顺序的沉积世界 XYZ 坐标, 只用于评价参照和定位条件.
-        ligand_coords = read_smiles_coords(config.dataset.smiles_coords_root, identity["pdb_id"], identity["occurrence_id"], record["prepared_smiles"])
-        reference = Chem.Mol(template)
-        reference_conformer = Chem.Conformer(len(ligand_coords))
-        for atom_index, position in enumerate(ligand_coords):
-            reference_conformer.SetAtomPosition(atom_index, position.tolist())
-        reference.AddConformer(reference_conformer, assignId=True)
-        receptor = read_receptor(root / "parse" / identity["pdb_id"] / "receptor_tokens.npz")
-        # 当前定位条件与 Dataset 相同; C5只读取冻结偏移, E只以沉积配体定义包络, 不重采样.
-        offset = np.asarray(record["center_offset_xyz_A"], dtype=np.float32) if protocol == "C5" else np.zeros(3, dtype=np.float32)
-        selected = select_pocket(receptor, ligand_coords, ligand_coords.mean(axis=0) + offset, "envelope" if protocol == "E" else "center")
-        pocket_protein_count = int(np.sum(selected & (receptor["res_type"] < 20)))
-        pocket_nucleic_count = int(np.sum(selected & (receptor["res_type"] >= 20)))
-        receptor_molecule = build_receptor_molecule(receptor)
-    except Exception as error:
-        if isinstance(error, OSError):
-            raise
-        asset_error = f"{type(error).__name__}: {error}"
+    asset_error = (
+        f"UnsupportedSmilesError: {record['unsupported_smiles_reason']}"
+        if "unsupported_smiles_reason" in record
+        else None
+    )
+    if asset_error is None:
+        try:
+            root = Path(config.dataset.root)
+            template = read_smiles_graph(config.dataset.smiles_root, record["prepared_smiles"])["mol"]
+            # (N, 3), 公共 SMILES 原子顺序的沉积世界 XYZ 坐标, 只用于评价参照和定位条件.
+            ligand_coords = read_smiles_coords(config.dataset.smiles_coords_root, identity["pdb_id"], identity["occurrence_id"], record["prepared_smiles"])
+            reference = Chem.Mol(template)
+            reference_conformer = Chem.Conformer(len(ligand_coords))
+            for atom_index, position in enumerate(ligand_coords):
+                reference_conformer.SetAtomPosition(atom_index, position.tolist())
+            reference.AddConformer(reference_conformer, assignId=True)
+            receptor = read_receptor(root / "parse" / identity["pdb_id"] / "receptor_tokens.npz")
+            # 当前定位条件与 Dataset 相同; C5只读取冻结偏移, E只以沉积配体定义包络, 不重采样.
+            offset = np.asarray(record["center_offset_xyz_A"], dtype=np.float32) if protocol == "C5" else np.zeros(3, dtype=np.float32)
+            selected = select_pocket(receptor, ligand_coords, ligand_coords.mean(axis=0) + offset, "envelope" if protocol == "E" else "center")
+            pocket_protein_count = int(np.sum(selected & (receptor["res_type"] < 20)))
+            pocket_nucleic_count = int(np.sum(selected & (receptor["res_type"] >= 20)))
+            receptor_molecule = build_receptor_molecule(receptor)
+        except Exception as error:
+            if isinstance(error, OSError):
+                raise
+            asset_error = f"{type(error).__name__}: {error}"
     poses = []
     pose_error = None
     if sampling is not None and sampling["pose_file"] is not None:
@@ -492,7 +526,7 @@ def evaluate_occurrence(arguments):
         rmsd_values = [metric["rmsd_A"] for metric in selected_candidates if metric["rmsd_A"] is not None]
         assessment[f"{ranking}_rmsd_A"] = min(rmsd_values) if rmsd_values else None
         assessment[f"{ranking}_success"] = bool(rmsd_values and min(rmsd_values) < 2.0)
-    # (K,2), 每个实际可评分候选的一对 (self_ranking,RMSD), K只属于当前occurrence, 不跨实例拼接.
+    # (K, 2), 每个实际可评分候选的一对 (self_ranking, RMSD), K 只属于当前 occurrence, 不跨实例拼接.
     rank_pairs = [(metric["self_ranking"], metric["rmsd_A"]) for metric in metrics if metric["self_ranking"] is not None and metric["rmsd_A"] is not None]
     assessment.update(rank_pair_count=len(rank_pairs), spearman=None, spearman_na_reason=None, pose_auc=None, pose_auc_na_reason=None)
     if len(rank_pairs) < 2:

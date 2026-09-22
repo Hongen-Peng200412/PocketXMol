@@ -1,8 +1,9 @@
-"""使用原 free docking 采样循环生成冻结实例的候选坐标和原始置信度.
+"""使用原 free docking 循环生成冻结实例的候选坐标和原始置信度.
 
-先读 sample_occurrence 的单实例生成与保存, 再读 sample_docking 的模型和全量清单装配. 官方模型和 RA 模型使用同一候选预算、噪声调度和结果格式.
-输出根由 config.output_root 决定. <split>/<protocol>/<pdb_id>/<occurrence_id>/ 下的 poses.sdf 保存成功候选世界坐标, candidates.json 保存全部候选的状态和置信度汇总, confidence.npz 保存成功候选的原始置信度.
-result.json 在其他产物写完后才原子写入, 表示该实例的全部候选已经尝试, 成功数可以为零. 未出现该文件的实例在续跑时按冻结种子重新执行.
+主要入口是 ``sample_occurrence``、``load_sampling_runtime`` 和 ``sample_docking``. 标准与
+端到端测评共用模型加载、T0 噪声和单实例采样. 每个实例目录的 ``poses.sdf`` 保存成功
+候选世界坐标, ``candidates.json`` 保存全部候选状态, ``confidence.npz`` 保存成功候选的原始
+置信度, ``result.json`` 最后原子写入并作为完成标记. 没有完成标记的实例按冻结种子重跑.
 """
 
 import json
@@ -34,44 +35,44 @@ def sample_occurrence(dataset, index, model, noiser, featurizer, config, protoco
     """完成一个 occurrence 的全部候选尝试, 最后保存完成标记.
 
     输入参数:
-        - dataset: OccurrenceDataset, 已完成累计筛选的实例清单, 按当前 protocol 装配原子和口袋.
+        - dataset: OccurrenceDataset|ConditionedDockingDataset, 标准清单按沉积坐标装配条件, 端到端清单按冻结中心或上一轮预测构象装配条件.
         - index: int, 索引 dataset.records 中的当前 occurrence.
         - model: 已加载明确 checkpoint 的 PMAsymDenoiser, eval 模式, 官方蛋白或 RA 分支.
         - noiser: 原 DockSamplNoiser, mode=sample, 使用 config.num_steps 个步骤.
         - featurizer: 原 FeaturizeMol, 将模型坐标加回实际 pocket_center 后解码.
         - config: EasyDict, 完整字段见 sample_docking.
-        - protocol: str, C0、C5 或 E, 决定定位条件和输出子目录.
+        - protocol: str, 标准阶段为 C0、C5 或 E, 端到端阶段为 official-c、local-c1、local-c2 或 local-e; 仅标识输出子目录和记录字段, 不重新决定 Dataset 已装配的中心或包络.
 
     产物位于 <output_root>/<split>/<protocol>/<pdb_id>/<occurrence_id>/:
-        - poses.sdf: 多分子 SDF, 仅包含成功候选(跑通就算成功, 不是RMSD<2埃); 每个分子的 sample_index 属性保存原候选编号, 如3, 拓扑和原子顺序来自prepared_smiles对应的公共重原子图, 坐标为世界 XYZ、Å.
+        - poses.sdf: 多分子 SDF, 仅包含成功候选, 跑通即成功, 不以 RMSD < 2 Å 判定; 每个分子的 sample_index 属性保存原候选编号, 如 3, 拓扑和原子顺序来自 prepared_smiles 对应的公共重原子图, 坐标为世界 XYZ, 单位 Å.
         - candidates.json: list[dict], 长度为 num_candidates, 包括每个失败候选; 各项字段如下.
             - pdb_id: str, 当前结构编号, 如9v7o.
             - occurrence_id: int, 原 candidate_id, 如0.
             - model_name: str, 当前模型的稳定名称, 如 B-C-T0-RA.
             - split: str, validation 或 test.
-            - protocol: str, 当前 C0、C5 或 E.
-            - sample_index: int, 从0开始的原候选构象编号, 正式50个候选时为0至49; 与成功候选在SDF中的位置不同.
+            - protocol: str, 当前标准协议或端到端阶段名称.
+            - sample_index: int, 从 0 开始的原候选构象编号, 正式 50 个候选时为 0 至 49; 与成功候选在 SDF 中的位置不同.
             - status: str, success 或 failed; 失败不补生成新候选.
             - stage: str, 当前候选结束阶段; complete 表示完成, preprocess/density_grid/batch/prepare_loop/noise/forward/prediction_to_batch/trajectory/synchronize/split/reconstruct/confidence 分别定位预处理、固定网格构造、组批、循环准备、加噪、模型调用、预测写回、轨迹处理、CUDA同步、输出拆分、固定图重构及置信度聚合.
             - error: str|None, 失败的异常类型和消息; 成功为 None.
-            - sdf_index: int|None, 当前候选在poses.sdf中从0开始的位置; 失败为None. 如原候选0失败、1首先成功, 则该分子sample_index=1而sdf_index=0.
+            - sdf_index: int|None, 当前候选在 poses.sdf 中从 0 开始的位置; 失败为 None. 如原候选 0 失败、1 首先成功, 则该分子 sample_index=1 而 sdf_index=0.
             - cfd_traj: float|None, 原 get_cfd_traj 分数; 正式100步先对全部配体原子取均值, 再平均后50步的原始位置置信度, 全程不做 sigmoid; 非有限分数使候选失败.
             - cfd_pos: float|None, 最后一步所有配体原子的原始位置置信度均值; 空数组或非有限均值写 None.
             - cfd_node: float|None, 最后一步原子类别置信度原始输出的原子均值; 空数组或非有限均值写 None.
             - cfd_edge: float|None, 最后一步半边类别置信度原始输出的半边均值; 空数组或非有限均值写 None.
         - confidence.npz: 仅存在成功候选时写出; K 为成功候选数, N 为完整配体重原子数, H=N*(N-1)/2, T=num_steps.
-            - sample_index: int64, (K,), 成功候选原编号, 如[0,2,3], 与SDF分子顺序及下列数组首轴对齐.
-            - confidence_pos_traj: float32, (K,N,T), 每个原子每步的原始位置置信度, 无 sigmoid.
-            - confidence_pos: float32, (K,N,1), 最后一步原始位置置信度, 原子轴N按prepared_smiles对应公共重原子图的顺序.
-            - confidence_node: float32, (K,N,1), 最后一步原子类别置信度原始输出, 原子轴N按prepared_smiles对应公共重原子图的顺序.
-            - confidence_halfedge: float32, (K,H,1), 最后一步半边类别置信度原始输出, 半边按原完全图上三角顺序排列.
+            - sample_index: int64, (K,), 成功候选原编号, 如[0, 2, 3], 与SDF分子顺序及下列数组首轴对齐.
+            - confidence_pos_traj: float32, (K, N, T), 每个原子每步的原始位置置信度, 无 sigmoid.
+            - confidence_pos: float32, (K, N, 1), 最后一步原始位置置信度, 原子轴N按prepared_smiles对应公共重原子图的顺序.
+            - confidence_node: float32, (K, N, 1), 最后一步原子类别置信度原始输出, 原子轴N按prepared_smiles对应公共重原子图的顺序.
+            - confidence_halfedge: float32, (K, H, 1), 最后一步半边类别置信度原始输出, 半边按原完全图上三角顺序排列.
 
         - result.json: dict, 全部候选尝试和产物写入完成后保存, 返回值为同一字典.
             - pdb_id: str, 当前结构编号.
             - occurrence_id: int, 原 candidate_id.
             - model_name: str, 当前模型稳定名称.
             - split: str, validation 或 test.
-            - protocol: str, 当前 C0、C5 或 E.
+            - protocol: str, 当前标准协议 C0、C5、E 或端到端阶段 official-c、local-c1、local-c2、local-e.
             - prepared_smiles: str, 精确SMILES身份, 如 CCO.
             - views: list[str], 冻结测试视图名称; 验证为空列表, 测试从 ALL、CAP10、HF10_TO5 选择.
             - sampling_seed: int, 当前 occurrence 的冻结候选种子, 如10831; 模型和协议不另混入种子.
@@ -86,7 +87,7 @@ def sample_occurrence(dataset, index, model, noiser, featurizer, config, protoco
             - pocket_protein_count: int|None, 按当前定位协议选择、在官方蛋白过滤之前的标准蛋白原子数; 尚未取得时为None.
             - pocket_nucleic_count: int|None, 同一口袋中的标准RNA/DNA原子数, 官方过滤前计数; 尚未取得时为None.
             - pocket_nucleic_fraction: float|None, 核酸原子数除以两类原子总数; 总数0或未取得时为None.
-            - model_origin_world_xyz_A: list[list[float]]|None, 正常为(1,3)嵌套列表, 世界XYZ、Å; 官方空蛋白保留其空列表, 更早失败为None.
+            - model_origin_world_xyz_A: list[list[float]]|None, 正常为(1, 3)嵌套列表, 世界XYZ、Å; 官方空蛋白保留其空列表, 更早失败为None.
 
             - inference_seconds: float, 固定密度编码、组批、原采样循环与输出拆分的累计秒数, 不含SDF重构和写盘.
             - sampling_batch_attempt_count: int, 实际进入原采样循环的候选批次数; 组批失败不计入.
@@ -129,7 +130,7 @@ def sample_occurrence(dataset, index, model, noiser, featurizer, config, protoco
     model_forward_attempt_count = model_forward_completed_count = 0
     pocket_protein_count = pocket_nucleic_count = None
     pocket_center = None
-    density_grid = None  # Tensor|None，(1,106,80,80,80)，此实例整条采样轨迹复用的固定网格。
+    density_grid = None  # Tensor|None, (1, 106, 80, 80, 80), 此实例整条采样轨迹复用的固定网格.
     stage = "preprocess"
 
     try:
@@ -149,7 +150,7 @@ def sample_occurrence(dataset, index, model, noiser, featurizer, config, protoco
             encoding_started = time.perf_counter()
             try:
                 with torch.no_grad():
-                    # 固定输入只搬到GPU并构造一次；六层仍在每次forward按各自当前配体坐标重新读取局部块。
+                    # 固定输入只搬到GPU并构造一次; 六层仍在每次forward按各自当前配体坐标重新读取局部块.
                     density_source = {
                         name: data[name].to(config.device)
                         for name in (
@@ -162,7 +163,7 @@ def sample_occurrence(dataset, index, model, noiser, featurizer, config, protoco
                     torch.cuda.synchronize(sampling_device)
             finally:
                 inference_seconds += time.perf_counter() - encoding_started
-            # 不为50个候选复制80³固定网格；候选坐标和六层home仍分别计算。
+            # 不为50个候选复制80³固定网格; 候选坐标和六层home仍分别计算.
             del data.density_input
     except Exception as error:
         if isinstance(error, OSError):
@@ -186,7 +187,7 @@ def sample_occurrence(dataset, index, model, noiser, featurizer, config, protoco
                     batch = Batch.from_data_list([data.clone() for _ in range(stop - start)], follow_batch=follow_batch, exclude_keys=exclude_keys).to(config.device)
                     sampling_model = model
                     if density_grid is not None:
-                        # 仅展开实例首维，不复制底层体素；各候选位置和逐层11³读取仍分别计算。
+                        # 仅展开实例首维, 不复制底层体素; 各候选位置和逐层11³读取仍分别计算.
                         sampling_model = partial(
                             model,
                             density_grid=density_grid.expand(stop - start, -1, -1, -1, -1),
@@ -260,7 +261,7 @@ def sample_occurrence(dataset, index, model, noiser, featurizer, config, protoco
             writer.close()
     success_count = len(success_indices)
     if success_count:
-        # [K 个 (N,T)/(N,1)/(H,1)] -> [K,N,T]/[K,N,1]/[K,H,1], 新增的首轴只表示成功候选.
+        # [K 个 (N, T)/(N, 1)/(H, 1)] -> [K, N, T]/[K, N, 1]/[K, H, 1], 新增的首轴只表示成功候选.
         np.savez_compressed(occurrence_dir / "confidence.npz", sample_index=np.asarray(success_indices, dtype=np.int64), **{key: np.stack(value) for key, value in confidence.items()})
     (occurrence_dir / "candidates.json").write_text(json.dumps(candidates, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
     total_pocket = (pocket_protein_count + pocket_nucleic_count) if pocket_protein_count is not None else 0
@@ -301,22 +302,21 @@ def sample_occurrence(dataset, index, model, noiser, featurizer, config, protoco
 
 
 def load_sampling_runtime(config):
-    """从明确训练配置与checkpoint装配标准测评和端到端测评共用的推理运行时。
+    """从明确训练配置与 checkpoint 装配两类测评共用的推理运行时.
 
     输入参数:
-        - config: EasyDict，必须含 ``train_config``、``checkpoint``、``receptor_branch``
-          和 ``device``；字段语义与 ``sample_docking`` 相同。
+        - config: EasyDict, 必须含 ``train_config``、``checkpoint``、``receptor_branch`` 和 ``device``; 字段语义与 ``sample_docking`` 相同.
 
     返回值:
-        - train_config: EasyDict，实际训练YAML。
-        - model_config: EasyDict，已经按当前受体分支写入 ``nucleic_branch`` 的模型配置。
-        - model: PMAsymDenoiser，严格加载checkpoint中 ``model.`` 参数并切到eval模式。
-        - featurizer: FeaturizeMol，负责原配体类别和世界坐标解码。
-        - transforms: Compose，依次执行原配体特征化和free dock任务变换。
-        - sample_config: EasyDict，原dock采样调度配置；调用方只覆盖 ``num_steps``。
+        - train_config: EasyDict, ``train_config`` 路径指向的实际训练 YAML.
+        - model_config: EasyDict, 已按 ``receptor_branch`` 写入 ``nucleic_branch`` 的模型配置.
+        - model: PMAsymDenoiser, 严格加载 checkpoint 中 ``model.`` 参数并切到 eval 模式.
+        - featurizer: FeaturizeMol, 负责原配体类别编码和世界坐标解码.
+        - transforms: Compose, 依次执行原配体特征化和 free dock 任务变换.
+        - sample_config: EasyDict, 原 dock advance 采样调度; 调用方只覆盖 ``num_steps``.
 
-    本函数不读取实例清单、不写运行记录，也不生成候选。两个测评入口据此共享模型加载、
-    T0采样器配置和原free dock变换，避免端到端入口另建一套模型或噪声系统。
+    本函数不读取实例清单、不写运行记录, 也不生成候选. 两个测评入口据此共享模型加载、
+    T0 采样器配置和原 free dock 变换, 避免端到端入口另建模型或噪声系统.
     """
     train_config = make_config(config.train_config)
     featurizer = FeaturizeMol(train_config.transforms.featurizer)
@@ -331,7 +331,7 @@ def load_sampling_runtime(config):
         pocket_in_dim=25,
     ).to(config.device)
     checkpoint = torch.load(config.checkpoint, map_location="cpu", weights_only=False)
-    # 只加载Lightning state_dict中的model.参数；loss、优化器和调度状态不进入推理。
+    # 只加载Lightning state_dict中的model.参数; loss、优化器和调度状态不进入推理.
     model.load_state_dict(
         {
             key[len("model.") :]: value
@@ -358,7 +358,12 @@ def load_sampling_runtime(config):
 
 
 def build_sampling_noiser(config, train_config, sample_config, featurizer):
-    """按当前正式步数构造原dock采样器，中心、包络和端到端阶段共用T0公式。"""
+    """按正式步数构造原 dock T0 采样器.
+
+    ``sample_config.noise`` 提供官方 advance 调度, ``config.num_steps`` 只覆盖采样步数,
+    ``train_config.noise`` 提供训练噪声参考, ``featurizer`` 提供节点与半边类别数. 返回原
+    ``DockSamplNoiser``; C0、C5、E 和端到端各阶段都使用同一纯高斯 T0 公式.
+    """
     noise_config = deepcopy(sample_config.noise)
     noise_config.num_steps = config.num_steps
     return get_sample_noiser(
@@ -423,7 +428,7 @@ def sample_docking(config):
         # 模型配置唯一决定是否读取密度; C0/C5只改变实际给定中心, 不改变T0采样公式.
         dataset = OccurrenceDataset(dataset_config, config.split, transforms, config.receptor_branch, protocol, shuffle=False, density_config=model_config.get('density'))
 
-        # 每个协议重新装配同一原advance调度；C0、C5与E都使用相同T0噪声公式。
+        # 每个协议重新装配同一原advance调度; C0、C5与E都使用相同T0噪声公式.
         noiser = build_sampling_noiser(config, train_config, sample_config, featurizer)
         for index in range(len(dataset.records)):
             result = sample_occurrence(dataset, index, model, noiser, featurizer, config, protocol)

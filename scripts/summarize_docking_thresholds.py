@@ -1,4 +1,9 @@
-"""从标准候选连续RMSD汇总严格2 Å与3 Å结果。"""
+"""从标准候选连续 RMSD 汇总严格 2 Å 与 3 Å 结果.
+
+命令行接收与采样评价相同的 YAML. 主逻辑由
+``docking.final_evaluation.summarize_docking_thresholds`` 提供, 只读取既有候选指标并在
+``<output_root>/<split>/threshold_summary.json`` 写多协议、多视图、实例/PDB 等权汇总.
+"""
 
 import argparse
 import sys
