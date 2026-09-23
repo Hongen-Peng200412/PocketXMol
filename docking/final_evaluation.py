@@ -31,7 +31,7 @@ RANKING_LIMITS = {"top1": 1, "top5": 5, "oracle": None}
 # tuple[str,...], 单条 handoff 在同一评价进程内依次读取的四个冻结推理阶段.
 END_TO_END_STAGES = ("official-c", "local-c1", "local-c2", "local-e")
 
-# dict[tuple[str,str], RDKit Mol], 每个评价进程独立持有的受体分子缓存; 键为受体根目录与 PDB 编号.
+# dict[tuple[str, str], RDKit Mol], 每个评价进程独立持有的完整受体分子缓存; 键依次为受体根目录和 PDB 编号, 避免同一 worker 重复构造同一 PDB 的受体分子.
 _EVALUATION_RECEPTOR_CACHE = {}
 
 
@@ -375,14 +375,31 @@ def _configure_evaluation_worker():
 def _evaluate_end_to_end_record(config, record):
     """按固定顺序评价一条 handoff 的四个冻结推理阶段.
 
-    ``record`` 来自 ``inputs/base.jsonl``，标识一个身份正确且需要 docking 的 Matcher
-    候选. 当前进程先读取该 PDB 的完整标准受体，再构造公共 SMILES 真值参考，随后依次
-    评价 ``official-c``、``local-c1``、``local-c2`` 和 ``local-e``. 每个阶段仍调用
-    ``_evaluate_stage``，因此碰撞、显式立体、self-ranking 与 RDKit RMSD 算法保持不变.
+    ``config`` 必须提供 ``receptor_root``、``smiles_root``、``smiles_coords_root``、
+    ``output_root`` 和 ``receptor_condition``. ``record`` 来自 ``inputs/base.jsonl``, 必须
+    提供 ``pdb_id``、``source_blob_index``、``centered_box_index``、
+    ``candidate_selected``、``raw_rank``、``attempt_index``、
+    ``matched_occurrence_id``、``prepared_smiles`` 和 ``target_smiles``. 当前进程先读取该
+    PDB 的完整标准受体, 再构造公共 SMILES 真值参考, 随后依次评价 ``official-c``、
+    ``local-c1``、``local-c2`` 和 ``local-e``. 每个阶段仍调用 ``_evaluate_stage``, 并覆盖
+    对应阶段目录内的 ``evaluation_metrics.json``, 因此碰撞、显式立体、self-ranking 与
+    RDKit RMSD 算法保持不变.
 
-    返回 dict，与 ``docking_results.jsonl`` 的一条记录同形，包含候选身份、计费顺序及
-    四种方法的状态、Top-1、pose@M RMSD 和严格阈值成功布尔值. 公共资产失败时四个阶段
-    都记为 ``evaluation_asset_failed``；单阶段失败只影响该阶段，两类失败都保留记录.
+    返回值:
+        - ``receptor_condition``: str, GT 或 CA2 受体输入条件.
+        - ``pdb_id``: str, 当前 Matcher 候选所属的 PDB 编号.
+        - ``source_blob_index``: int, 当前候选在完整 Stage1 候选序列中的编号.
+        - ``centered_box_index``: int, 当前候选对应的中心化密度框编号.
+        - ``candidate_selected``: bool, Matcher 是否把当前候选列为 selected.
+        - ``raw_rank``: int, 当前候选在完整 Matcher 候选序列中的原始排名.
+        - ``attempt_index``: int, 按 Stage3 计费规则得到的 docking 尝试编号.
+        - ``matched_occurrence_id``: int, 当前候选匹配的真实配体实例编号.
+        - ``predicted_smiles``: str, Stage3 准备后的精确预测 SMILES.
+        - ``target_smiles``: str, 用于最终评价的目标 SMILES.
+        - ``methods``: dict[str, dict], 键为 ``official-C``、``local_cov-C``、``C-C``、``C-C-E``; 每个值遵循 ``_evaluate_stage`` 的完整返回字段契约.
+
+    公共资产失败时四个阶段都记为 ``evaluation_asset_failed``; 单阶段失败只影响该阶段,
+    两类失败都保留当前 handoff 记录.
     """
     pdb_id = record["pdb_id"]
     receptor_key = (str(config.receptor_root), pdb_id)
@@ -472,29 +489,32 @@ def _evaluate_end_to_end_record(config, record):
 
 
 def _evaluate_end_to_end_records(config, base_records):
-    """评价全部 handoff，并按 ``base.jsonl`` 原顺序返回结果.
+    """评价全部 handoff, 并按 ``base.jsonl`` 原顺序返回结果.
 
+    ``base_records`` 是从 ``inputs/base.jsonl`` 读取的有序 ``list[dict]``, 记其长度为 N.
     ``config.evaluation_workers`` 为正整数. 值为 1 时在主进程顺序调用
-    ``_evaluate_end_to_end_record``；值大于 1 时把每条 handoff 作为一个进程任务提交，
-    任务可乱序完成，但通过输入下标写回固定长度列表. 任一 worker 异常会由
-    ``future.result()`` 传播给主进程，因而不会静默丢失候选或继续生成不完整汇总.
+    ``_evaluate_end_to_end_record``; 值大于 1 时把每条 handoff 作为一个进程任务提交.
+    任务可乱序完成, 但通过输入下标写回固定长度列表. 任一 worker 异常会由
+    ``future.result()`` 传播给主进程, 因而不会静默丢失候选或继续生成不完整汇总.
 
-    返回 ``list[dict]``，长度与 ``base_records`` 相同，顺序逐项一致. worker 只写各自
-    阶段目录内的 ``evaluation_metrics.json``；最终 JSONL、汇总和 W&B 均由主进程写入.
+    返回长度为 N 的 ``list[dict]``, 第 i 项对应 ``base_records[i]``, 每个元素遵循
+    ``_evaluate_end_to_end_record`` 的返回字段契约. 每项评价会覆盖四个阶段目录内的
+    ``evaluation_metrics.json``; 本函数不写最终 ``docking_results.jsonl``、扩展
+    ``evaluation.json``、``wandb_run.json`` 或 W&B.
     """
-    worker_count = int(getattr(config, "evaluation_workers", 1))
+    worker_count = int(config.get("evaluation_workers", 1))
     if worker_count == 1:
         return [
             _evaluate_end_to_end_record(config, record)
             for record in base_records
         ]
-    # list[dict|None], 以输入下标接收乱序完成的进程任务，最终恢复 base.jsonl 顺序.
+    # list[dict|None], 长度为 N; 以输入下标接收乱序完成的进程任务, 最终恢复 base.jsonl 顺序.
     ordered_results = [None] * len(base_records)
     with ProcessPoolExecutor(
         max_workers=worker_count,
         initializer=_configure_evaluation_worker,
     ) as executor:
-        # dict[Future,int], Future 对应的 base.jsonl 下标，用于确定主进程写回位置.
+        # dict[Future, int], Future 对应的 base.jsonl 下标, 取值范围为 [0, N), 用于确定主进程写回位置.
         future_indices = {
             executor.submit(_evaluate_end_to_end_record, config, record): index
             for index, record in enumerate(base_records)
@@ -526,7 +546,7 @@ def evaluate_end_to_end(config):
         (record["pdb_id"], int(record["source_blob_index"])): record
         for record in evaluation["predictions"][config.receptor_condition]
     }
-    # list[dict], 身份正确且要求 docking 的 handoff 评价结果，与 base_records 逐项对齐.
+    # list[dict], 身份正确且要求 docking 的 handoff 评价结果, 与 base_records 逐项对齐.
     direct_results = _evaluate_end_to_end_records(config, base_records)
     direct_path = Path(config.output_root) / "docking_results.jsonl"
     write_jsonl(direct_path, direct_results)
