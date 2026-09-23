@@ -11,20 +11,176 @@ from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
 
+import numpy as np
 import pytest
 import pytorch_lightning as pl
 import torch
 from easydict import EasyDict
+from rdkit import Chem
 from torch_geometric.transforms import Compose
 
-from docking.dataset import OccurrenceDataset
-from docking.evaluation import evaluate_occurrence
-from docking.sampling import sample_occurrence
+from docking.dataset import ConditionedDockingDataset, OccurrenceDataset
+from docking.evaluation import (
+    build_receptor_molecule,
+    evaluate_occurrence,
+    rank_candidate_metrics,
+    score_saved_candidates,
+)
+from docking.assets import read_receptor
+from docking.sampling import (
+    build_sampling_noiser,
+    load_sampling_runtime,
+    sample_occurrence,
+)
+from docking.smiles import read_smiles_coords, read_smiles_graph
 from scripts.train_pl import DataModule, DockingCheckpoint, ModelLightning
 from utils.misc import make_config
 from utils.sample_noise import get_sample_noiser
 from utils.transforms import ConfTransform, FeaturizeMol
 from test_docking_data import prepared_data
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='需要实际授权的CUDA GPU')
+@pytest.mark.parametrize(
+    'stage,config_name,protocol',
+    [
+        ('official-c', 'sample-official-CA2-test.yml', 'official-c'),
+        ('local-c1', 'sample-local_cov-C-CA2-test.yml', 'local-c1'),
+        ('local-e', 'sample-local_cov-E-CA2-test.yml', 'local-e'),
+    ],
+)
+def test_conditioned_non_test_sampling_uses_real_models(
+    tmp_path,
+    stage,
+    config_name,
+    protocol,
+):
+    """用validation实例核对无真值入口可完成真实模型GPU采样并只还原一次世界坐标. """
+    root = Path(__file__).resolve().parents[1]
+    sampling = make_config(str(root / 'configs' / 'docking' / config_name))
+    sampling.update(
+        split='validation',
+        output_root=str(tmp_path / stage),
+        num_candidates=2,
+        num_steps=3,
+        batch_size=2,
+        device='cuda',
+    )
+    # 非测试门控读取已验收的GT validation资产; CA2正式根只覆盖冻结test对象.
+    sampling.dataset.root = '/storage/penghongen/AdaLigand/Ori_Data'
+    train_config, model_config, model, featurizer, transforms, sample_config = (
+        load_sampling_runtime(sampling)
+    )
+    standard = OccurrenceDataset(
+        sampling.dataset,
+        'validation',
+        transforms,
+        sampling.receptor_branch,
+        'E' if stage == 'local-e' else 'C0',
+        False,
+        density_config=model_config.get('density'),
+    )
+    source = standard.records[0]
+    coordinates = read_smiles_coords(
+        sampling.dataset.smiles_coords_root,
+        source['pdb_id'],
+        int(source['candidate_id']),
+        source['prepared_smiles'],
+    )
+    record = {
+        'pdb_id': source['pdb_id'],
+        'candidate_id': int(source['candidate_id']),
+        'prepared_smiles': source['prepared_smiles'],
+        'sampling_seed': 91021,
+        'views': [],
+        'center_offset_xyz_A': [0.0, 0.0, 0.0],
+    }
+    if stage == 'local-e':
+        record['envelope_coords_xyz_A'] = coordinates.tolist()
+        pocket_mode = 'envelope'
+    else:
+        record['given_center_xyz_A'] = coordinates.mean(axis=0).tolist()
+        pocket_mode = 'center'
+    dataset = ConditionedDockingDataset(
+        EasyDict(
+            root=sampling.dataset.root,
+            smiles_root=sampling.dataset.smiles_root,
+            knn=int(sampling.dataset.knn),
+            pocket_mode=pocket_mode,
+        ),
+        [record],
+        transforms,
+        sampling.receptor_branch,
+        density_config=model_config.get('density'),
+    )
+    assert 'smiles_coords_root' not in dataset.config
+    noiser = build_sampling_noiser(
+        sampling,
+        train_config,
+        sample_config,
+        featurizer,
+    )
+    result = sample_occurrence(
+        dataset,
+        0,
+        model,
+        noiser,
+        featurizer,
+        sampling,
+        protocol,
+    )
+    assert result['success_count'] == 2, result
+    output_dir = (
+        Path(sampling.output_root)
+        / 'validation'
+        / protocol
+        / source['pdb_id']
+        / str(source['candidate_id'])
+    )
+    poses = [
+        pose
+        for pose in Chem.SDMolSupplier(
+            str(output_dir / result['pose_file']),
+            removeHs=True,
+        )
+        if pose is not None
+    ]
+    assert len(poses) == 2
+    assert all(
+        np.isfinite(pose.GetConformer().GetPositions()).all()
+        for pose in poses
+    )
+    template = read_smiles_graph(
+        sampling.dataset.smiles_root,
+        source['prepared_smiles'],
+    )['mol']
+    receptor = read_receptor(
+        Path(sampling.dataset.root)
+        / 'parse'
+        / source['pdb_id']
+        / 'receptor_tokens.npz'
+    )
+    receptor_molecule = build_receptor_molecule(receptor)
+    candidates = json.loads((output_dir / result['candidate_file']).read_text())
+    metrics = score_saved_candidates(
+        candidates, poses, receptor_molecule, template, rmsd_reference=None
+    )
+    assert not any(
+        atom.GetChiralTag() != Chem.ChiralType.CHI_UNSPECIFIED
+        for atom in template.GetAtoms()
+    )
+    assert not any(
+        bond.GetStereo() != Chem.BondStereo.STEREONONE
+        for bond in template.GetBonds()
+    )
+    assert all(item['stereo'] for item in metrics)
+    assert [item['sample_index'] for item in rank_candidate_metrics(metrics)] == [
+        item['sample_index']
+        for item in sorted(
+            metrics,
+            key=lambda item: (-item['self_ranking'], item['sample_index']),
+        )
+    ]
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason='需要实际授权的CUDA GPU')
@@ -43,7 +199,7 @@ def test_official_weights_native_bf16_training_and_stopped_restore(prepared_data
         if name.startswith('model.'):
             torch.testing.assert_close(model.state_dict()[name], value, rtol=0, atol=0)
     del official
-    # float32, (128,15), 保存核酸投影初值, 后面确认原loss确实训练新增参数.
+    # float32, (128, 15), 保存核酸投影初值, 后面确认原loss确实训练新增参数.
     initial_nucleic_weight = model.model.nucleic_embedder.weight.detach().clone()
     checkpoint = DockingCheckpoint(str(tmp_path / 'checkpoints'), 'gpu-contract-check')
     trainer_config = dict(accelerator='gpu', devices=1, precision='bf16-mixed', max_steps=1, max_epochs=-1, logger=False, enable_progress_bar=False, enable_model_summary=False, num_sanity_val_steps=0, check_val_every_n_epoch=None, val_check_interval=1, accumulate_grad_batches=2)
@@ -77,7 +233,7 @@ def test_official_weights_native_bf16_training_and_stopped_restore(prepared_data
 @pytest.mark.skipif(not torch.cuda.is_available(), reason='需要实际授权的CUDA GPU')
 @pytest.mark.parametrize('experiment', ['local_cov-C-T0-RA', 'local_cov-E-T0-RA'])
 def test_real_data_training_and_sampling_budget(tmp_path, monkeypatch, experiment):
-    """用真实非test资产检查local_cov训练、显存、原损失及采样评价，不设姿态质量阈值。"""
+    """用真实非test资产检查local_cov训练、显存、原损失及采样评价, 不设姿态质量阈值. """
     root = Path(__file__).resolve().parents[1]
     config = make_config(str(root / f'configs/docking/{experiment}.yml'))
     # 门控只运行2次优化器更新, 因此把本次回调验证间隔缩为2; 正式YAML仍为每800次更新验证.
