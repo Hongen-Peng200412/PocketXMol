@@ -8,6 +8,7 @@ smiles_coords_root: /storage/penghongen/AdaLigand/Ori_Data/smiles_assets/SMILE_c
 output_root: /storage/penghongen/PocketXMol/final_evaluation/end_to_end/GT
 expected_handoff_count: 280
 expected_pdb_count: 77
+evaluation_workers: 32
 seed_base: 42100000
 knn: 32
 batch_size: 50

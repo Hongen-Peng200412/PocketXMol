@@ -7,7 +7,9 @@
 """
 
 import json
+import os
 from collections import defaultdict
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 
 import numpy as np
@@ -25,6 +27,12 @@ from docking.smiles import read_smiles_coords, read_smiles_graph
 
 # dict[str,int|None], 标准汇总读取 self-ranking 前 1、5 或全部可评价候选.
 RANKING_LIMITS = {"top1": 1, "top5": 5, "oracle": None}
+
+# tuple[str,...], 单条 handoff 在同一评价进程内依次读取的四个冻结推理阶段.
+END_TO_END_STAGES = ("official-c", "local-c1", "local-c2", "local-e")
+
+# dict[tuple[str,str], RDKit Mol], 每个评价进程独立持有的受体分子缓存; 键为受体根目录与 PDB 编号.
+_EVALUATION_RECEPTOR_CACHE = {}
 
 
 def _minimum_rmsd(metrics, limit):
@@ -347,12 +355,161 @@ def summarize_end_to_end(direct_results, pdb_ids):
     return summary
 
 
+def _configure_evaluation_worker():
+    """把一个评价进程使用的数值库线程数固定为 1.
+
+    本函数作为 ``ProcessPoolExecutor`` 的 worker 初始化器运行. 它设置 OpenMP、MKL、
+    OpenBLAS、NumExpr 和 Apple vecLib 的线程环境变量, 防止 32 个评价进程各自再次建立
+    多线程池. 函数不读取候选、不修改评价产物, 也不改变 RDKit 科学计算参数.
+    """
+    for variable in (
+        "OMP_NUM_THREADS",
+        "MKL_NUM_THREADS",
+        "OPENBLAS_NUM_THREADS",
+        "NUMEXPR_NUM_THREADS",
+        "VECLIB_MAXIMUM_THREADS",
+    ):
+        os.environ[variable] = "1"
+
+
+def _evaluate_end_to_end_record(config, record):
+    """按固定顺序评价一条 handoff 的四个冻结推理阶段.
+
+    ``record`` 来自 ``inputs/base.jsonl``，标识一个身份正确且需要 docking 的 Matcher
+    候选. 当前进程先读取该 PDB 的完整标准受体，再构造公共 SMILES 真值参考，随后依次
+    评价 ``official-c``、``local-c1``、``local-c2`` 和 ``local-e``. 每个阶段仍调用
+    ``_evaluate_stage``，因此碰撞、显式立体、self-ranking 与 RDKit RMSD 算法保持不变.
+
+    返回 dict，与 ``docking_results.jsonl`` 的一条记录同形，包含候选身份、计费顺序及
+    四种方法的状态、Top-1、pose@M RMSD 和严格阈值成功布尔值. 公共资产失败时四个阶段
+    都记为 ``evaluation_asset_failed``；单阶段失败只影响该阶段，两类失败都保留记录.
+    """
+    pdb_id = record["pdb_id"]
+    receptor_key = (str(config.receptor_root), pdb_id)
+    try:
+        if receptor_key not in _EVALUATION_RECEPTOR_CACHE:
+            receptor = read_receptor(
+                Path(config.receptor_root)
+                / "parse"
+                / pdb_id
+                / "receptor_tokens.npz"
+            )
+            _EVALUATION_RECEPTOR_CACHE[receptor_key] = build_receptor_molecule(
+                receptor
+            )
+        template, reference = _reference_molecule(config, record)
+    except Exception as error:
+        failed = {
+            "status": "evaluation_asset_failed",
+            "error": f"{type(error).__name__}: {error}",
+            "success_count": 0,
+            "top1_sample_index": None,
+            "pose_min_rmsd_A": {"1": None, "5": None, "50": None},
+            "success": {
+                threshold: {limit: False for limit in ("1", "5", "50")}
+                for threshold in ("2.0", "3.0")
+            },
+        }
+        stage_results = {stage: dict(failed) for stage in END_TO_END_STAGES}
+    else:
+        stage_results = {}
+        for stage in END_TO_END_STAGES:
+            try:
+                stage_results[stage] = _evaluate_stage(
+                    config,
+                    stage,
+                    record,
+                    _EVALUATION_RECEPTOR_CACHE[receptor_key],
+                    template,
+                    reference,
+                )
+            except Exception as error:
+                stage_results[stage] = {
+                    "status": "evaluation_stage_failed",
+                    "output_dir": str(candidate_output_dir(config, stage, record)),
+                    "error": f"{type(error).__name__}: {error}",
+                    "success_count": 0,
+                    "top1_sample_index": None,
+                    "pose_min_rmsd_A": {"1": None, "5": None, "50": None},
+                    "success": {
+                        threshold: {limit: False for limit in ("1", "5", "50")}
+                        for threshold in ("2.0", "3.0")
+                    },
+                }
+    stage_results["local-c2"]["intermediate_top1"] = _read_ranking(
+        config,
+        "local-c1",
+        record,
+    )
+    stage_results["local-e"]["first_center_top1"] = _read_ranking(
+        config,
+        "local-c1",
+        record,
+    )
+    stage_results["local-e"]["second_center_top1"] = _read_ranking(
+        config,
+        "local-c2",
+        record,
+    )
+    return {
+        "receptor_condition": config.receptor_condition,
+        "pdb_id": pdb_id,
+        "source_blob_index": int(record["source_blob_index"]),
+        "centered_box_index": int(record["centered_box_index"]),
+        "candidate_selected": bool(record["candidate_selected"]),
+        "raw_rank": int(record["raw_rank"]),
+        "attempt_index": int(record["attempt_index"]),
+        "matched_occurrence_id": int(record["matched_occurrence_id"]),
+        "predicted_smiles": record["prepared_smiles"],
+        "target_smiles": record["target_smiles"],
+        "methods": {
+            "official-C": stage_results["official-c"],
+            "local_cov-C": stage_results["local-c1"],
+            "C-C": stage_results["local-c2"],
+            "C-C-E": stage_results["local-e"],
+        },
+    }
+
+
+def _evaluate_end_to_end_records(config, base_records):
+    """评价全部 handoff，并按 ``base.jsonl`` 原顺序返回结果.
+
+    ``config.evaluation_workers`` 为正整数. 值为 1 时在主进程顺序调用
+    ``_evaluate_end_to_end_record``；值大于 1 时把每条 handoff 作为一个进程任务提交，
+    任务可乱序完成，但通过输入下标写回固定长度列表. 任一 worker 异常会由
+    ``future.result()`` 传播给主进程，因而不会静默丢失候选或继续生成不完整汇总.
+
+    返回 ``list[dict]``，长度与 ``base_records`` 相同，顺序逐项一致. worker 只写各自
+    阶段目录内的 ``evaluation_metrics.json``；最终 JSONL、汇总和 W&B 均由主进程写入.
+    """
+    worker_count = int(getattr(config, "evaluation_workers", 1))
+    if worker_count == 1:
+        return [
+            _evaluate_end_to_end_record(config, record)
+            for record in base_records
+        ]
+    # list[dict|None], 以输入下标接收乱序完成的进程任务，最终恢复 base.jsonl 顺序.
+    ordered_results = [None] * len(base_records)
+    with ProcessPoolExecutor(
+        max_workers=worker_count,
+        initializer=_configure_evaluation_worker,
+    ) as executor:
+        # dict[Future,int], Future 对应的 base.jsonl 下标，用于确定主进程写回位置.
+        future_indices = {
+            executor.submit(_evaluate_end_to_end_record, config, record): index
+            for index, record in enumerate(base_records)
+        }
+        for future in as_completed(future_indices):
+            ordered_results[future_indices[future]] = future.result()
+    return ordered_results
+
+
 def evaluate_end_to_end(config):
     """评价四种方法, 生成直接结果、扩展轨迹、主表和 W&B 汇报.
 
     输入 ``config`` 指定当前 GT/CA2 条件、Matcher evaluation、端到端输入/产物根、受体
-    与 SMILES 资产、固定 PDB 数及 W&B 运行信息. 评价真值只在本函数内由 ``base.jsonl``
-    读取, 不回写阶段推理清单.
+    与 SMILES 资产、固定 PDB 数、``evaluation_workers`` 评价进程数及 W&B 运行信息.
+    评价真值只在本函数内由 ``base.jsonl`` 读取, 不回写阶段推理清单.
 
     落盘文件:
         - ``<output_root>/docking_results.jsonl``: JSONL; 每项对应一个身份正确且实际要求 docking 的 handoff 候选, 保存候选身份、计费顺序和 official-C/local_cov-C/C-C/C-C-E 四种方法的状态、Top-1、pose@M RMSD 与成功布尔值.
@@ -369,98 +526,8 @@ def evaluate_end_to_end(config):
         (record["pdb_id"], int(record["source_blob_index"])): record
         for record in evaluation["predictions"][config.receptor_condition]
     }
-    # list[dict], 仅包含身份正确且要求 docking 的 handoff 候选, 与 base_records 逐项对齐.
-    direct_results = []
-    # dict[pdb_id, RDKit Mol], 当前受体条件的完整标准受体距离检查分子, 在同一 PDB 内复用.
-    receptor_cache = {}
-    for record in base_records:
-        pdb_id = record["pdb_id"]
-        try:
-            if pdb_id not in receptor_cache:
-                receptor = read_receptor(
-                    Path(config.receptor_root)
-                    / "parse"
-                    / pdb_id
-                    / "receptor_tokens.npz"
-                )
-                receptor_cache[pdb_id] = build_receptor_molecule(receptor)
-            template, reference = _reference_molecule(config, record)
-        except Exception as error:
-            failed = {
-                "status": "evaluation_asset_failed",
-                "error": f"{type(error).__name__}: {error}",
-                "success_count": 0,
-                "top1_sample_index": None,
-                "pose_min_rmsd_A": {"1": None, "5": None, "50": None},
-                "success": {
-                    threshold: {limit: False for limit in ("1", "5", "50")}
-                    for threshold in ("2.0", "3.0")
-                },
-            }
-            stage_results = {
-                stage: dict(failed)
-                for stage in ("official-c", "local-c1", "local-c2", "local-e")
-            }
-        else:
-            stage_results = {}
-            for stage in ("official-c", "local-c1", "local-c2", "local-e"):
-                try:
-                    stage_results[stage] = _evaluate_stage(
-                        config,
-                        stage,
-                        record,
-                        receptor_cache[pdb_id],
-                        template,
-                        reference,
-                    )
-                except Exception as error:
-                    stage_results[stage] = {
-                        "status": "evaluation_stage_failed",
-                        "output_dir": str(candidate_output_dir(config, stage, record)),
-                        "error": f"{type(error).__name__}: {error}",
-                        "success_count": 0,
-                        "top1_sample_index": None,
-                        "pose_min_rmsd_A": {"1": None, "5": None, "50": None},
-                        "success": {
-                            threshold: {limit: False for limit in ("1", "5", "50")}
-                            for threshold in ("2.0", "3.0")
-                        },
-                    }
-        stage_results["local-c2"]["intermediate_top1"] = _read_ranking(
-            config,
-            "local-c1",
-            record,
-        )
-        stage_results["local-e"]["first_center_top1"] = _read_ranking(
-            config,
-            "local-c1",
-            record,
-        )
-        stage_results["local-e"]["second_center_top1"] = _read_ranking(
-            config,
-            "local-c2",
-            record,
-        )
-        direct_results.append(
-            {
-                "receptor_condition": config.receptor_condition,
-                "pdb_id": pdb_id,
-                "source_blob_index": int(record["source_blob_index"]),
-                "centered_box_index": int(record["centered_box_index"]),
-                "candidate_selected": bool(record["candidate_selected"]),
-                "raw_rank": int(record["raw_rank"]),
-                "attempt_index": int(record["attempt_index"]),
-                "matched_occurrence_id": int(record["matched_occurrence_id"]),
-                "predicted_smiles": record["prepared_smiles"],
-                "target_smiles": record["target_smiles"],
-                "methods": {
-                    "official-C": stage_results["official-c"],
-                    "local_cov-C": stage_results["local-c1"],
-                    "C-C": stage_results["local-c2"],
-                    "C-C-E": stage_results["local-e"],
-                },
-            }
-        )
+    # list[dict], 身份正确且要求 docking 的 handoff 评价结果，与 base_records 逐项对齐.
+    direct_results = _evaluate_end_to_end_records(config, base_records)
     direct_path = Path(config.output_root) / "docking_results.jsonl"
     write_jsonl(direct_path, direct_results)
     # dict[(pdb_id, source_blob_index), dict], 把直接 docking 结果回连完整 Matcher 轨迹.
